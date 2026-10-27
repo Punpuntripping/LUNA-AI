@@ -85,6 +85,7 @@ class ErrorCode(str, Enum):
     PAYMENT_NOT_REFUNDABLE = "PAYMENT_NOT_REFUNDABLE"              # 409 — an عرض الشهر الأول first month (profession_intro_offer.md §1 rule 6)
     PAYMENT_PROVIDER_ERROR = "PAYMENT_PROVIDER_ERROR"              # 400/502 — Moyasar refused / is unreachable / the payment disagrees with our row
     PAYMENT_CONSENT_INVALID = "PAYMENT_CONSENT_INVALID"            # 409 — recurring consent asked for a plan that does not renew, or for a payment that is no longer open (auto-renewal plan §6)
+    PAYMENT_PRICING_UNAVAILABLE = "PAYMENT_PRICING_UNAVAILABLE"    # 503 — promo_checkout_price (192) could not price the checkout; never falls back to the catalog (pricing_campaigns_v2.md)
 
     # Subscription lifecycle (إلغاء الاشتراك — subscription_cancellation.md)
     SUBSCRIPTION_NOT_CANCELLABLE = "SUBSCRIPTION_NOT_CANCELLABLE"  # 409 — no paid running term to cancel, or nothing to undo

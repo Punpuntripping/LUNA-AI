@@ -61,6 +61,16 @@ interface PreferencesState {
    * from a SUCCESSFUL read lets `OnboardingDialog` ask once more.
    */
   professionReaskDone: boolean;
+  /**
+   * The `basic_ended_at` the Basic-ended profession-offer popup was last shown
+   * for (`intro_offer_basic_prompt_at`; pricing_campaigns_v2 §3).
+   *
+   * Fail-closed like the flags above, in the only shape a string allows:
+   * `undefined` = NOT KNOWN (before hydrate, or after a FAILED one) and the
+   * popup must not open; `null` = known, never shown; a string = the value last
+   * shown. Only a SUCCESSFUL hydrate turns `undefined` into something else.
+   */
+  introOfferBasicPromptAt: string | null | undefined;
   isHydrated: boolean;
   isSaving: boolean;
   error: string | null;
@@ -81,6 +91,8 @@ interface PreferencesState {
   markPromoCodePopupSeen: () => Promise<void>;
   /** Close the «declined» re-ask for good — written on EVERY exit of that run. */
   markProfessionReaskDone: () => Promise<void>;
+  /** Remember that the Basic-ended offer popup was shown for `basicEndedAt`. */
+  markIntroOfferBasicPromptShown: (basicEndedAt: string) => Promise<void>;
   /** Clear the last error (e.g. after the user dismisses a toast). */
   clearError: () => void;
   /** Reset to defaults (used on logout). */
@@ -94,6 +106,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   demoConversationHidden: false,
   promoCodePopupSeen: true,
   professionReaskDone: true,
+  introOfferBasicPromptAt: undefined,
   isHydrated: false,
   isSaving: false,
   error: null,
@@ -108,6 +121,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       demoConversationHidden: false,
       promoCodePopupSeen: true,
       professionReaskDone: true,
+      introOfferBasicPromptAt: undefined,
       isHydrated: false,
       isSaving: false,
       error: null,
@@ -131,6 +145,10 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
         demoConversationHidden: prefs.demo_conversation_hidden === true,
         promoCodePopupSeen: prefs.promo_code_popup_seen === true,
         professionReaskDone: prefs.profession_reask_done === true,
+        introOfferBasicPromptAt:
+          typeof prefs.intro_offer_basic_prompt_at === "string"
+            ? prefs.intro_offer_basic_prompt_at
+            : null,
         isHydrated: true,
         error: null,
       });
@@ -152,6 +170,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
         promoCodePopupSeen: true,
         // …and never re-ask the profession question off one either.
         professionReaskDone: true,
+        // …nor open the Basic-ended offer: "not known" keeps it shut.
+        introOfferBasicPromptAt: undefined,
         isHydrated: true,
         error:
           err instanceof ApiClientError
@@ -235,6 +255,20 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
     } catch {
       // Same contract as the flags above: keep the local flag so the question
       // stays shut this session; worst case it is asked once more next login.
+    }
+  },
+
+  markIntroOfferBasicPromptShown: async (basicEndedAt: string) => {
+    if (get().introOfferBasicPromptAt === basicEndedAt) return;
+    // Written the moment the popup OPENS, not when it closes: a tab closed with
+    // the dialog up has still shown it.
+    set({ introOfferBasicPromptAt: basicEndedAt });
+    try {
+      // FLAT key — `merge_preferences` is a SHALLOW merge ([[project_edu_popups]]).
+      await preferencesApi.update({ intro_offer_basic_prompt_at: basicEndedAt });
+    } catch {
+      // Same contract as the flags above: keep the local value so the popup
+      // stays shut this session; worst case it offers itself once more next login.
     }
   },
 

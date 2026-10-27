@@ -254,10 +254,12 @@ export function AccountSettingsDialog({
   const [reactivateError, setReactivateError] = useState<string | null>(null);
   const [isReactivating, setIsReactivating] = useState(false);
 
-  // المشتركون الأوائل — one probe per session, shared with the upgrade dialog.
-  // Only the ladder's PRICE ORDER is read from it; whether THIS user holds a
-  // seat comes from the authed subscription payload, never from the campaign
-  // flag (a seat holder keeps their price after the campaign closes).
+  // المشتركون الأوائل — probed here (shared with the upgrade dialog) so the
+  // upgrade dialog this surface opens already has the campaign's prices, and so
+  // the pre-tier «returnable» cancel note below can name the return price.
+  // Whether THIS user holds a seat comes from the authed subscription payload,
+  // never from the campaign flag (a seat holder keeps their price after it
+  // closes).
   const campaign = useEarlyAdopterStore((s) => s.campaign);
   const ensureCampaignLoaded = useEarlyAdopterStore((s) => s.ensureLoaded);
   useEffect(() => {
@@ -445,19 +447,27 @@ export function AccountSettingsDialog({
   // no blocking window here to ask the server about, and price order mirrors the
   // server's downgrade guard, so nothing offered can be refused at checkout.
   // Empty for `max` (nothing above it) — and then no button at all. Ranked on
-  // EFFECTIVE prices while المشتركون الأوائل is open, so the ladder matches the
-  // numbers the upgrade dialog then puts on its cards.
-  const upgradePlans = pricingPlansAbove(subscription?.plan_id, campaign.open);
+  // LIST prices (the plan rank): promo prices are batch data that change with
+  // no deploy and must never be able to reorder the ladder.
+  const upgradePlans = pricingPlansAbove(subscription?.plan_id);
 
-  // Seat holder? Straight from the authed subscription read — an older backend
-  // omits the block entirely, and absent must mean "no", so the warning below is
-  // shown only on an explicit `true`.
+  // Seat holder whose promo price is in force right now? Straight from the
+  // authed subscription read — an older backend omits the block entirely, and
+  // absent must mean "no", so the warning below is shown only on an explicit
+  // `true`.
   const isEarlyAdopter = subscription?.early_adopter?.is_member === true;
-  // عرض الشهر الأول members are EXEMPT from the forfeiture (owner, 2026-10-21):
-  // after a cancellation they may come back at the promo price, fresh 90 days,
-  // while the campaign is open. Same explicit-`true` rule as above. The price
-  // is the campaign's own answer for their plan; absent (campaign closed or
-  // unread) the sentence below simply names no number.
+  // Which cancellation rule is LIVE on the server. `tier_rules === true` ⇒ the
+  // price-tier rules (pricing_campaigns_v2 §1.4-6, `ladder_v2` on): a completed
+  // cancellation loses the seat and its tier for everyone, never-used tiers stay
+  // open. Anything else (flag off, or a backend that predates the field) ⇒ the
+  // pre-tier rules below, worded exactly as before — the new sentence is only
+  // true once the flag is on.
+  const tierRules = subscription?.early_adopter?.tier_rules === true;
+  // PRE-TIER ONLY: عرض الشهر الأول members are EXEMPT from the forfeiture
+  // (owner, 2026-10-21): after a cancellation they may come back at the promo
+  // price, fresh 90 days, while the campaign is open. Same explicit-`true` rule
+  // as above. The price is the campaign's own answer for their plan; absent
+  // (campaign closed or unread) the sentence below simply names no number.
   const isReturnable = subscription?.early_adopter?.returnable === true;
   const returnPromoPrice =
     campaign.promo[subscription?.plan_id ?? ""] ?? campaign.promo.pro ?? null;
@@ -981,10 +991,12 @@ export function AccountSettingsDialog({
                   المجانية. يمكنك التراجع في أي وقت قبل ذلك.
                 </span>
 
-                {/* المشتركون الأوائل — early_adopters.md §6.2. Stated BEFORE
-                    the confirm because the rule is irreversible: a completed
-                    cancellation releases the seat and the promotional price is
-                    gone for good, seats open or not.
+                {/* المشتركون الأوائل — early_adopters.md §6.2, and under the
+                    price tiers pricing_campaigns_v2 §1.4-6. Stated BEFORE the
+                    confirm because the rule is irreversible: a completed
+                    cancellation releases the seat. WHICH rule applies is the
+                    server's (`tier_rules`), so exactly one of the three notes
+                    below renders for a seat holder.
 
                     ⚠ TONE IS THE SPEC HERE. This is a retention lever pointed
                     at someone in the act of leaving, so it reads as a fact and
@@ -992,7 +1004,31 @@ export function AccountSettingsDialog({
                     NOT destructive-red, NOT a countdown, NOT a second confirm
                     step — the primary tint marks it as information about their
                     standing, not an alarm. Do not "strengthen" it. */}
-                {isEarlyAdopter && isReturnable && (
+                {isEarlyAdopter && tierRules && (
+                  // Price tiers live: the seat, its remaining discounted months
+                  // and that tier are gone; tiers never used stay open. The
+                  // second sentence is deliberately price-free — the next quote
+                  // depends on batches and history this dialog does not know,
+                  // and a number here would be a promise.
+                  <span
+                    className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm leading-relaxed text-foreground"
+                    data-testid="cancel-early-adopter-tier-note"
+                  >
+                    إذا اكتمل الإلغاء تفقد مقعدك في العرض وما تبقّى من أشهره،
+                    ولا يُتاح لك هذا العرض مرة أخرى. يمكنك لاحقاً الاشتراك بأي
+                    عرض لم تستخدمه ما دام متاحاً. ويمكنك التراجع عن الإلغاء
+                    {termEndsAt
+                      ? ` قبل انتهاء اشتراكك في ${termEndsAt}.`
+                      : " قبل انتهاء اشتراكك."}
+                    {/* The rule this sentence states lives in full on
+                        /promo-terms. Linked HERE and not only at the point of
+                        sale because this is the moment the rule actually costs
+                        the user something, and they are entitled to go read
+                        it. */}
+                    <PromoTermsLink className="mt-2 block" />
+                  </span>
+                )}
+                {isEarlyAdopter && !tierRules && isReturnable && (
                   // The intro-offer exception (/promo-terms «عرض الشهر الأول»):
                   // nothing is lost for good, so no permanent-loss wording —
                   // same tint and tone as the note below.
@@ -1006,7 +1042,7 @@ export function AccountSettingsDialog({
                     <PromoTermsLink className="mt-2 block" />
                   </span>
                 )}
-                {isEarlyAdopter && !isReturnable && (
+                {isEarlyAdopter && !tierRules && !isReturnable && (
                   <span
                     className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm leading-relaxed text-foreground"
                     data-testid="cancel-early-adopter-note"

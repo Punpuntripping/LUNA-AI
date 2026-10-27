@@ -1,60 +1,62 @@
 import { create } from "zustand";
 import { paymentsApi } from "@/lib/api";
-import type { IntroOfferState } from "@/types";
+import {
+  parseOfferTerms,
+  type OfferTerms,
+} from "@/components/promo/intro-offer-content";
+import type { IntroOfferReason, IntroOfferState } from "@/types";
 
 /**
- * عرض الشهر الأول — the caller's profession intro offer
- * (`.claude/plans/profession_intro_offer.md` §4.1).
+ * The caller's profession offer — Pro tier 1
+ * (`.claude/plans/pricing_campaigns_v2.md` §1.3, superseding
+ * `profession_intro_offer.md` §4.1).
  *
  * Two jobs: hold the SERVER's eligibility answer, and own the open state of
  * `IntroOfferDialog` (a store, not component state, so the onboarding dialog
- * can open it after a profession save and `TourOverlay` can wait on it).
+ * can open it after a profession save, the Basic-ended trigger can open it on
+ * the next visit, and `TourOverlay` can wait on it).
  *
  * ⚠ THE DEFAULT IS "NOT ELIGIBLE", and that is the safety property — same rule
- * as `early-adopter-store`. Nothing shows 1.99 / 9.90 until the server has said
- * so, and a slow, missing or 404ing endpoint degrades to the ordinary prices,
- * never to an offer the checkout will not honour.
+ * as `early-adopter-store`. Nothing shows an offer price until the server has
+ * said so, and a slow, missing or 404ing endpoint degrades to the ordinary
+ * prices, never to an offer the checkout will not honour.
  *
- * ⚠ Never copy these prices into `PRICING_PLANS.promoPrice`: the plan ladder
- * ranks on it (`pricing.ts` — `pricingPlansAbove`), and a 1.99 pro would sort
- * below basic and drop out of every basic user's upgrade list.
+ * ⚠ Never copy these prices into `PRICING_PLANS`: the catalog carries list
+ * prices only, and the tier-1 Pro price sits below basic — a personal offer
+ * that must never reach the public cards or the upgrade ladder.
  */
 
-export type IntroOfferTrigger = "profession" | "quota";
+export type IntroOfferTrigger = "profession" | "quota" | "basic_ended";
 
-/** An eligible answer with every price present, or nothing. */
-export interface IntroOffer {
+/**
+ * An eligible answer with a complete, coherent schedule, or nothing. The
+ * schedule fields come from `parseOfferTerms` (current keys, or the legacy
+ * first-month keys of an older backend).
+ */
+export interface IntroOffer extends OfferTerms {
   profession_group: string;
-  first_month_sar: string;
-  then_sar: string;
-  then_months: number;
-  list_sar: string;
+  /** `"basic_ended"` ⇒ surfaced because the caller's Basic term just ended. */
+  reason: IntroOfferReason | null;
+  /** The ended Basic term's instant — the once-per-value key for that popup. */
+  basic_ended_at: string | null;
 }
-
-const MONEY_RE = /^\d+(\.\d{1,2})?$/;
 
 /** Fail-closed parse: anything short of a complete eligible answer is "no". */
 function normalize(raw: IntroOfferState | null | undefined): IntroOffer | null {
-  if (!raw || raw.eligible !== true) return null;
-  const { profession_group, first_month_sar, then_sar, list_sar } = raw;
-  if (
-    !profession_group ||
-    !first_month_sar ||
-    !then_sar ||
-    !list_sar ||
-    !MONEY_RE.test(first_month_sar) ||
-    !MONEY_RE.test(then_sar) ||
-    !MONEY_RE.test(list_sar)
-  ) {
-    return null;
-  }
-  const months = Number(raw.then_months);
+  if (!raw || raw.eligible !== true || !raw.profession_group) return null;
+  const terms = parseOfferTerms(raw);
+  if (!terms) return null;
+  const reason: IntroOfferReason | null =
+    raw.reason === "basic_ended" ? "basic_ended" : null;
+  const basicEndedAt =
+    typeof raw.basic_ended_at === "string" && raw.basic_ended_at.trim() !== ""
+      ? raw.basic_ended_at
+      : null;
   return {
-    profession_group,
-    first_month_sar,
-    then_sar,
-    then_months: Number.isFinite(months) && months > 0 ? months : 2,
-    list_sar,
+    ...terms,
+    profession_group: raw.profession_group,
+    reason,
+    basic_ended_at: basicEndedAt,
   };
 }
 

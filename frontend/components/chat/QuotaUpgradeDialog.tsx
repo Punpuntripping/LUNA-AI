@@ -110,9 +110,10 @@ export function QuotaUpgradeDialog({
     if (open) ensureCampaignLoaded();
   }, [open, ensureCampaignLoaded]);
 
-  // «عرض الشهر الأول» (profession_intro_offer §4.4). Re-asked on every open:
-  // eligibility is per-user and changes the moment they buy. Fail-closed like
-  // the campaign — until the server says eligible, the Pro card is unchanged.
+  // The profession offer — Pro tier 1 (pricing_campaigns_v2; was
+  // profession_intro_offer §4.4). Re-asked on every open: eligibility is
+  // per-user and changes the moment they buy. Fail-closed like the campaign —
+  // until the server says eligible, the Pro card is unchanged.
   const introOffer = useIntroOfferStore((s) => s.offer);
   useEffect(() => {
     if (open) void useIntroOfferStore.getState().refresh();
@@ -121,10 +122,11 @@ export function QuotaUpgradeDialog({
   const ladder = info?.upgrade_options;
 
   const plans = useMemo<PricingPlan[]>(() => {
-    // No block → Settings. Derived by price, since there is no blocking window
-    // to ask the server about — EFFECTIVE price while the campaign is open, or
-    // the ladder would be ranked against numbers no card shows.
-    if (!info) return pricingPlansAbove(currentPlanId, campaign.open);
+    // No block → Settings. Derived by LIST price (the plan rank), since there
+    // is no blocking window to ask the server about. Promo prices are batch
+    // data that can change with no deploy, so they never rank the ladder — see
+    // `pricingPlansAbove`.
+    if (!info) return pricingPlansAbove(currentPlanId);
     // Deploy skew: a backend from before the ladder shipped sends no field at
     // all. Fall back to the whole catalog — i.e. exactly the pre-ladder free
     // paywall — rather than to an empty dialog. An EMPTY array is different:
@@ -138,7 +140,7 @@ export function QuotaUpgradeDialog({
       if (plan) resolved.push(plan);
     }
     return resolved;
-  }, [info, ladder, currentPlanId, campaign.open]);
+  }, [info, ladder, currentPlanId]);
 
   // A zero limit is not an exhausted window — it is a feature the free plan
   // never included (OCR is `ocr_pages_monthly = 0` on `free`). Saying «انتهى
@@ -210,10 +212,11 @@ export function QuotaUpgradeDialog({
   // under the intro offer too, which would otherwise sit below a «ابتداءً من»
   // figure higher than the price on its own card.
   const showFromPrice = plans.length === PRICING_PLANS.length && !offerOnCard;
-  // Cheapest by EFFECTIVE price, and quoted at the same price its own card
-  // shows: during the campaign the list figure would undersell the offer by
-  // naming a number nothing on screen charges.
-  const cheapest = cheapestPricingPlan(campaign.open);
+  // Cheapest by the DISPLAYED price — the server's promo where one applies,
+  // whatever batch is open right now — and quoted at the same price its own
+  // card shows: the list figure would undersell the offer by naming a number
+  // nothing on screen charges.
+  const cheapest = cheapestPricingPlan(campaign);
   const cheapestPricing = resolvePlanPricing(cheapest, campaign);
 
   // Cards priced against the campaign — resolved once, so the badge and the
@@ -272,9 +275,11 @@ export function QuotaUpgradeDialog({
           <span>{unblockLine}</span>
         </p>
 
-        {/* المشتركون الأوائل. «المقاعد محدودة» is the ONLY scarcity signal
-            permitted — never a remaining count, a seat total or a closing date
-            (early_adopters.md §1.10). */}
+        {/* المشتركون الأوائل — shown only when a card is actually discounted by
+            the server's promo (`resolvePlanPricing` reads `/payments/
+            early-adopter`). «المقاعد محدودة» is the ONLY scarcity signal
+            permitted — never a remaining count, a batch, a tier number or a
+            closing date (pricing_campaigns_v2 §1.4-10). */}
         {campaignVisible && (
           <p
             className="flex items-center gap-2 text-sm font-medium text-primary"
@@ -336,10 +341,9 @@ export function QuotaUpgradeDialog({
                 </p>
 
                 {offer ? (
-                  // The offer's own block carries the schedule, the
-                  // non-refundable first month, the cancel line, «المقاعد
-                  // محدودة» and the promo-terms link — the early-adopter price
-                  // it replaces is exactly its months 2–3.
+                  // The offer's own block carries the schedule (price and months
+                  // from the server), the non-refundable first payment, the
+                  // cancel line, «المقاعد محدودة» and the promo-terms link.
                   <IntroOfferSummary offer={offer} className="mt-4" />
                 ) : (
                   <>

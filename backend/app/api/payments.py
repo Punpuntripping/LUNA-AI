@@ -12,7 +12,7 @@ caller, delegate to ``backend.app.services.payment_service``, return.
     GET  /method            authed   the stored card (brand/last4 only, never the token)
     DELETE /method          authed   forget the stored card + revoke it at Moyasar
     POST /applepay/session  authed   Apple Pay merchant-validation proxy — UNUSED
-    GET  /early-adopter     NO JWT   is the launch campaign open, and at what prices
+    GET  /early-adopter     NO JWT   is a promo open, at what prices, for how many months
     GET  /intro-offer       authed   may the CALLER buy عرض الشهر الأول, and at what
     GET  /subscription      authed   plan + term + cancel eligibility
     POST /subscription/cancel     authed  opt out of renewal + exit survey
@@ -117,16 +117,30 @@ async def checkout(
           "callback_url": "https://rayhanai.com/pay/callback",
           "applepay_enabled": false,     # MOYASAR_APPLEPAY_ENABLED — form offers Apple Pay only when true
           "requires_recurring_consent": true,
-          "recurring_disclosure_ar": "…",  # v3-intro (with the price schedule) on an offer row
-          "intro_offer": null,             # عرض الشهر الأول: {"profession_group", "first_month_sar",
-                                           #   "then_sar", "then_months", "list_sar"} when this
-                                           #   checkout is the offer's first month
-          "non_refundable": false          # true exactly when intro_offer is set
+          "recurring_disclosure_ar": "…",  # v3-intro on an offer row (flag off); v4-tiers
+                                           #   (the batch schedule) on any batch sale (ladder_v2)
+          "intro_offer": null,             # عرض الشهر الأول: the GET /intro-offer object minus
+                                           #   "eligible" ({"profession_group", "first_month_sar",
+                                           #   "then_sar", "then_months", "list_sar", "offer_sar",
+                                           #   "offer_months", "reason", "basic_ended_at"}) when
+                                           #   this checkout is the offer
+          "non_refundable": false,         # true exactly when intro_offer is set
+          "promo": null                    # ladder_v2 batch sale: {"price_sar": "19.90",
+                                           #   "months": 2, "list_sar": "94.90"} — the price
+                                           #   before any upgrade credit; never a batch id,
+                                           #   tier number or seat count
         }
+
+    Pricing: ONE ``promo_checkout_price(user, plan)`` row (migration 192)
+    decides the regime — ``ladder_v2`` off, today's pricing; on, the row's
+    price, batch and Tier 1 group are charged and stamped as-is.
 
     Errors: 400 PAYMENT_PLAN_NOT_PURCHASABLE (unknown plan / price_sar NULL),
     409 PAYMENT_DOWNGRADE_BLOCKED (a higher plan is still active),
-    503 SERVICE_UNAVAILABLE (Moyasar keys not configured).
+    503 SERVICE_UNAVAILABLE (Moyasar keys not configured),
+    503 PAYMENT_PRICING_UNAVAILABLE («تعذّر تجهيز الدفع الآن، حاول مرة أخرى بعد
+    قليل» — promo_checkout_price failed; nothing is written and the catalog
+    price is never used as a fallback; retry).
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     result = await payment_service.create_checkout(supabase, user_id, payload.plan_id)
@@ -323,18 +337,24 @@ async def early_adopter(
     Returns::
 
         {"open": true,
-         "promo": {"basic": "39.90", "pro": "49.90", "max": "99.90"}}
+         "promo":  {"pro": "59.90", "max": "149.90"},
+         "months": {"pro": 2, "max": 4}}
 
     …or, once the campaign is closed, disabled, or unreadable::
 
-        {"open": false, "promo": {}}
+        {"open": false, "promo": {}, "months": {}}
 
     Prices are 2-dp STRINGS, the same wire format as ``amount_sar`` everywhere
-    else here, and they come from ``plans.promo_price_sar`` — the catalog stays
-    the price authority, so tuning a promo is an UPDATE, not a deploy.
+    else here; ``months`` is how many 30-day months each price lasts. Both come
+    from ``promo_public_quote()`` (migration 192): with ``ladder_v2`` the
+    GENERAL quote per plan (Pro Tier 2 — Tier 1 is a personal offer — and Max's
+    open tier), and a plan with no open batch drops out; without it, today's
+    ``plans.promo_price_sar`` with ``months = promo_days / 30``. Batches are
+    rows, so a rollover changes this answer without a deploy.
 
     **What this deliberately does NOT return: how many seats are left, how many
-    there ever were, or when the campaign ends.** The remaining count never
+    there ever were, which batch or tier is selling, or when the campaign
+    ends.** The remaining count never
     leaves the server (early_adopters.md §1.10) — after the campaign closes a
     visitor simply sees the list price, with no explanation and no way to tell
     "closed" from "never existed".
@@ -363,16 +383,34 @@ async def intro_offer(
 
         {"eligible": true,
          "profession_group": "legal",       # legal | specialist | entrepreneur
-         "first_month_sar": "1.99",         # 2-dp strings, like every amount here
-         "then_sar": "49.90",               # each of the next `then_months` months
-         "then_months": 2,
-         "list_sar": "94.90"}               # every month after that
+         "offer_sar": "19.90",              # 2-dp strings, like every amount here
+         "offer_months": 2,                 # months charged at offer_sar (incl. today)
+         "list_sar": "94.90",               # every month after that
+         "reason": "basic_ended",           # or null — see below
+         "basic_ended_at": "2026-11-02T…",  # or null
+         # legacy keys, kept truthful for older clients:
+         "first_month_sar": "19.90",        # = offer_sar
+         "then_sar": "19.90",               # = offer_sar
+         "then_months": 1}                  # = offer_months − 1
 
-    …or, when not eligible (wrong profession, subscribed, already paid for
-    pro/max, campaign over, seats gone, anything unreadable)::
+    With ``early_adopter_campaign.ladder_v2`` off the offer is today's: one
+    month at the profession price, then the seat price for ``then_months`` (2)
+    months — and ``offer_sar``, ``offer_months``, ``reason`` and
+    ``basic_ended_at`` are all null, so the web keeps today's rendering (it
+    reads null ``offer_*`` as the pre-192 backend).
+
+    ``reason = "basic_ended"`` (ladder_v2 only) when the caller is eligible AND
+    their most recent plan was ``basic`` and it has expired; ``basic_ended_at``
+    is that expiry. A Basic user is never offered Tier 1 while Basic runs, so
+    the popup trigger shows the offer the first visit after it ends.
+
+    …or, when not eligible (wrong profession, subscribed, tier already used,
+    campaign over, seats gone, anything unreadable)::
 
         {"eligible": false, "profession_group": null, "first_month_sar": null,
-         "then_sar": null, "then_months": 2, "list_sar": null}
+         "then_sar": null, "then_months": 2, "list_sar": null,
+         "offer_sar": null, "offer_months": null, "reason": null,
+         "basic_ended_at": null}
 
     **No end date and no seat count, ever** (§1 rule 9) — "not eligible" is the
     whole answer once the offer is over. Checkout re-derives eligibility itself;
@@ -440,8 +478,10 @@ async def subscription(
           "early_adopter": {                    # المشتركون الأوائل — the CALLER's own seat
             "is_member": true,
             "promo_ends_at": "2026-11-14T…",    # null when not a member
-            "returnable": false                 # started on عرض الشهر الأول → a cancel
-          }                                     #   does NOT forfeit the price for good
+            "returnable": false,                # started on عرض الشهر الأول → a cancel
+                                                #   does NOT forfeit the price for good
+            "tier_rules": false                 # 192 ladder_v2: cancelling loses the seat
+          }                                     #   and its tier; never-used tiers stay open
         }
 
     ``cancellable`` describes the SUBSCRIPTION, not the button: it stays true

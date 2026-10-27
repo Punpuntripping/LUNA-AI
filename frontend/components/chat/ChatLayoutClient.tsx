@@ -8,6 +8,7 @@ import { WorkspacePane } from "@/components/workspace/WorkspacePane";
 import { PromoCodePopup } from "@/components/promo/PromoCodePopup";
 import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
 import { IntroOfferDialog } from "@/components/promo/IntroOfferDialog";
+import { BasicEndedOfferTrigger } from "@/components/promo/BasicEndedOfferTrigger";
 import { AnnouncementPopup } from "@/components/announcements/AnnouncementPopup";
 import TourOverlay from "@/components/tour/TourOverlay";
 import { EduLessonHost } from "@/components/edu/EduLessonHost";
@@ -205,10 +206,16 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           answered (and once more for a stored «declined»). */}
       <OnboardingDialog />
 
-      {/* «عرض الشهر الأول» — opened by the dialog above right after an eligible
-          profession answer is saved; never on screen together with it. Also
-          (re)loads the caller's offer eligibility for the quota wall. */}
+      {/* The profession offer (Pro tier 1) — opened by the dialog above right
+          after an eligible profession answer is saved; never on screen together
+          with it. Also (re)loads the caller's offer eligibility for the quota
+          wall. */}
       <IntroOfferDialog />
+
+      {/* …and opened once more when the caller's Basic term has ended
+          (`reason: "basic_ended"`), once per ended term. Renders null; waits
+          out the three dialogs above and any other open dialog. */}
+      <BasicEndedOfferTrigger />
 
       {/* «رسائل ريحان» — every unread announcement pops up once (oldest first),
           and only when no other dialog is on screen: it waits out the three

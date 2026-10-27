@@ -746,6 +746,13 @@ export interface UserPreferencesData {
    */
   promo_code_popup_seen?: boolean;
   /**
+   * The `basic_ended_at` value (`GET /payments/intro-offer`) the Basic-ended
+   * profession-offer popup was last shown for. The popup opens once per ended
+   * Basic term: only when the server's value differs from this one
+   * (pricing_campaigns_v2 §3 — `BasicEndedOfferTrigger`).
+   */
+  intro_offer_basic_prompt_at?: string;
+  /**
    * «سلسلة تعلّم ريحان» — lifetime count of user messages that completed a turn
    * (bumped on the `done` SSE event). Drives the every-4-messages lesson
    * cadence; see `stores/edu-store.ts` and `.claude/plans/edu_series.md`.
@@ -976,20 +983,45 @@ export interface PaymentCheckoutResponse {
    */
   requires_recurring_consent: boolean;
   /**
-   * عرض الشهر الأول — set when THIS checkout was priced by the profession intro
-   * offer (`.claude/plans/profession_intro_offer.md`); null/absent otherwise.
-   * `amount_halalas` already IS the first-month price — this block only lets
-   * the page explain the number and the step-up that follows it.
+   * The profession offer (Pro tier 1) — set when THIS checkout was priced by it
+   * (`.claude/plans/pricing_campaigns_v2.md`, superseding
+   * `profession_intro_offer.md`); null/absent otherwise. `amount_halalas`
+   * already IS the offer price — this block only lets the page explain the
+   * number and the step-up that follows it.
    */
   intro_offer?: CheckoutIntroOffer | null;
-  /** The first month of the intro offer cannot be refunded. Absent = false. */
+  /**
+   * The promotional price this checkout was quoted at — ANY plan, any price
+   * tier (pricing_campaigns_v2 §3); null when the list price applies. ADDITIVE:
+   * a backend from before batches omits it, which reads as "no promo block".
+   */
+  promo?: CheckoutPromo | null;
+  /** The first payment of the profession offer cannot be refunded. Absent = false. */
   non_refundable?: boolean;
 }
 
 /**
- * The priced intro offer on a checkout row. 2-dp LATIN strings like every other
- * money field. `then_sar` is the early-adopter seat price the next
- * `then_months` renewals are charged; `list_sar` is what follows them.
+ * The promo quote on a checkout row: `price_sar` for each of the first `months`
+ * 30-day terms (the first of them being this payment), then `list_sar`. 2-dp
+ * LATIN strings like every other money field. Never a seat count, a batch or a
+ * tier number.
+ */
+export interface CheckoutPromo {
+  price_sar: string;
+  months: number;
+  list_sar: string;
+}
+
+/**
+ * The priced profession offer on a checkout row. 2-dp LATIN strings like every
+ * other money field.
+ *
+ * Current backend: `offer_sar` for each of the first `offer_months` terms, then
+ * `list_sar`. The legacy keys stay truthful for old clients
+ * (`first_month_sar = then_sar = offer_sar`, `then_months = offer_months − 1`).
+ * A backend from before batches sends ONLY the legacy keys, where `then_sar`
+ * was the early-adopter seat price for `then_months` renewals — so the new keys
+ * are optional, and their absence means "render the legacy schedule".
  */
 export interface CheckoutIntroOffer {
   profession_group: string;
@@ -997,14 +1029,31 @@ export interface CheckoutIntroOffer {
   then_sar: string;
   then_months: number;
   list_sar: string;
+  offer_sar?: string | null;
+  offer_months?: number | null;
+  reason?: IntroOfferReason | null;
+  basic_ended_at?: string | null;
 }
 
 /**
- * `GET /payments/intro-offer` — the CALLER's eligibility for عرض الشهر الأول.
+ * Why the offer is being surfaced now. `"basic_ended"` = the caller's Basic
+ * term just ended, which is when an active-Basic user becomes eligible
+ * (pricing_campaigns_v2 §1.3-2); the chat shell opens the offer once per
+ * `basic_ended_at` value.
+ */
+export type IntroOfferReason = 'basic_ended';
+
+/**
+ * `GET /payments/intro-offer` — the CALLER's eligibility for the profession
+ * offer (Pro tier 1).
  *
  * Server-decided end to end: the client never names a price, and an ineligible
- * answer carries nulls. ⚠ No end date and no seat count — same rule as the
- * early-adopter campaign; «المقاعد محدودة» is the only scarcity signal.
+ * answer carries nulls. ⚠ No end date, no seat count, no batch, no tier number
+ * — «المقاعد محدودة» is the only scarcity signal.
+ *
+ * `offer_sar` / `offer_months` / `reason` / `basic_ended_at` are ADDITIVE: a
+ * backend from before batches omits them, and the client then falls back to
+ * the legacy first-month schedule built from the older keys.
  */
 export interface IntroOfferState {
   eligible: boolean;
@@ -1013,6 +1062,10 @@ export interface IntroOfferState {
   then_sar: string | null;
   then_months: number;
   list_sar: string | null;
+  offer_sar?: string | null;
+  offer_months?: number | null;
+  reason?: IntroOfferReason | null;
+  basic_ended_at?: string | null;
 }
 
 /**
@@ -1191,20 +1244,27 @@ export type PaymentMethodRevokeResponse = Partial<PaymentMethodState>;
  * does. The single permitted scarcity signal is the literal «المقاعد محدودة»
  * (`SEATS_LIMITED_NOTE` in `lib/pricing.ts`).
  *
- * `open` is the whole campaign flag — it answers "are seats still being
- * issued?", which is also what decides whether `basic` is discounted for
- * everyone. It is NOT "does the caller hold a seat"; that is `EarlyAdopterState`
+ * `open` is the whole campaign flag — it answers "is some batch still issuing
+ * seats?". It is NOT "does the caller hold a seat"; that is `EarlyAdopterState`
  * on the authed subscription read, and the two are independent (a seat holder
- * keeps their price for 90 days after the campaign closes).
+ * keeps their price for their seat's months after the campaign closes).
  *
- * `promo` maps `plans.plan_id` → the promotional amount as a 2-dp LATIN string
- * ("49.90"), exactly like every other money field on the wire. Render it through
- * `formatSar`, never by hand. A plan missing from the map has no promo; an
+ * `promo` maps `plans.plan_id` → the GENERAL promotional amount right now (the
+ * active batch's price; Pro's personal tier-1 price is never here) as a 2-dp
+ * LATIN string ("59.90"), exactly like every other money field on the wire.
+ * Render it through `formatSar`, never by hand. A plan missing from the map has
+ * no promo — list price, no strike-through, no «المقاعد محدودة»; an
  * `open: false` answer carries `{}`.
+ *
+ * `months` maps the same plan ids → how many 30-day terms that price lasts
+ * (1..12). It changes with the batch, which is why no surface may hard-code it.
+ * Optional on the wire (pricing_campaigns_v2 §3 — a backend from before batches
+ * omits it); `normalizeEarlyAdopterCampaign()` always fills it.
  */
 export interface EarlyAdopterCampaign {
   open: boolean;
   promo: Record<string, string>;
+  months?: Record<string, number>;
 }
 
 /**
@@ -1215,20 +1275,30 @@ export interface EarlyAdopterCampaign {
  * this shipped sends no block at all, and "absent" must read as "not a member"
  * rather than as an error. Never derive membership from the price on screen.
  *
- * `promo_ends_at` is the end of the 90-day window anchored at the claiming
- * payment's `paid_at` (wall-clock, so a gap in the subscription burns days
- * rather than pausing them). It is the user's OWN date, not a campaign closing
- * date — showing it discloses nothing about remaining capacity.
+ * `promo_ends_at` is the end of the seat's promo window — `paid_at` of the
+ * claiming payment + 30 × the batch's months (legacy seats: 90 days) —
+ * wall-clock, so a gap in the subscription burns days rather than pausing them.
+ * It is the user's OWN date, not a campaign closing date — showing it discloses
+ * nothing about remaining capacity.
  */
 export interface EarlyAdopterState {
   is_member: boolean;
   promo_ends_at: string | null;
   /**
-   * The caller once paid an intro-offer first month, so a cancellation does NOT
-   * forfeit the early-adopter price for them: coming back while the campaign is
-   * open costs the promo price again with a fresh 90 days. Absent = false.
+   * Pre-tier rule (migration 183): the caller once paid an intro-offer first
+   * month, so a cancellation does NOT forfeit the early-adopter price for them:
+   * coming back while the campaign is open costs the promo price again with a
+   * fresh 90 days. Read only while `tier_rules` is not `true`; under the price
+   * tiers a cancellation loses only the seat and its tier for everyone
+   * (pricing_campaigns_v2 §1.4-6). Absent = false.
    */
   returnable?: boolean;
+  /**
+   * The server's price-tier rules are LIVE (`early_adopter_campaign.ladder_v2`
+   * on). Only an explicit `true` switches the cancellation note to the tier
+   * wording; absent (older backend) or `false` keeps the pre-tier notes.
+   */
+  tier_rules?: boolean;
 }
 
 // -----------------------------------------------

@@ -212,7 +212,7 @@ def buy(db, monkeypatch, plan_id="pro"):
 
 
 def price_now(db, plan_id="pro", *, context=ps.PRICE_CONTEXT_PURCHASE, user_id=USER):
-    catalog = {"basic": "49.90", "pro": "89.90", "max": "289.90"}[plan_id]
+    catalog = {"basic": "39.90", "pro": "94.90", "max": "294.90"}[plan_id]
     return ps._effective_price(db, user_id, plan_id, catalog, context=context)
 
 
@@ -227,11 +227,12 @@ def test_the_campaign_ships_disabled_and_nothing_changes(keys, monkeypatch):
     db = FakeSupabase(sub("free"))                 # campaign_enabled defaults False
     quote, result = buy(db, monkeypatch, "pro")
 
-    assert quote["amount_sar"] == "89.90"
+    assert quote["amount_sar"] == "94.90"
     assert result["granted"] is True
     assert db.early_adopter_seats == []
     assert run(ss.get_subscription(db, USER))["early_adopter"] == {
-        "is_member": False, "promo_ends_at": None, "returnable": False
+        "is_member": False, "promo_ends_at": None, "returnable": False,
+        "tier_rules": False,
     }
 
 
@@ -248,10 +249,11 @@ def test_the_kill_switch_stops_new_quotes_not_settled_money(keys, monkeypatch):
     in 3DS. That payment was charged 49.90 and it keeps its seat — the switch
     exists to stop new quotes, and money already taken is not a quote.
 
-    The seat is the RECORD of what they paid: while the switch is down the price
-    resolves to list for everybody (§3.4 rule 1, the kill switch is total), and
-    flipping it back on restores this user's 49.90 rather than having lost their
-    membership forever."""
+    The seat is the RECORD of what they paid, and the switch never re-prices it:
+    the live-seat branch (b) of effective_plan_price does not read ``enabled``
+    (only branch (c)'s early_adopter_open() does), so this user's renewals stay
+    at 49.90 with the switch down and back up. (The fakes used to answer list
+    here; the real body never did — corrected with pricing_campaigns_v2 §2.3.)"""
     db = open_campaign(sub("free"))
     quote = checkout(db, "pro")
     assert quote["amount_sar"] == "49.90"
@@ -261,6 +263,9 @@ def test_the_kill_switch_stops_new_quotes_not_settled_money(keys, monkeypatch):
 
     assert result["granted"] is True
     assert len(live_seats(db, USER)) == 1
+    assert price_now(db, "pro", context=ps.PRICE_CONTEXT_CURRENT) == ps.q2("49.90")
+    # …but nothing new is quoted at the promo while it is down.
+    assert price_now(db, "pro", user_id=OTHER) == ps.q2("94.90")
 
     db.campaign_enabled = True                     # …and back on
     assert price_now(db, "pro", context=ps.PRICE_CONTEXT_CURRENT) == ps.q2("49.90")
@@ -272,7 +277,7 @@ def test_a_missing_campaign_row_is_an_error_not_a_shrug(keys, caplog):
     policy state: no ``promo_days`` to anchor a window, no ``seat_limit`` to
     measure against.
 
-    It must be LOUD. The customer paid 49.90 and will renew at 89.90 unless an
+    It must be LOUD. The customer paid 49.90 and will renew at 94.90 unless an
     operator restores the row and re-runs the claim — a DEBUG line here is how
     that goes unnoticed for 90 days."""
     db = open_campaign(sub("free"))
@@ -313,14 +318,14 @@ def test_the_last_seat_is_claimable_at_the_promo_price(keys, monkeypatch):
 
 def test_once_the_seats_are_gone_the_price_is_simply_the_list_price(keys, monkeypatch):
     """Payer #101. No error, no explanation, no hint that a campaign ever ran —
-    §7's "never anywhere" rule. Just 89.90."""
+    §7's "never anywhere" rule. Just 94.90."""
     db = open_campaign(seat_limit=2)
     seat(db, user_id=OTHER)
     seat(db, user_id=THIRD)
 
     quote, result = buy(db, monkeypatch, "pro")
 
-    assert quote["amount_sar"] == "89.90"
+    assert quote["amount_sar"] == "94.90"
     assert result["granted"] is True                # they still get what they paid for
     assert live_seats(db, USER) == []
 
@@ -381,7 +386,7 @@ def test_at_the_closing_instant_a_list_priced_payment_gets_no_seat(keys, monkeyp
 
     quote, result = buy(db, monkeypatch, "pro")
 
-    assert quote["amount_sar"] == "89.90"          # quoted at list…
+    assert quote["amount_sar"] == "94.90"          # quoted at list…
     assert result["granted"] is True
     assert live_seats(db, USER) == []              # …so no seat, over-capacity or not
 
@@ -390,13 +395,13 @@ def test_at_the_opening_instant_a_list_priced_quote_gets_no_seat(keys, monkeypat
     """THE GATE, AT THE OPENING EDGE — the mirror of the test above, and the
     hole that existed while the gate only guarded the over-capacity branch.
 
-    A quote priced at 89.90 the moment BEFORE the campaign opened settles a few
+    A quote priced at 94.90 the moment BEFORE the campaign opened settles a few
     minutes after it did. The campaign is wide open and the claim would have
     succeeded on capacity alone — but this payment was never charged the promo
     price, so it earns no seat and, critically, no promo renewals."""
     db = FakeSupabase(sub("free"))                 # campaign not yet running
     quote = checkout(db, "pro")
-    assert quote["amount_sar"] == "89.90"
+    assert quote["amount_sar"] == "94.90"
 
     db.campaign_enabled = True                     # marketing flips the switch
     result = pay(db, monkeypatch, quote["payment_id"], quote["amount_halalas"])
@@ -405,7 +410,7 @@ def test_at_the_opening_instant_a_list_priced_quote_gets_no_seat(keys, monkeypat
     assert live_seats(db, USER) == []
     # The part that costs money if it is wrong: no seat ⇒ 'current' ⇒ list price
     # at every renewal, for a term that was bought at the list price.
-    assert price_now(db, "pro", context=ps.PRICE_CONTEXT_CURRENT) == ps.q2("89.90")
+    assert price_now(db, "pro", context=ps.PRICE_CONTEXT_CURRENT) == ps.q2("94.90")
     assert run(ss.get_subscription(db, USER))["early_adopter"]["is_member"] is False
 
 
@@ -475,8 +480,8 @@ def test_rule_6_a_completed_cancellation_forfeits_the_promo_price_forever(keys, 
     run(ss.cancel_renewal(db, USER, reason="expensive"))
 
     # Seats are still wide open — and it makes no difference to them.
-    assert checkout(db, "pro")["amount_sar"] == "89.90"
-    assert price_now(db, "pro") == ps.q2("89.90")
+    assert checkout(db, "pro")["amount_sar"] == "94.90"
+    assert price_now(db, "pro") == ps.q2("94.90")
     assert run(ss.get_subscription(db, USER))["early_adopter"]["is_member"] is False
 
 
@@ -491,10 +496,10 @@ def test_rule_6_a_forfeited_repurchase_earns_no_new_seat(keys, monkeypatch):
 
     quote, result = buy(db, monkeypatch, "pro")
 
-    assert quote["amount_sar"] == "89.90"
+    assert quote["amount_sar"] == "94.90"
     assert result["granted"] is True
     assert live_seats(db, USER) == []
-    assert price_now(db, "pro", context=ps.PRICE_CONTEXT_CURRENT) == ps.q2("89.90")
+    assert price_now(db, "pro", context=ps.PRICE_CONTEXT_CURRENT) == ps.q2("94.90")
 
 
 def test_rule_6_undo_restores_the_seat_the_price_and_the_original_window(keys, monkeypatch):
@@ -571,7 +576,7 @@ def test_a_refund_release_and_a_cancel_release_are_not_the_same_thing(keys, monk
     seat(cancelled, released=True, reason="cancelled")
 
     assert checkout(refunded, "pro")["amount_sar"] == "49.90"
-    assert checkout(cancelled, "pro")["amount_sar"] == "89.90"
+    assert checkout(cancelled, "pro")["amount_sar"] == "94.90"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -592,7 +597,7 @@ def test_the_context_split_a_non_member_renews_at_the_list_price(renewals_on):
     db.campaign_enabled = True                     # wide open
 
     assert run(rs.run_due_renewals(db)) == {"scanned": 1, "renewed": 1}
-    assert renewals_on == [8990]
+    assert renewals_on == [9490]
     assert db.early_adopter_seats == []
     assert "claim_early_adopter_seat" not in db.calls
 
@@ -648,7 +653,7 @@ def test_the_context_split_day_91_renews_at_the_list_price(renewals_on):
     })
 
     run(rs.run_due_renewals(db))
-    assert renewals_on == [8990]
+    assert renewals_on == [9490]
 
 
 def test_an_unknown_price_context_raises_rather_than_pricing(keys):
@@ -666,7 +671,7 @@ def test_an_unresolvable_price_falls_back_to_the_catalog(keys):
     catalog price instead of 503-ing every checkout."""
     db = open_campaign()
     seat(db)                                       # a member, who would get 49.90
-    assert price_now(db, "pro", context="nonsense") == ps.q2("89.90")
+    assert price_now(db, "pro", context="nonsense") == ps.q2("94.90")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -675,7 +680,7 @@ def test_an_unresolvable_price_falls_back_to_the_catalog(keys):
 
 
 def test_a_seat_holders_old_plan_is_credited_at_what_they_actually_pay(keys):
-    """Crediting the catalog's 89.90 to someone who paid 49.90 refunds them
+    """Crediting the catalog's 94.90 to someone who paid 49.90 refunds them
     value they never bought — the H-4 class of bug through a new door."""
     db = open_campaign(sub("pro", source="payment", days_left=26))
     seat(db)
@@ -694,8 +699,8 @@ def test_a_full_price_holders_old_plan_is_credited_at_the_list_price(keys):
 
     quote = checkout(db, "max")
 
-    assert quote["credit_sar"] == "77.91"          # 26/30 × 89.90
-    assert quote["amount_sar"] == "21.99"          # 99.90 − 77.91
+    assert quote["credit_sar"] == "82.25"          # 26/30 × 94.90
+    assert quote["amount_sar"] == "17.65"          # 99.90 − 82.25
 
 
 def test_a_promo_priced_upgrade_still_grants_when_the_campaign_closes_mid_flight(keys, monkeypatch):
@@ -705,7 +710,7 @@ def test_a_promo_priced_upgrade_still_grants_when_the_campaign_closes_mid_flight
     already decided this case in their favour."""
     db = open_campaign(sub("pro", source="payment", days_left=26))
     quote = checkout(db, "max")
-    assert quote["amount_sar"] == "21.99"
+    assert quote["amount_sar"] == "17.65"
 
     db.campaign_enabled = False                    # the campaign ends entirely
     result = pay(db, monkeypatch, quote["payment_id"], quote["amount_halalas"])
@@ -790,19 +795,27 @@ def test_a_failed_claim_never_fails_the_purchase(keys, monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_the_public_payload_has_exactly_two_keys_and_no_count(keys):
+def test_the_public_payload_has_exactly_three_keys_and_no_count(keys):
     """§1.10 — the remaining count never leaves the server. The key set is
     asserted EXACTLY so that a later "helpful" addition (seats_left,
-    ends_at, total) fails here instead of shipping to an anonymous page."""
+    ends_at, total, batch, tier) fails here instead of shipping to an
+    anonymous page. ``months`` (192) is the third and last key.
+
+    ladder_v2 OFF: today's promo — ``plans.promo_price_sar`` for
+    ``promo_days / 30`` months. basic has no promo since 191 (§8), so it is
+    simply absent."""
     db = open_campaign()
     payload = run(ps.early_adopter_campaign_state(db))
 
-    assert set(payload) == {"open", "promo"}
+    assert set(payload) == {"open", "promo", "months"}
     assert payload["open"] is True
-    assert payload["promo"] == {"basic": "39.90", "pro": "49.90", "max": "99.90"}
+    assert payload["promo"] == {"pro": "49.90", "max": "99.90"}
+    assert payload["months"] == {"pro": 3, "max": 3}
     assert set(payload["promo"]) <= {"basic", "pro", "max"}
-    # 2-dp strings, the house wire format for SAR (never floats).
+    assert set(payload["months"]) == set(payload["promo"])
+    # 2-dp strings, the house wire format for SAR (never floats); months ints.
     assert all(isinstance(v, str) and v[-3] == "." for v in payload["promo"].values())
+    assert all(type(v) is int for v in payload["months"].values())
 
 
 def test_the_public_payload_says_nothing_when_the_campaign_is_over(keys):
@@ -811,7 +824,7 @@ def test_the_public_payload_says_nothing_when_the_campaign_is_over(keys):
     db = open_campaign(seat_limit=1)
     seat(db, user_id=OTHER)                        # the hundredth seat filled
 
-    assert run(ps.early_adopter_campaign_state(db)) == {"open": False, "promo": {}}
+    assert run(ps.early_adopter_campaign_state(db)) == {"open": False, "promo": {}, "months": {}}
 
 
 def test_the_public_endpoint_answers_closed_rather_than_erroring(keys):
@@ -823,7 +836,7 @@ def test_the_public_endpoint_answers_closed_rather_than_erroring(keys):
         raise RuntimeError("function early_adopter_open() does not exist")
 
     db.rpc = exploding
-    assert run(ps.early_adopter_campaign_state(db)) == {"open": False, "promo": {}}
+    assert run(ps.early_adopter_campaign_state(db)) == {"open": False, "promo": {}, "months": {}}
 
 
 def test_the_public_answer_is_cached(keys):
@@ -838,20 +851,23 @@ def test_the_public_answer_is_cached(keys):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 10. basic — a discount for everybody, an enrolment for nobody
+# 10. basic — 39.90 flat, never in a tier, an enrolment for nobody
+#
+# Migration 191 / pricing_campaigns_v2.md §8: basic's promo is gone and its list
+# price is 39.90. Nothing about any campaign moves it any more.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_basic_is_discounted_for_anyone_while_seats_remain(keys):
+def test_basic_is_flat_while_seats_remain(keys):
     assert checkout(open_campaign(), "basic")["amount_sar"] == "39.90"
 
 
-def test_basic_returns_to_the_list_price_the_moment_the_seats_are_gone(keys):
-    """§1.9 — including for people who bought during the campaign. basic has no
-    per-user promise to keep, because it has no seat."""
+def test_basic_stays_flat_when_the_seats_are_gone(keys):
+    """It used to step back UP to list when the seats ran out (§1.9 of the old
+    plan). With no promo there is nothing to step from."""
     db = open_campaign(seat_limit=1)
     seat(db, user_id=OTHER)
-    assert checkout(db, "basic")["amount_sar"] == "49.90"
+    assert checkout(db, "basic")["amount_sar"] == "39.90"
 
 
 def test_buying_basic_enrols_nobody(keys, monkeypatch):
@@ -885,13 +901,17 @@ def test_a_basic_refund_does_not_release_a_pro_seat(keys, monkeypatch):
 def test_forfeiture_is_a_property_of_the_user_not_of_the_plan(keys):
     """⚠ MODEL-ONLY, and the one assumption in this file most worth checking
     against 138 itself: the forfeiture predicate is user-level, so a user who
-    cancelled and let it stand is quoted the LIST price for `basic` too, even
-    with seats open. If 138 scopes forfeiture to pro/max instead, this is the
-    test that has to change — the fake cannot tell us which is true."""
+    cancelled a PRO seat and let it stand is quoted the LIST price for `max`
+    too, even with seats open. (This used to be shown on basic; basic has had
+    no promo since 191.) If 138 scopes forfeiture per plan instead, this is the
+    test that has to change — the fake cannot tell us which is true.
+
+    ladder_v2 OFF only — with it on, §1.4-6 replaces forfeiture with "that tier
+    counts as used" (pinned in section 13)."""
     db = open_campaign()
     seat(db, released=True, reason="cancelled")
 
-    assert checkout(db, "basic")["amount_sar"] == "49.90"
+    assert checkout(db, "max")["amount_sar"] == "289.90"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -908,7 +928,8 @@ def test_the_subscription_payload_carries_membership_and_no_count(keys, monkeypa
     block = run(ss.get_subscription(db, USER))["early_adopter"]
 
     # `returnable` (183) is about the caller too — never about capacity.
-    assert set(block) == {"is_member", "promo_ends_at", "returnable"}
+    # `tier_rules` (192) is about the RULES in force — never about capacity.
+    assert set(block) == {"is_member", "promo_ends_at", "returnable", "tier_rules"}
     assert block["is_member"] is True
     assert block["promo_ends_at"] == live_seats(db, USER)[0]["promo_ends_at"]
 
@@ -924,7 +945,8 @@ def test_an_unreadable_seat_table_reads_as_not_a_member(keys):
 
     db.rpc = exploding
     assert run(ss.get_subscription(db, USER))["early_adopter"] == {
-        "is_member": False, "promo_ends_at": None, "returnable": False
+        "is_member": False, "promo_ends_at": None, "returnable": False,
+        "tier_rules": False,
     }
 
 
@@ -949,6 +971,7 @@ def test_an_intro_member_comes_back_at_the_seat_price_with_fresh_days(keys, monk
     db = open_campaign(sub("pro", source="payment", days_left=-5,
                            cancelled_at=_iso(_now() - timedelta(days=20))))
     db.tables["users"][0]["profession_group"] = "legal"
+    db.tables["users"][0]["profession_first_group"] = "legal"
     db.intro_offer_enabled = True
     _lapsed_intro_member(db)
 
@@ -962,7 +985,7 @@ def test_an_intro_member_comes_back_at_the_seat_price_with_fresh_days(keys, monk
     assert ps._parse_ts(fresh[0]["promo_ends_at"]) > _now() + timedelta(days=89)
     assert run(ss.get_subscription(db, USER))["early_adopter"] == {
         "is_member": True, "promo_ends_at": fresh[0]["promo_ends_at"],
-        "returnable": True,
+        "returnable": True, "tier_rules": False,
     }
 
 
@@ -975,7 +998,7 @@ def test_an_ordinary_member_still_forfeits_for_good(keys, monkeypatch):
 
     quote, _ = buy(db, monkeypatch, "pro")
 
-    assert quote["amount_sar"] == "89.90"
+    assert quote["amount_sar"] == "94.90"
     assert live_seats(db, USER) == []
 
 
@@ -1013,3 +1036,173 @@ def test_a_restore_that_hits_the_live_seat_index_never_raises(keys):
     db.rpc = _unique_violation
     assert ss.restore_early_adopter_seat(db, USER, plan_id="pro") is False
     assert asked == ["restore_early_adopter_seat"]     # it really was reached
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 13. Pricing campaigns v2 — price tiers + seat batches (migration 192)
+#
+# The sections above pin ladder_v2 OFF, which is what deploying 192 + this
+# backend must leave untouched. These are their v2 counterparts
+# (pricing_campaigns_v2.md §5): capacity is per batch, a cancellation loses the
+# seat and its tier but not the tiers never used, a renewal is priced by the
+# seat's own frozen terms, and the public payload carries months and nothing
+# else.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def ladder(subscription=None, *, profession="individual") -> FakeSupabase:
+    db = FakeSupabase(subscription if subscription is not None else sub("free"))
+    db.campaign_enabled = True                     # 192 gates every tier on it
+    db.intro_offer_enabled = True                  # …and Pro Tier 1 on this too
+    db.ladder_v2 = True
+    db.tables["users"][0]["profession_first_group"] = profession
+    db.tables["users"][0]["profession_group"] = profession
+    return db
+
+
+def _fill(db, batch_id):
+    db._batch(batch_id)["seat_limit"] = 1
+    db.early_adopter_seats.append({
+        "seat_id": str(uuid.uuid4()), "user_id": str(uuid.uuid4()),
+        "payment_id": str(uuid.uuid4()), "claimed_at": _iso(_now()),
+        "promo_ends_at": _iso(_now() + timedelta(days=30)),
+        "released_at": None, "release_reason": None, "over_capacity": False,
+        "batch_id": batch_id, "plan_id": db._batch(batch_id)["plan_id"],
+        "price_tier": db._batch(batch_id)["price_tier"],
+        "price_sar": db._batch(batch_id)["price_sar"],
+    })
+
+
+def test_v2_the_public_payload_is_the_general_quote_with_months_and_no_count(keys):
+    """§3: Pro Tier 2 (Tier 1 is personal) and Max's open tier, each with its
+    months. Exactly three keys; values are prices and month counts only — no
+    batch id, no tier number, no seat count, no end date (§1.4-10)."""
+    db = ladder()
+    payload = run(ps.early_adopter_campaign_state(db))
+
+    assert payload == {"open": True,
+                       "promo": {"pro": "59.90", "max": "149.90"},
+                       "months": {"pro": 2, "max": 4}}
+
+
+def test_v2_the_public_payload_follows_a_rollover_and_drops_a_closed_plan(keys):
+    """Batches are rows: a fill moves the public price with no deploy, and a
+    plan with nothing open simply disappears (no explanation, §7)."""
+    db = ladder()
+    _fill(db, "max_t1_a")
+    _fill(db, "pro_t2_a")
+    payload = run(ps.early_adopter_campaign_state(db))
+    assert payload == {"open": True, "promo": {"max": "189.90"}, "months": {"max": 3}}
+
+    ps._CAMPAIGN_CACHE = None
+    for b in ("max_t2_a", "max_t2_b"):
+        _fill(db, b)
+    # Pro Tier 1 is still open (personal), so the campaign is open — but there
+    # is no GENERAL price left to publish, which reads as closed.
+    assert run(ps.early_adopter_campaign_state(db)) == {"open": False, "promo": {}, "months": {}}
+
+
+def test_v2_capacity_is_per_batch_not_the_old_campaign_count(keys, monkeypatch):
+    """138's seat_limit no longer gates anything once the ladder is on: a full
+    legacy campaign does not stop a batch, and one full batch does not close
+    another."""
+    db = ladder(profession="individual")
+    db.campaign_enabled = True
+    db.campaign_seat_limit = 0                     # the old campaign: full
+    _fill(db, "max_t1_a")                          # one Max batch: full
+
+    pro, _ = buy(db, monkeypatch, "pro")
+    assert pro["amount_sar"] == "59.90" and pro["promo"]["months"] == 2
+    assert run(ss.get_subscription(db, USER))["early_adopter"]["is_member"] is True
+    assert checkout(db, "max", user_id=OTHER)["promo"] == {
+        "price_sar": "189.90", "months": 3, "list_sar": "289.90"}
+
+
+def test_v2_a_cancellation_loses_the_seat_and_its_tier_only(keys, monkeypatch):
+    """§1.4-6 / Q2, replacing rule 6's permanent forfeiture: cancelling a 59.90
+    seat loses that seat and Tier 2 — and a lawyer can come back at Tier 1."""
+    db = ladder(profession="individual")
+    buy(db, monkeypatch, "pro")                     # 59.90, pro_t2_a
+    db.tables["user_subscriptions"][0]["source"] = "payment"
+    run(ss.cancel_renewal(db, USER, reason="expensive"))
+    assert db.early_adopter_seats[0]["release_reason"] == "cancelled"
+
+    # The term lapses.
+    db.tables["user_subscriptions"][0]["expires_at"] = _iso(_now() - timedelta(days=1))
+    assert checkout(db, "pro")["amount_sar"] == "94.90"       # Tier 2 used, no Tier 1
+
+    db.tables["users"][0]["profession_first_group"] = "legal"  # had they been a lawyer
+    back = checkout(db, "pro")
+    assert back["amount_sar"] == "19.90" and back["promo"]["months"] == 2
+    # …and a tier of the OTHER plan was never touched.
+    assert checkout(db, "max")["amount_sar"] == "149.90"
+
+
+def test_upgraded_never_forfeits(keys):
+    """'upgraded' (192) counts as having used the tier, but it is not a
+    cancellation: with the ladder off, the old forfeiture predicate reads
+    'cancelled' only, so a switcher keeps today's promo price."""
+    db = open_campaign()
+    seat(db, released=True, reason="upgraded")
+    assert checkout(db, "pro")["amount_sar"] == "49.90"
+    assert checkout(db, "max")["amount_sar"] == "99.90"
+
+
+@pytest.mark.parametrize(
+    "plan_id, seat_fields, days_left, expected",
+    [
+        # a batch seat renews at ITS price while the period starts in its window
+        ("pro", {"batch_id": "pro_t1_a", "plan_id": "pro", "price_tier": 1,
+                 "price_sar": "19.90"}, 30, 1990),
+        ("max", {"batch_id": "max_t1_a", "plan_id": "max", "price_tier": 1,
+                 "price_sar": "149.90"}, 90, 14990),
+        # …and at list from the first period that begins after it
+        ("pro", {"batch_id": "pro_t1_a", "plan_id": "pro", "price_tier": 1,
+                 "price_sar": "19.90"}, -1, 9490),
+        # a batch seat prices ONLY its own plan
+        ("max", {"batch_id": "pro_t2_a", "plan_id": "pro", "price_tier": 2,
+                 "price_sar": "59.90"}, 30, 28990),
+        # a legacy seat keeps today's frozen price (§1.4-4)
+        ("pro", {}, 30, 4990),
+        ("max", {}, 30, 9990),
+    ],
+    ids=["pro_t1_in_window", "max_t1_in_window", "pro_t1_after_window",
+         "pro_seat_never_prices_max", "legacy_pro", "legacy_max"],
+)
+def test_v2_a_renewal_is_priced_by_the_seats_own_terms(
+    renewals_on, plan_id, seat_fields, days_left, expected
+):
+    """renewal_service is unchanged (it prices at p_at = expires_at with context
+    'current'); 192's branch (b) carries the batch price. Independent of the
+    flag — a rollback must not re-price a held seat — so this runs with it ON
+    and the campaign switch OFF."""
+    db = rt.FakeSupabase(rt.sub(plan_id))
+    rt.store_method(db)
+    db.ladder_v2 = True
+    db.early_adopter_seats.append({
+        "seat_id": "s", "user_id": rt.USER, "payment_id": "p",
+        "promo_ends_at": _iso(_now() + timedelta(days=days_left)),
+        "released_at": None, "release_reason": None, "over_capacity": False,
+        **seat_fields,
+    })
+
+    assert run(rs.run_due_renewals(db)) == {"scanned": 1, "renewed": 1}
+    assert renewals_on == [expected]
+    assert "claim_early_adopter_seat" not in db.calls
+
+
+def test_v2_a_held_batch_seat_survives_a_rollback(renewals_on):
+    """Rollback = flag off. A 19.90 seat must still renew at 19.90 inside its
+    window (§6 step 6) — branch (b) never reads the flag."""
+    db = rt.FakeSupabase(rt.sub("pro"))
+    rt.store_method(db)
+    db.ladder_v2 = False
+    db.early_adopter_seats.append({
+        "seat_id": "s", "user_id": rt.USER, "payment_id": "p",
+        "promo_ends_at": _iso(_now() + timedelta(days=30)),
+        "released_at": None, "release_reason": None, "over_capacity": False,
+        "batch_id": "pro_t1_a", "plan_id": "pro", "price_tier": 1, "price_sar": "19.90",
+    })
+    run(rs.run_due_renewals(db))
+    assert renewals_on == [1990]

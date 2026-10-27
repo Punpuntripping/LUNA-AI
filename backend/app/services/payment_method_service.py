@@ -125,6 +125,13 @@ DISCLOSURE_VERSION = "v2"
 # amounts go back INTO the hashed text. Every other purchase stays byte-identical
 # v2.
 INTRO_DISCLOSURE_VERSION = "v3-intro"
+# v4-tiers (2026-10-27, pricing_campaigns_v2.md §3): v2 + a schedule built from
+# the batch's MONTHS, for every seat-batch purchase (pro or max) checked out
+# while ``early_adopter_campaign.ladder_v2`` is on. Recognised from the row
+# alone — checkout stamps ``offer_months`` into ``intro_offer_terms`` only for a
+# batch sale — so the version never depends on the flag's value at consent or
+# capture time. v3-intro rows keep their v3 text and hash.
+TIERS_DISCLOSURE_VERSION = "v4-tiers"
 
 # ── Arabic (rule 5) ──────────────────────────────────────────────────────────
 
@@ -239,21 +246,94 @@ def _intro_schedule_ar(terms: Any) -> Optional[str]:
     )
 
 
+def _is_tiers_terms(terms: Any) -> bool:
+    """Was this row checked out as a v2 seat-batch sale? (``offer_months`` is
+    stamped into the terms only then.)"""
+    return isinstance(terms, dict) and "offer_months" in terms
+
+
+def _tiers_schedule_ar(terms: Any, charged_today: Any = None) -> Optional[str]:
+    """The v4-tiers schedule sentence, built ONLY from values frozen on the row.
+
+    ``terms`` is the row's ``intro_offer_terms`` (``offer_sar``,
+    ``offer_months``, ``list_sar`` as checkout stamped them); ``charged_today``
+    is the row's own ``amount_sar``. The first figure is what is debited TODAY,
+    which equals the offer price except on an upgrade, where the credit has
+    already come off — a disclosure that names a larger debit than the page's
+    «المبلغ المستحق» would contradict the screen it sits on. Every input is on
+    the row, so the hash stays reproducible at consent and at capture.
+
+        1 month  «يُخصم {p} ر.س اليوم، ثم {list} ر.س كل 30 يوماً.»
+        2 months «يُخصم {p} ر.س اليوم، ثم {p} ر.س للشهر الثاني، ثم {list} …»
+        n months «… ثم {p} ر.س لكلٍّ من الأشهر {n−1} التالية، ثم {list} …»
+
+    Wording 🔎 owner (pricing_campaigns_v2.md §3). Returns None when the blob is
+    unusable.
+    """
+    if not _is_tiers_terms(terms):
+        return None
+    offer, list_price, months = (
+        terms.get("offer_sar"), terms.get("list_sar"), terms.get("offer_months"),
+    )
+    if offer in (None, "") or list_price in (None, ""):
+        return None
+    # Checkout stamps a JSON integer. Anything else (a bool, 2.5, "two") is a
+    # malformed blob, not a month count to round.
+    if isinstance(months, int) and not isinstance(months, bool):
+        n = months
+    elif isinstance(months, str) and months.strip().isdigit():
+        n = int(months.strip())
+    else:
+        return None
+    if n < 1:
+        return None
+    p = _fmt_price(offer)
+    today = _fmt_price(charged_today) if charged_today not in (None, "") else p
+    lst = _fmt_price(list_price)
+    if n == 1:
+        return f"يُخصم {today} ر.س اليوم، ثم {lst} ر.س كل 30 يوماً."
+    if n == 2:
+        return f"يُخصم {today} ر.س اليوم، ثم {p} ر.س للشهر الثاني، ثم {lst} ر.س كل 30 يوماً."
+    return (
+        f"يُخصم {today} ر.س اليوم، ثم {p} ر.س لكلٍّ من الأشهر {n - 1} التالية، "
+        f"ثم {lst} ر.س كل 30 يوماً."
+    )
+
+
+def _schedule_and_version(payment_row: Optional[dict]) -> tuple[Optional[str], str]:
+    """``(schedule sentence | None, version)`` for one row — the one decision
+    ``disclosure_text`` and ``disclosure_version`` both read, so the text and
+    its label can never disagree.
+
+    A v4 row (``offer_months`` in its terms) is v4-tiers or nothing: its legacy
+    keys would otherwise build a v3 sentence promising «الشهرين الثاني والثالث»
+    for a batch that is 1 or 4 months long.
+    """
+    row = payment_row or {}
+    terms = row.get("intro_offer_terms")
+    if _is_tiers_terms(terms):
+        schedule = _tiers_schedule_ar(terms, row.get("amount_sar"))
+        return (schedule, TIERS_DISCLOSURE_VERSION) if schedule else (None, DISCLOSURE_VERSION)
+    schedule = _intro_schedule_ar(terms)
+    return (schedule, INTRO_DISCLOSURE_VERSION) if schedule else (None, DISCLOSURE_VERSION)
+
+
 def disclosure_text(payment_row: Optional[dict] = None) -> str:
-    """The disclosure for ONE payment row — v2, or v2 + schedule for an offer row.
+    """The disclosure for ONE payment row — v2, v2 + the offer schedule
+    (v3-intro), or v2 + the batch schedule (v4-tiers).
 
     The single builder behind checkout, ``record_consent`` and
     ``capture_payment_method``: all three must hash the same characters the
     page showed, and three builders would drift.
     """
-    terms = (payment_row or {}).get("intro_offer_terms")
-    schedule = _intro_schedule_ar(terms)
+    row = payment_row or {}
+    schedule, _version = _schedule_and_version(row)
     if schedule is None:
-        if (payment_row or {}).get("intro_offer_group"):
+        if row.get("intro_offer_group") or _is_tiers_terms(row.get("intro_offer_terms")):
             logger.error(
-                "payment=%s is an intro-offer row with unusable intro_offer_terms "
+                "payment=%s is an offer/batch row with unusable intro_offer_terms "
                 "%r — falling back to the v2 disclosure WITHOUT the schedule",
-                (payment_row or {}).get("payment_id"), terms,
+                row.get("payment_id"), row.get("intro_offer_terms"),
             )
         return RECURRING_DISCLOSURE_AR
     return f"{RECURRING_DISCLOSURE_AR} {schedule}"
@@ -261,8 +341,7 @@ def disclosure_text(payment_row: Optional[dict] = None) -> str:
 
 def disclosure_version(payment_row: Optional[dict] = None) -> str:
     """Which wording ``disclosure_text`` produced for this row."""
-    terms = (payment_row or {}).get("intro_offer_terms")
-    return INTRO_DISCLOSURE_VERSION if _intro_schedule_ar(terms) else DISCLOSURE_VERSION
+    return _schedule_and_version(payment_row)[1]
 
 
 def recurring_disclosure_ar(
@@ -297,8 +376,9 @@ def recurring_disclosure_ar(
     given user actually agreed to. Consents recorded under v1 keep v1's hash and
     remain valid evidence of the longer text those users were shown.
 
-    ``payment_row`` (v3-intro): pass the row whenever one exists — an عرض الشهر
-    الأول row gets the price schedule appended (``disclosure_text``).
+    ``payment_row`` (v3-intro / v4-tiers): pass the row whenever one exists —
+    an عرض الشهر الأول row (flag off) or any seat-batch row (``ladder_v2`` on)
+    gets its price schedule appended (``disclosure_text``).
     """
     if not plan_renews(plan):
         return None
@@ -989,9 +1069,10 @@ async def capture_payment_method(
         #     ``paid_at`` and hashed against ``disclosure_text(payment_row)``.
         #
         # That fallback is only sound because the disclosure is reproducible
-        # from the ROW: v2 is a constant, and v3-intro (عرض الشهر الأول)
-        # interpolates only the prices checkout froze into
-        # ``intro_offer_terms`` before the page showed them. If it ever
+        # from the ROW: v2 is a constant, and v3-intro (عرض الشهر الأول) and
+        # v4-tiers (a seat batch) interpolate only the prices and months
+        # checkout froze into ``intro_offer_terms`` — plus, for v4, the row's
+        # own ``amount_sar`` — before the page showed them. If it ever
         # interpolates anything NOT persisted on the row, this hash stops being
         # reproducible from here — do not paper over that by hashing a string
         # rebuilt from the live catalog.
@@ -1282,6 +1363,7 @@ __all__ = [
     "disclosure_text",
     "disclosure_version",
     "INTRO_DISCLOSURE_VERSION",
+    "TIERS_DISCLOSURE_VERSION",
     "consent_text_hash",
     "record_consent",
     "fetch_consent",

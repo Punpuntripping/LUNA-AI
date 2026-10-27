@@ -116,6 +116,28 @@ path, never inside it, and never raising:
 All of it is inert until someone flips ``early_adopter_campaign.enabled``: 138
 ships it false, ``effective_plan_price`` then returns ``price_sar``, and every
 claim answers ``campaign_disabled``.
+
+Migration ``192_promo_price_tiers.sql`` (pricing campaigns v2 — see
+`.claude/plans/pricing_campaigns_v2.md`) replaces the single promo with price
+TIERS sold through seat BATCHES. Every behaviour change in this module is gated
+on ``early_adopter_campaign.ladder_v2``, so deploying with the flag down changes
+nothing a customer sees:
+
+* checkout prices from ONE ``promo_checkout_price(user, plan)`` row and
+  branches on the ``ladder_v2`` it returns — off, today's path; on, the row's
+  price, batch, months and Tier 1 group are charged and stamped as-is
+  (``promo_batch_id``, ``intro_offer_terms``, ``intro_offer_group``), and an
+  unreadable row is a 503 (``PAYMENT_PRICING_UNAVAILABLE``), never the catalog;
+* a credited v2 row is credited on the CASH the running term was bought with
+  (``_funding_payment_cash``) and stamps ``credit_basis = 'cash'``; the
+  fulfilment re-derivation reads that stamp, never the live flag;
+* the public campaign flag is built from ``promo_public_quote()``;
+* a batch claim that takes a batch to 90% raises ``promo.batch_near_full``.
+
+Additive keys appear whatever the flag (``promo: null``, ``offer_*: null``,
+``reason: null``, ``months``), a credited row stamps ``credit_basis = 'price'``
+with the flag off, and ``promo_checkout_price`` is asked on every checkout, so
+an RPC failure is a 503 even with the flag off.
 """
 from __future__ import annotations
 
@@ -140,6 +162,7 @@ from backend.app.services import (
 from backend.app.services.audit_service import write_audit_log
 from shared.config import get_settings
 from shared.db.run import run_db
+from shared.observability import get_logfire
 
 from backend.app.services.receipt_service import (
     send_payment_receipt,
@@ -147,6 +170,7 @@ from backend.app.services.receipt_service import (
 )
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 # ── provider constants ───────────────────────────────────────────────────────
 
@@ -700,7 +724,17 @@ _TXN_COLUMNS = (
     # guard keys on the group, and capture_payment_method rebuilds the v3-intro
     # disclosure hash from the terms. ⚠ Selecting them before 183 is applied
     # 42703s history, verify and refund alike — 183 strictly before the deploy.
-    "intro_offer_group, intro_offer_terms"
+    "intro_offer_group, intro_offer_terms, "
+    # The seat batch checkout quoted (migration 192, pricing_campaigns_v2.md
+    # §1.4-5). REQUIRED: the paid path reads it to raise the batch-fill alert,
+    # and the claim RPC reads it from the row. ⚠ Same rule as 183: selecting it
+    # before 192 is applied 42703s checkout, /history, verify and refund —
+    # 192 strictly before the deploy.
+    "promo_batch_id, "
+    # The basis this row's upgrade credit was computed on (192): the fulfilment
+    # re-derivation reads it instead of the live flag. REQUIRED for the same
+    # reason and under the same "192 first" rule.
+    "credit_basis"
 )
 
 
@@ -849,7 +883,119 @@ def _campaign_closed() -> dict:
     """The shape a closed, disabled, or unreadable campaign answers with. It is
     indistinguishable from "there has never been a campaign", which is the
     point."""
-    return {"open": False, "promo": {}}
+    return {"open": False, "promo": {}, "months": {}}
+
+
+# ── pricing campaigns v2 (migration 192, pricing_campaigns_v2.md) ────────────
+#
+# ONE READ PRICES A CHECKOUT. ``promo_checkout_price(user, plan)`` answers, in a
+# single statement, whether ``early_adopter_campaign.ladder_v2`` is on and — if
+# it is — the price to charge, the batch it comes from, its tier and months, and
+# the profession group when it is the Pro Tier 1 offer. Checkout calls it ONCE
+# and branches on the ``ladder_v2`` it returns, so the flag, the price and the
+# batch can never come from three different moments (a batch filling, or the
+# flag flipping, between separate reads would otherwise produce a promo-priced
+# row with no batch, or a batch stamped on a list-priced row).
+#
+# FAIL-CLOSED TO A 503, never to the catalog: an unreadable answer may be a v2
+# price we cannot see, and charging the list price for it would be wrong in a
+# way the customer cannot undo (and charging less would mint nothing). The page
+# retries; nothing is written.
+class PricingUnavailable(Exception):
+    """``promo_checkout_price`` errored or answered something unusable."""
+
+
+PRICING_UNAVAILABLE_AR = "تعذّر تجهيز الدفع الآن، حاول مرة أخرى بعد قليل"
+
+
+def _quote_months(value: Any) -> Optional[int]:
+    """A batch's ``months`` as a positive int, or None. PostgREST may hand an
+    integer column back as ``2`` or a numeric as ``"2.0000"``."""
+    if isinstance(value, bool) or value is None:
+        return None
+    months = _dec(value, default="0")
+    if months != months.to_integral_value() or months < 1:
+        return None
+    return int(months)
+
+
+def _checkout_price(
+    supabase: SupabaseClient, user_id: Optional[str], plan_id: str
+) -> dict:
+    """``promo_checkout_price(user, plan)`` → ``{"ladder_v2": bool, "price_sar":
+    Decimal | None, "batch": {batch_id, price_tier, price_sar, months} | None,
+    "intro_group": str | None}``. Sync — call through ``run_db``.
+
+    With ``ladder_v2`` false nothing else is read: the caller runs today's path.
+    With it true the row IS the sale — the price is charged as-is, the batch and
+    the group are stamped as-is. Raises ``PricingUnavailable`` on an RPC error
+    or on a row that cannot be charged (no price, a batch without months, …).
+    """
+    try:
+        res = supabase.rpc(
+            "promo_checkout_price",
+            {"p_user_id": str(user_id) if user_id else None, "p_plan_id": str(plan_id)},
+        ).execute()
+        data = getattr(res, "data", None)
+    except Exception as exc:  # noqa: BLE001 — includes 192 not being applied
+        raise PricingUnavailable(f"promo_checkout_price failed: {exc}") from exc
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict) or not isinstance(data.get("ladder_v2"), bool):
+        raise PricingUnavailable(f"promo_checkout_price returned {data!r}")
+    if data["ladder_v2"] is False:
+        return {"ladder_v2": False, "price_sar": None, "batch": None, "intro_group": None}
+
+    price = _dec(data.get("price_sar"), default="0")
+    if data.get("price_sar") is None or price < MIN_CHARGE_SAR:
+        raise PricingUnavailable(f"promo_checkout_price: unusable price in {data!r}")
+    batch = None
+    if data.get("batch_id"):
+        months = _quote_months(data.get("months"))
+        try:
+            tier = int(data.get("price_tier"))
+        except (TypeError, ValueError):
+            tier = None
+        if months is None or tier not in (1, 2):
+            raise PricingUnavailable(f"promo_checkout_price: unusable batch in {data!r}")
+        batch = {"batch_id": str(data["batch_id"]), "price_tier": tier,
+                 "price_sar": q2(price), "months": months}
+    intro_group = data.get("intro_group") or None
+    return {"ladder_v2": True, "price_sar": q2(price), "batch": batch,
+            "intro_group": str(intro_group) if intro_group else None}
+
+
+def _fetch_public_quote(supabase: SupabaseClient) -> tuple[dict[str, str], dict[str, int]]:
+    """``promo_public_quote()`` → ``({plan: "59.90"}, {plan: 2})``.
+
+    Flag-aware in SQL: with ``ladder_v2`` it is the GENERAL quote per plan (Pro
+    Tier 2 — Tier 1 is personal — and Max's open tier); without it, today's
+    ``plans.promo_price_sar`` with ``months = promo_days / 30``.
+
+    WHITELISTED, never passed through: only ``plan_id`` / ``price_sar`` /
+    ``months`` are read, so a batch id, tier number or seat count the function
+    might ever return cannot reach the anonymous page (§1.4-10). Raises on an
+    RPC failure; the caller fails closed.
+    """
+    res = supabase.rpc("promo_public_quote", {}).execute()
+    rows = getattr(res, "data", None) or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    promo: dict[str, str] = {}
+    months: dict[str, int] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        plan_id = str(row.get("plan_id") or "")
+        if plan_id not in PROMO_PLAN_IDS:
+            continue
+        price = _dec(row.get("price_sar"), default="0")
+        n = _quote_months(row.get("months"))
+        if price <= 0 or n is None:
+            continue                                   # a malformed row says nothing
+        promo[plan_id] = f"{q2(price):.2f}"
+        months[plan_id] = n
+    return promo, months
 
 
 def _fetch_promo_prices(supabase: SupabaseClient) -> dict[str, str]:
@@ -876,11 +1022,15 @@ def _fetch_promo_prices(supabase: SupabaseClient) -> dict[str, str]:
 
 
 def _read_campaign_state(supabase: SupabaseClient) -> dict:
-    """``early_adopter_open()`` + the promo prices, or a closed campaign.
+    """``early_adopter_open()`` + ``promo_public_quote()``, or a closed campaign.
 
     Fail-CLOSED, the opposite of ``_effective_price``: an unreadable campaign
     shows list prices on a public page, which is always safe, whereas claiming
     a promo we cannot price would advertise a discount the checkout then refuses.
+
+    ``early_adopter_open()`` stays the gate (with ``ladder_v2`` it means "some
+    batch is open"), so a closed campaign answers exactly as it always did
+    whatever ``promo_public_quote`` would have listed.
     """
     try:
         res = supabase.rpc("early_adopter_open", {}).execute()
@@ -891,19 +1041,22 @@ def _read_campaign_state(supabase: SupabaseClient) -> dict:
             data = next(iter(data.values()), None)
         if not bool(data):
             return _campaign_closed()
-        promo = _fetch_promo_prices(supabase)
-    except Exception as exc:  # noqa: BLE001 — includes 138 not being applied
+        promo, months = _fetch_public_quote(supabase)
+    except Exception as exc:  # noqa: BLE001 — includes 138/192 not being applied
         logger.warning(
             "early-adopter campaign state unreadable — answering 'closed': %s", exc
         )
         return _campaign_closed()
     if not promo:
         return _campaign_closed()
-    return {"open": True, "promo": promo}
+    return {"open": True, "promo": promo, "months": months}
 
 
 async def early_adopter_campaign_state(supabase: SupabaseClient) -> dict:
-    """Cached ``{"open": bool, "promo": {plan_id: "39.90"}}`` for the public route.
+    """Cached ``{"open", "promo": {plan: "59.90"}, "months": {plan: 2}}`` for the
+    public route.
+
+    No count, no batch id, no tier number, no end date — ever (§1.4-10).
 
     The cache is a module-level tuple with no lock: two concurrent refreshes
     cost one extra query and produce the same answer, and a lock on an anon
@@ -918,7 +1071,11 @@ async def early_adopter_campaign_state(supabase: SupabaseClient) -> dict:
     else:
         state = await run_db(_read_campaign_state, supabase)
         _CAMPAIGN_CACHE = (now, state)
-    return {"open": bool(state.get("open")), "promo": dict(state.get("promo") or {})}
+    return {
+        "open": bool(state.get("open")),
+        "promo": dict(state.get("promo") or {}),
+        "months": dict(state.get("months") or {}),
+    }
 
 
 # ── عرض الشهر الأول — profession intro offer (profession_intro_offer.md) ─────
@@ -939,6 +1096,14 @@ async def early_adopter_campaign_state(supabase: SupabaseClient) -> dict:
 # checkout then cannot honour is the failure to avoid.
 #
 # The wire never carries the end date or the seat count (§1 rule 9).
+#
+# With ``ladder_v2`` (192) the offer IS Pro Tier 1 of pricing_campaigns_v2.md:
+# one price (19.90) for the batch's months (2, then 1), from the same
+# ``promo_checkout_price`` row checkout charges. ``offer_sar`` / ``offer_months``
+# state it (NULL with the flag off, so the web keeps today's rendering); the old
+# keys stay truthful for old clients (``first_month_sar = then_sar =
+# offer_sar``, ``then_months = offer_months − 1``). ``INTRO_OFFER_THEN_MONTHS``
+# is the flag-off value only.
 INTRO_OFFER_PLAN_ID = "pro"
 INTRO_OFFER_THEN_MONTHS = 2
 
@@ -978,12 +1143,17 @@ def _intro_offer_quote(
 def _intro_offer_terms(
     supabase: SupabaseClient, user_id: Optional[str], plan: Optional[dict]
 ) -> Optional[dict]:
-    """The whole offer as checkout stamps it and ``GET /intro-offer`` states it.
+    """TODAY's offer (``ladder_v2`` off) as checkout stamps it and ``GET
+    /intro-offer`` states it.
 
     ``plan`` is the pro catalog row (its ``price_sar`` is the month-4 list
     price). Returns None — never a partial offer — when the user is not
     eligible, when pro has no promo price (no seat ⇒ no months 2–3), or when the
     numbers do not step UP (a misconfigured price row must not be sold).
+
+    ``offer_sar`` / ``offer_months`` are present and NULL: the web treats a
+    missing/null ``offer_*`` as the pre-192 backend and keeps today's rendering,
+    so the flag-off answer must not look like a v2 one.
     """
     if not plan or plan.get("price_sar") is None:
         return None
@@ -1012,7 +1182,75 @@ def _intro_offer_terms(
         "then_sar": _money(then),
         "then_months": INTRO_OFFER_THEN_MONTHS,
         "list_sar": _money(list_price),
+        "offer_sar": None,
+        "offer_months": None,
     }
+
+
+def _batch_terms(batch: dict, plan: dict) -> dict:
+    """A v2 batch sale's schedule, in the shape stamped as ``intro_offer_terms``
+    (the v4-tiers disclosure and the claim's frozen terms are read from it).
+
+    The old keys stay TRUTHFUL for clients that predate ``offer_*``: every
+    discounted month costs the batch price, so ``first_month_sar = then_sar =
+    offer_sar`` and ``then_months = offer_months − 1``.
+    """
+    price = _money(batch["price_sar"])
+    return {
+        "first_month_sar": price,
+        "then_sar": price,
+        "then_months": batch["months"] - 1,
+        "list_sar": _money(plan["price_sar"]),
+        "offer_sar": price,
+        "offer_months": batch["months"],
+    }
+
+
+def _v2_offer(pricing: dict, plan: Optional[dict]) -> Optional[dict]:
+    """The Pro Tier 1 offer from ONE ``promo_checkout_price`` row, or None.
+
+    It is the offer exactly when the row names a profession group AND a batch
+    (192 sets ``intro_group`` only for Pro Tier 1) — the same row checkout
+    charges and stamps, so the popup cannot advertise what checkout would not
+    sell.
+    """
+    if not pricing.get("intro_group") or not pricing.get("batch") or not plan             or plan.get("price_sar") is None:
+        return None
+    terms = _batch_terms(pricing["batch"], plan)
+    if not pricing["batch"]["price_sar"] < q2(plan["price_sar"]):
+        logger.error(
+            "Pro Tier 1 price %s is not below the list price %s (batch %s)",
+            pricing["batch"]["price_sar"], plan["price_sar"], pricing["batch"]["batch_id"],
+        )
+    return {"profession_group": pricing["intro_group"], **terms}
+
+
+# ``GET /intro-offer``'s ``reason`` (192 rollout, pricing_campaigns_v2.md §1.3-2):
+# a Basic user is never offered Pro Tier 1 while Basic runs; the moment the
+# term ends the offer is shown, and the existing popup trigger keys on this.
+INTRO_OFFER_REASON_BASIC_ENDED = "basic_ended"
+
+
+def _basic_ended(subscription: Optional[dict]) -> tuple[Optional[str], Optional[str]]:
+    """``("basic_ended", expires_at)`` when the user's most recent plan was
+    ``basic`` and it has expired (so nothing is active now), else ``(None, None)``.
+
+    The subscription row keeps the last plan after expiry (the view folds it to
+    free at read time), so the raw row IS "the most recent plan".
+    """
+    if not subscription or subscription.get("plan_id") != "basic":
+        return None, None
+    expires_at = _parse_ts(subscription.get("expires_at"))
+    if expires_at is None or expires_at > _now():
+        return None, None
+    return INTRO_OFFER_REASON_BASIC_ENDED, expires_at.isoformat()
+
+
+def _with_offer_reason(terms: dict, subscription: Optional[dict], ladder: bool) -> dict:
+    """``terms`` plus ``reason`` / ``basic_ended_at``. Flag off both are null —
+    the Basic-ended trigger is a v2 behaviour."""
+    reason, ended_at = _basic_ended(subscription) if ladder else (None, None)
+    return {**terms, "reason": reason, "basic_ended_at": ended_at}
 
 
 def _intro_offer_closed() -> dict:
@@ -1023,26 +1261,41 @@ def _intro_offer_closed() -> dict:
         "then_sar": None,
         "then_months": INTRO_OFFER_THEN_MONTHS,
         "list_sar": None,
+        "offer_sar": None,
+        "offer_months": None,
+        "reason": None,
+        "basic_ended_at": None,
     }
 
 
 async def intro_offer_state(supabase: SupabaseClient, user_id: str) -> dict:
     """``GET /payments/intro-offer`` — may THIS user buy the offer, and at what.
 
+    Asks ``promo_checkout_price(user, 'pro')`` — the very read checkout prices
+    from — and branches on its ``ladder_v2``: off, today's 183 offer; on, the
+    Pro Tier 1 row.
+
     Never raises: any failure answers "not eligible", which is indistinguishable
     from "the campaign is over" on purpose.
     """
     try:
+        pricing = await run_db(_checkout_price, supabase, user_id, INTRO_OFFER_PLAN_ID)
         plans = await run_db(_fetch_plans, supabase, [INTRO_OFFER_PLAN_ID])
-        terms = await run_db(
-            _intro_offer_terms, supabase, user_id, plans.get(INTRO_OFFER_PLAN_ID)
-        )
-    except Exception as exc:  # noqa: BLE001
+        plan = plans.get(INTRO_OFFER_PLAN_ID)
+        if pricing["ladder_v2"]:
+            terms = _v2_offer(pricing, plan)
+            subscription = (
+                await run_db(_fetch_subscription, supabase, user_id) if terms else None
+            )
+        else:
+            terms = await run_db(_intro_offer_terms, supabase, user_id, plan)
+            subscription = None
+    except Exception as exc:  # noqa: BLE001 — PricingUnavailable included
         logger.warning("intro offer state unreadable for user=%s: %s", user_id, exc)
         return _intro_offer_closed()
     if terms is None:
         return _intro_offer_closed()
-    return {"eligible": True, **terms}
+    return {"eligible": True, **_with_offer_reason(terms, subscription, pricing["ladder_v2"])}
 
 
 def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict]:
@@ -1568,6 +1821,65 @@ def _plan_rank(plan_id: Optional[str]) -> Optional[int]:
     return PLAN_RANK.get(plan_id or "")
 
 
+# ``payment_transactions.credit_basis`` (192 V6): what the old term was valued
+# at when THIS row's credit was computed. Stamped at checkout on every credited
+# row and read back by ``_revalidate_credited_charge`` — never the live flag, so
+# a flip between quote and settlement cannot change the arithmetic the customer
+# was quoted. NULL (every pre-192 row) = 'price'.
+CREDIT_BASIS_PRICE = "price"   # the old term's effective 'current' price (pre-v2)
+CREDIT_BASIS_CASH = "cash"     # the cash of the payment funding it (§1.4-8)
+
+
+# How many of the user's newest paid rows for the running plan are inspected for
+# the one funding the term. Renewals, re-purchases and refunds of that plan are
+# all a handful of rows; the first standing one wins.
+FUNDING_LOOKBACK = 10
+
+
+def _funding_payment_cash(
+    supabase: SupabaseClient, user_id: Optional[str], plan_id: Optional[str]
+) -> Optional[Decimal]:
+    """The CASH (``amount_sar``) of the payment funding the user's running
+    ``plan_id`` term, or None when it cannot be found. Sync.
+
+    "Funding" = the newest row of that plan that is ``paid``, was GRANTED
+    (``fulfilled_at``) and was never unwound (``revoked_at`` NULL). That is the
+    purchase or renewal whose grant the current term stands on: a same-plan
+    re-purchase stacks onto it (and is newer), a refund revokes it (and the
+    restored term stands on an older row again), a held grant never fulfilled.
+
+    Cash, not price, deliberately (pricing_campaigns_v2.md §1.4-8): someone who
+    paid 19.90 is credited a share of 19.90; someone whose own purchase was
+    already discounted by a credit is credited a share of what they actually
+    paid for that term, which is what makes credits impossible to chain.
+    """
+    if not user_id or not plan_id:
+        return None
+    res = (
+        supabase.table("payment_transactions")
+        .select("payment_id, amount_sar, status, paid_at, fulfilled_at, revoked_at")
+        .eq("user_id", str(user_id))
+        .eq("plan_id", str(plan_id))
+        .eq("status", "paid")
+        .order("paid_at", desc=True)
+        .limit(FUNDING_LOOKBACK)
+        .execute()
+    )
+    rows = [
+        r for r in (getattr(res, "data", None) or [])
+        if isinstance(r, dict)
+        and r.get("fulfilled_at")
+        and not r.get("revoked_at")
+        and r.get("amount_sar") is not None
+    ]
+    if not rows:
+        return None
+    # Newest by paid_at, decided here rather than trusted to the ORDER BY:
+    # PostgreSQL sorts NULLs FIRST on DESC.
+    newest = max(rows, key=lambda r: _parse_ts(r.get("paid_at")) or datetime.min.replace(tzinfo=timezone.utc))
+    return q2(newest["amount_sar"])
+
+
 def _upgrade_credit(
     supabase: SupabaseClient,
     user_id: Optional[str],
@@ -1577,6 +1889,7 @@ def _upgrade_credit(
     subscription: Optional[dict],
     plans: dict[str, dict],
     at: datetime,
+    basis: str = CREDIT_BASIS_PRICE,
 ) -> Decimal:
     """Prorated credit owed for replacing ``subscription`` with ``new_plan_id``.
 
@@ -1598,6 +1911,13 @@ def _upgrade_credit(
 
     SYNC and DB-touching (``_effective_price``), so async callers must reach it
     through ``run_db``.
+
+    ``basis`` (192, pricing_campaigns_v2.md §1.4-8): ``'cash'`` values the old
+    term at the CASH of the payment that funded it (``_funding_payment_cash``)
+    instead of its effective 'current' price (``'price'``, the pre-v2 rule).
+    The ratio, the one-period clamp and the 1.00 floor are unchanged. Checkout
+    chooses it and STAMPS it on the row; the fulfilment re-derivation reads the
+    stamp, so both ends always use one basis.
     """
     current_plan_id = (subscription or {}).get("plan_id")
     expires_at = _parse_ts((subscription or {}).get("expires_at"))
@@ -1634,13 +1954,34 @@ def _upgrade_credit(
     #
     # The plan being BOUGHT keeps 'purchase' (the caller resolved it) — that one
     # is a decision being made now, and it is the purchase that may claim a seat.
-    old_price = _effective_price(
-        supabase,
-        user_id,
-        current_plan_id,
-        old_plan.get("price_sar"),
-        context=PRICE_CONTEXT_CURRENT,
-    )
+    #
+    # basis 'cash' (v2): what the user ACTUALLY PAID for the running term. A
+    # missing funding row (purged ledger, hand-made grant) falls back to the
+    # 'current' price — today's rule, so the fallback can never credit more
+    # than the pre-v2 code did. Both ends fall back identically.
+    old_price: Optional[Decimal] = None
+    if basis == CREDIT_BASIS_CASH:
+        try:
+            old_price = _funding_payment_cash(supabase, user_id, current_plan_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "funding payment unreadable for user=%s plan=%s — crediting at the "
+                "'current' price instead: %s", user_id, current_plan_id, exc,
+            )
+            old_price = None
+        if old_price is None:
+            logger.warning(
+                "no funding payment found for user=%s plan=%s — crediting at the "
+                "'current' price (pre-v2 rule)", user_id, current_plan_id,
+            )
+    if old_price is None:
+        old_price = _effective_price(
+            supabase,
+            user_id,
+            current_plan_id,
+            old_plan.get("price_sar"),
+            context=PRICE_CONTEXT_CURRENT,
+        )
 
     remaining_days = Decimal(str((expires_at - at).total_seconds())) / Decimal(86400)
     # CLAMP TO ONE PERIOD (H-4). Same-plan purchases STACK — grant_plan adds
@@ -1692,15 +2033,47 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
     # read at settlement — is the record of what was offered. A quote issued at
     # 23:59 on the last day is honoured like any other quote (the seat claim and
     # _assert_matches both read the row).
-    intro = None
-    if plan_id == INTRO_OFFER_PLAN_ID:
-        intro = await run_db(_intro_offer_terms, supabase, user_id, plan)
-    if intro is not None:
-        price = q2(intro["first_month_sar"])
-    else:
-        price = await run_db(
-            _effective_price, supabase, user_id, plan_id, plan["price_sar"]
+    #
+    # v2 (192): ONE read, ``promo_checkout_price``, answers both "is the ladder
+    # on?" and — if it is — the whole sale: price, batch, months, and the
+    # profession group of the Pro Tier 1 offer. Every v2 decision below comes
+    # from that one row; nothing re-asks promo_quote / intro_offer_quote /
+    # effective_plan_price. With ladder_v2 off the row says only that, and the
+    # pre-192 path below runs unchanged. An unreadable row is a 503 — never a
+    # silent fall back to the catalog price (PricingUnavailable).
+    try:
+        pricing = await run_db(_checkout_price, supabase, user_id, plan_id)
+    except PricingUnavailable as exc:
+        logger.error("checkout user=%s plan=%s refused — %s", user_id, plan_id, exc)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.PAYMENT_PRICING_UNAVAILABLE,
+            detail=PRICING_UNAVAILABLE_AR,
+            headers={"Retry-After": "5"},
         )
+    ladder = pricing["ladder_v2"]
+    intro = None
+    batch: Optional[dict] = None
+    if ladder:
+        price = pricing["price_sar"]
+        batch = pricing["batch"]
+        intro = _v2_offer(pricing, plan)
+        if pricing["intro_group"] and batch is None:
+            logger.error(
+                "promo_checkout_price named group=%s with no batch for user=%s plan=%s",
+                pricing["intro_group"], user_id, plan_id,
+            )
+    else:
+        if plan_id == INTRO_OFFER_PLAN_ID:
+            intro = await run_db(_intro_offer_terms, supabase, user_id, plan)
+        if intro is not None:
+            price = q2(intro["first_month_sar"])
+        else:
+            price = await run_db(
+                _effective_price, supabase, user_id, plan_id, plan["price_sar"]
+            )
+    if intro is not None:
+        intro = _with_offer_reason(intro, subscription, ladder)
     expires_at = _parse_ts((subscription or {}).get("expires_at"))
     # NULL expires_at = non-expiring grant (dev/manual) — active, not expired.
     active = bool(subscription and current_plan_id and (expires_at is None or expires_at > _now()))
@@ -1727,6 +2100,7 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         subscription=subscription,
         plans=plans,
         at=_now(),
+        basis=CREDIT_BASIS_CASH if ladder else CREDIT_BASIS_PRICE,
     )
 
     charge = q2(price - credit)
@@ -1735,7 +2109,9 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
 
     plan_name = plan.get("name_ar") or plan_id
     description = f"ريحان — {plan_name}" + (" (ترقية)" if credit > 0 else "")
-    if intro is not None:
+    if batch is not None:
+        description += " (سعر العرض)"
+    elif intro is not None:
         description += " (عرض الشهر الأول)"
 
     # vat/net/upgrade_credit are stamped HERE, once (migration 113 columns).
@@ -1766,7 +2142,7 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
     # is byte-identical to the pre-183 one. The group marks the first month
     # non-refundable; the terms are what the v3-intro disclosure is built from,
     # frozen BEFORE the page shows them (payment_method_service.disclosure_text).
-    if intro is not None:
+    if not ladder and intro is not None:
         payload["intro_offer_group"] = intro["profession_group"]
         payload["intro_offer_terms"] = {
             "first_month_sar": intro["first_month_sar"],
@@ -1774,6 +2150,34 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
             "then_months": intro["then_months"],
             "list_sar": intro["list_sar"],
         }
+    # v2 (192), all from the ONE promo_checkout_price row:
+    #   * promo_batch_id — the claim seats the payment there even if the batch
+    #     fills before settlement (§1.4-5);
+    #   * intro_offer_terms — the QUOTED schedule: the v4-tiers disclosure is
+    #     rebuilt from it at consent and capture, and the claim freezes the
+    #     seat's price and months from it (an operator editing the batch between
+    #     checkout and claim must not re-price this sale);
+    #   * intro_offer_group — Pro Tier 1 only (the non-refundable first payment).
+    # Flag off, none of these is written.
+    #
+    # credit_basis (192 V6) is stamped on EVERY credited row, either regime —
+    # 'cash' on v2, 'price' otherwise — and re-read at settlement instead of the
+    # live flag. (NULL, on every pre-192 row, also reads as 'price'.)
+    promo: Optional[dict] = None
+    if ladder:
+        if pricing["intro_group"]:
+            payload["intro_offer_group"] = pricing["intro_group"]
+        if batch is not None:
+            terms = _batch_terms(batch, plan)
+            payload["promo_batch_id"] = batch["batch_id"]
+            payload["intro_offer_terms"] = terms
+            promo = {
+                "price_sar": terms["offer_sar"],
+                "months": batch["months"],
+                "list_sar": terms["list_sar"],
+            }
+    if credit > 0:
+        payload["credit_basis"] = CREDIT_BASIS_CASH if ladder else CREDIT_BASIS_PRICE
 
     # SUPERSEDE THEN INSERT (H-4, layer 2), and in that order: the caller may
     # hold only one open quote, so the previous one stops being payable at the
@@ -1827,14 +2231,18 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
             "upgrade_credit_sar": _money(credit),
             "from_plan_id": current_plan_id,
             "provider": PROVIDER,
-            "intro_offer_group": intro["profession_group"] if intro else None,
+            "intro_offer_group": payload.get("intro_offer_group"),
+            # v2: present only on a batch sale, so a flag-off audit row is
+            # byte-identical to the pre-192 one.
+            **({"promo_batch_id": batch["batch_id"]} if batch is not None else {}),
         },
     )
 
     logger.info(
-        "checkout initiated: user=%s plan=%s charge=%s credit=%s payment=%s intro=%s",
+        "checkout initiated: user=%s plan=%s charge=%s credit=%s payment=%s intro=%s batch=%s",
         user_id, plan_id, charge, credit, payment_id,
-        intro["profession_group"] if intro else None,
+        payload.get("intro_offer_group"),
+        batch["batch_id"] if batch is not None else None,
     )
 
     # The disclosure is built from the row as stamped — the same input the
@@ -1875,6 +2283,9 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         # عرض الشهر الأول rows resolve that TODO for themselves only: their
         # disclosure carries the price schedule (v3-intro, built from the
         # stamped `intro_offer_terms`). Ordinary seat purchases stay on v2.
+        # With ladder_v2 EVERY batch sale (pro or max) carries its schedule
+        # instead (v4-tiers, from the same stamped terms — see
+        # payment_method_service.disclosure_text).
         "requires_recurring_consent": payment_method_service.requires_recurring_consent(plan),
         "recurring_disclosure_ar": (
             payment_method_service.recurring_disclosure_ar(plan, stamped)
@@ -1883,8 +2294,16 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         ),
         # The offer the page must spell out (schedule + non-refundable line),
         # or null for an ordinary purchase. Never an end date or a seat count.
+        # Carries offer_sar / offer_months and, with ladder_v2, the
+        # Basic-ended reason (same keys as GET /intro-offer).
         "intro_offer": intro,
-        "non_refundable": intro is not None,
+        # The ROW's truth: the stamped group is what refund_payment refuses on.
+        "non_refundable": bool(payload.get("intro_offer_group")),
+        # v2 (192): the batch price this checkout charges before any credit,
+        # for how many months, and the list price after — or null when no
+        # batch applies (always null with ladder_v2 off). Never a batch id, a
+        # tier number or a seat count (§1.4-10).
+        "promo": promo,
     }
 
 
@@ -2071,6 +2490,14 @@ def _revalidate_credited_charge(supabase: SupabaseClient, row: dict) -> dict:
         # discount against, so there is nothing to re-derive from.
         return {**verdict, "ok": False, "reason": "unbound_row"}
 
+    # v2 (192): the credit basis is the one STAMPED at checkout — never the live
+    # flag — so a quote opened on one side of a flip and settled on the other is
+    # re-derived exactly as it was quoted. NULL (pre-192, flag off) = 'price'.
+    basis = (
+        CREDIT_BASIS_CASH
+        if row.get("credit_basis") == CREDIT_BASIS_CASH
+        else CREDIT_BASIS_PRICE
+    )
     subscription = _fetch_subscription(supabase, str(user_id))
     current_plan_id = (subscription or {}).get("plan_id")
     plans = _fetch_plans(supabase, [str(plan_id), current_plan_id])
@@ -2121,6 +2548,7 @@ def _revalidate_credited_charge(supabase: SupabaseClient, row: dict) -> dict:
         subscription=subscription,
         plans=plans,
         at=created_at,
+        basis=basis,
     )
     expected = q2(price - owed)
     paid = q2(row.get("amount_sar"))
@@ -2206,6 +2634,67 @@ async def _hold_for_review(supabase: SupabaseClient, row: dict, verdict: dict) -
         "expires_at": None,
         "review_reason": verdict.get("reason"),
     }
+
+
+# ── promo.batch_near_full (pricing_campaigns_v2.md §3 "Alert") ───────────────
+#
+# A batch rolling over silently changes the price the next buyer is quoted, and
+# store offers (Phase 4) are swapped BY HAND — so an operator needs notice
+# before a batch fills, not after. One Logfire warning per batch per process:
+# a restart may repeat it, which is noise worth having over a missed rollover.
+#
+# The event carries the batch id and a percentage and NOTHING about the buyer.
+# It is operator telemetry — the seat count it is derived from never leaves the
+# server (§1.4-10), and nothing here is returned to any caller.
+BATCH_NEAR_FULL_PERCENT = 90
+_BATCH_NEAR_FULL_ALERTED: set[str] = set()
+
+
+def _alert_if_batch_near_full(supabase: SupabaseClient, batch_id: Optional[str]) -> None:
+    """After a seat was CLAIMED in ``batch_id``: warn once at ≥ 90% full.
+
+    Sync, run through ``run_db``. Never raises — it runs on the paid path, after
+    the plan is granted and the seat is claimed.
+    """
+    if not batch_id or batch_id in _BATCH_NEAR_FULL_ALERTED:
+        return
+    try:
+        res = (
+            supabase.table("promo_batches")
+            .select("seat_limit")
+            .eq("batch_id", str(batch_id))
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        seat_limit = int((rows[0] or {}).get("seat_limit") or 0) if rows else 0
+        if seat_limit <= 0:
+            return
+        # count='exact' + limit(1): the cheap COUNT(*) PostgREST offers.
+        counted = (
+            supabase.table("early_adopter_seats")
+            .select("seat_id", count="exact")
+            .eq("batch_id", str(batch_id))
+            .is_("released_at", "null")
+            .limit(1)
+            .execute()
+        )
+        live = getattr(counted, "count", None)
+        if live is None:
+            return
+        live = int(live)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("batch fill check failed for batch=%s: %s", batch_id, exc)
+        return
+    percent = (live * 100) // seat_limit
+    if percent < BATCH_NEAR_FULL_PERCENT:
+        return
+    _BATCH_NEAR_FULL_ALERTED.add(str(batch_id))
+    logger.warning("promo.batch_near_full: batch=%s percent=%s", batch_id, percent)
+    try:
+        _logfire.warning("promo.batch_near_full", batch_id=str(batch_id), percent=percent)
+    except Exception:  # noqa: BLE001 — telemetry must never touch the money path
+        pass
 
 
 async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dict) -> dict:
@@ -2294,13 +2783,19 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
     # `initiated_by` is 132's column; a row from before it (or any browser
     # purchase) reads as 'user', which is the branch that claims.
     if str(row.get("initiated_by") or INITIATED_BY_USER) != INITIATED_BY_RENEWAL:
-        await run_db(
+        claim = await run_db(
             subscription_service.claim_early_adopter_seat,
             supabase,
             row["user_id"],
             payment_id,
             plan_id=row.get("plan_id"),
         )
+        # v2 (192): a NEW seat in a batch may have taken it to 90%. Keyed on the
+        # row's own promo_batch_id (stamped only while ladder_v2 was on), so a
+        # flag-off purchase never reaches it.
+        batch_id = state.get("promo_batch_id")
+        if batch_id and (claim or {}).get("action") == subscription_service.CLAIM_ACTION_CLAIMED:
+            await run_db(_alert_if_batch_near_full, supabase, batch_id)
 
     # ── tokenize (auto-renewal plan §6) ────────────────────────────────────
     # BOTH confirmation paths run this function, which is precisely why the

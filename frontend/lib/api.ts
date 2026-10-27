@@ -1218,8 +1218,9 @@ export const paymentsApi = {
     api.post<PaymentRefundResponse>(`/payments/${paymentId}/refund`),
 
   /**
-   * المشتركون الأوائل — is the campaign issuing seats, and at what price
-   * (`.claude/plans/early_adopters.md` §6).
+   * المشتركون الأوائل — is the campaign issuing seats, at what price and for
+   * how many months per plan (`promo` + `months`;
+   * `.claude/plans/pricing_campaigns_v2.md` §3, `early_adopters.md` §6).
    *
    * PUBLIC and unauthenticated: it answers the same for a signed-out visitor as
    * for a subscriber, and the server caches it for ~30 s. It goes through
@@ -1236,13 +1237,15 @@ export const paymentsApi = {
     api.get<EarlyAdopterCampaign>("/payments/early-adopter"),
 
   /**
-   * عرض الشهر الأول — is THIS caller eligible, and at what first-month price
-   * (`.claude/plans/profession_intro_offer.md`). Authed and per-user, unlike
+   * The profession offer (Pro tier 1) — is THIS caller eligible, at what price
+   * and for how many months (`offer_sar` × `offer_months`;
+   * `.claude/plans/pricing_campaigns_v2.md`). Authed and per-user, unlike
    * `getEarlyAdopter`: eligibility depends on the caller's profession, plan and
-   * purchase history, all decided server-side.
+   * tier history, all decided server-side. `reason: "basic_ended"` marks an
+   * offer surfaced because the caller's Basic term ended.
    *
-   * ⚠ No end date and no seat count, ever. A 404 (backend older than the
-   * feature) is treated by the store as "not eligible".
+   * ⚠ No end date, no seat count, no batch, no tier number, ever. A 404
+   * (backend older than the feature) is treated by the store as "not eligible".
    */
   introOffer: () => api.get<IntroOfferState>("/payments/intro-offer"),
 

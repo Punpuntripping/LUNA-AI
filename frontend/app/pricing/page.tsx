@@ -31,6 +31,12 @@ export const metadata: Metadata = {
  * payment. Sixty seconds bounds that window, and the runbook still purges this
  * path explicitly when the campaign closes (percent-encoded, or the 200 lies).
  *
+ * Seat batches (pricing_campaigns_v2) make this load-bearing rather than
+ * cautious: when a batch fills, the next opens with no deploy and possibly a
+ * different promo price and month count, so the card's price AND its «لأول …»
+ * note both come from the campaign payload and must refresh within the window.
+ * Never raise this number.
+ *
  * ⚠ Must stay a literal — Next only accepts a statically analysable value here,
  * so `EARLY_ADOPTER_REVALIDATE_SECONDS` cannot be imported into this position.
  * The two are kept equal by hand.

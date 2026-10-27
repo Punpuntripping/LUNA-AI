@@ -15,9 +15,10 @@ interface PromoTermsLinkProps {
  * dialog, for the same reason `PlanPrice` is shared: three surfaces showing the
  * same discount must not disagree about where its conditions live.
  *
- * ⚠ WHY THIS EXISTS AT ALL. The offer's conditions — who qualifies, the 90
- * days, the step-up to the list price, and that cancelling forfeits the price
- * permanently — were moved OUT of /terms §5 and onto `/promo-terms` (owner,
+ * ⚠ WHY THIS EXISTS AT ALL. The offer's conditions — who qualifies for which
+ * price level, how many months each price lasts, the step-up to the list price,
+ * and that cancelling loses the seat — were moved OUT of /terms §5 and onto
+ * `/promo-terms` (owner,
  * 2026-08-18), because they bind only the users who take an offer and two long
  * clauses made the subscription terms unreadable for everyone else. That split
  * is only honest while the link actually accompanies the price. A discounted

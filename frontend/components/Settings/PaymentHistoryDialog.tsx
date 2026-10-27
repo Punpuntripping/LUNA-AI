@@ -135,7 +135,7 @@ function PaymentRow({ item, onRefund, refundingId }: PaymentRowProps) {
           className="text-xs text-muted-foreground"
           data-testid={`payment-non-refundable-${item.payment_id}`}
         >
-          غير قابل للاسترداد — عرض الشهر الأول
+          غير قابل للاسترداد — سعر العرض
         </p>
       )}
 

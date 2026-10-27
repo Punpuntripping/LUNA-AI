@@ -111,9 +111,10 @@ export type AnalyticsEventName =
   | "login_succeeded"
   /** Refused. Props: `method`, `mode`, `reason`, `status?`. */
   | "login_failed"
-  // ---- profession_intro_offer.md — «عرض الشهر الأول» ---------------------
-  /** The offer was put on screen. Props: `trigger` (profession | quota),
-   *  `group`. Redemption is read from `payment_transactions`, not from here. */
+  // ---- profession offer (Pro tier 1) — pricing_campaigns_v2.md -------------
+  /** The offer was put on screen. Props: `trigger` (profession | quota |
+   *  basic_ended), `group`. Redemption is read from `payment_transactions`,
+   *  not from here. */
   | "intro_offer_shown"
   /** «اشترك الآن» on the offer. Props: `trigger`, `group`. */
   | "intro_offer_cta";

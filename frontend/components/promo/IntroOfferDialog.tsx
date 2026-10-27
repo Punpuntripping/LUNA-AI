@@ -26,13 +26,15 @@ import {
 const PLAN_FEATURES = findPricingPlan(INTRO_OFFER_PLAN_ID)?.features ?? [];
 
 /**
- * «عرض الشهر الأول» — the profession intro offer
- * (`.claude/plans/profession_intro_offer.md` §4.2–4.3).
+ * The profession offer — Pro tier 1 (`.claude/plans/pricing_campaigns_v2.md`,
+ * superseding `profession_intro_offer.md` §4.2–4.3). Price AND months are the
+ * server's (`offer_sar` × `offer_months`); nothing here names either.
  *
  * Opened by `OnboardingDialog` right after a profession answer the server
  * actually stored, and only if `GET /payments/intro-offer` then says the caller
- * is eligible. The quota wall shows the same offer inline on the Pro card of
- * `QuotaUpgradeDialog` instead of stacking a second modal on top of it.
+ * is eligible — and by `BasicEndedOfferTrigger` once per ended Basic term
+ * (`reason: "basic_ended"`). The quota wall shows the same offer inline on the
+ * Pro card of `QuotaUpgradeDialog` instead of stacking a second modal on top.
  *
  * Also the one place the store is (re)loaded for the chat shell: keyed on the
  * account id, so a sign-out drops the offer and the next account starts from
@@ -88,7 +90,10 @@ export function IntroOfferDialog() {
         <DialogHeader>
           <DialogTitle>{INTRO_OFFER_COPY.headline(offer.profession_group)}</DialogTitle>
           <DialogDescription>
-            {INTRO_OFFER_COPY.firstMonth(offer.first_month_sar)}
+            {trigger === "basic_ended" && (
+              <span className="mb-1 block">{INTRO_OFFER_COPY.basicEnded}</span>
+            )}
+            {INTRO_OFFER_COPY.lead(offer)}
           </DialogDescription>
         </DialogHeader>
 

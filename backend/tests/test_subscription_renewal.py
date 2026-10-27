@@ -53,7 +53,7 @@ from backend.app.services import payment_method_service as pm
 from backend.app.services import payment_service as ps
 from backend.app.services import receipt_service
 from backend.app.services import renewal_service as rs
-from backend.app.services import subscription_service as ss
+from backend.tests.promo_ladder_model import NOT_MINE, PromoLadderModel
 from shared.config import get_settings
 
 USER = "11111111-1111-1111-1111-111111111111"
@@ -87,7 +87,9 @@ def _parse(value) -> Optional[datetime]:
 # In-memory PostgREST + RPC stand-in
 # ---------------------------------------------------------------------------
 
-# `promo_price_sar` is migration 138 (المشتركون الأوائل). The renewal job reads
+# The live catalog (2026-10-27): pro 94.90, max 289.90, basic 39.90 flat with no
+# promo (191, pricing_campaigns_v2.md §8). `promo_price_sar` is migration 138
+# (المشتركون الأوائل), frozen for the legacy seats. The renewal job reads
 # the EFFECTIVE price at every charge, which is the line that keeps an early
 # adopter's 90-day promise — see FakeSupabase's `effective_plan_price` branch.
 PLAN_ROWS = [
@@ -95,9 +97,9 @@ PLAN_ROWS = [
      "billing_cycle": None, "promo_price_sar": None},
     # basic stays one_time — it says «بدون تجديد تلقائي» on the card and must
     # never be picked up by the job.
-    {"plan_id": "basic", "name_ar": "الأساسية", "price_sar": "49.90", "duration_days": 7,
-     "billing_cycle": "one_time", "promo_price_sar": "39.90"},
-    {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "89.90", "duration_days": 30,
+    {"plan_id": "basic", "name_ar": "الأساسية", "price_sar": "39.90", "duration_days": 7,
+     "billing_cycle": "one_time", "promo_price_sar": None},
+    {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "94.90", "duration_days": 30,
      "billing_cycle": "recurring_30d", "promo_price_sar": "49.90"},
     {"plan_id": "max", "name_ar": "القصوى", "price_sar": "289.90", "duration_days": 30,
      "billing_cycle": "recurring_30d", "promo_price_sar": "99.90"},
@@ -105,8 +107,9 @@ PLAN_ROWS = [
 
 
 class _Result:
-    def __init__(self, data: Any):
+    def __init__(self, data: Any, count: Optional[int] = None):
         self.data = data
+        self.count = count          # select(..., count="exact"), before limit
 
 
 class _Query:
@@ -121,10 +124,12 @@ class _Query:
         self._limit: Optional[int] = None
         self._order: Optional[str] = None
         self._desc = False
+        self._count: Optional[str] = None
 
     # builder ------------------------------------------------------------
-    def select(self, *_a, **_k):
+    def select(self, *_a, count: Optional[str] = None, **_k):
         self._op = "select"
+        self._count = count
         return self
 
     def insert(self, payload):
@@ -311,9 +316,10 @@ class _Query:
 
         if self._order:
             matched.sort(key=lambda r: str(r.get(self._order) or ""), reverse=self._desc)
+        total = len(matched) if self._count == "exact" else None
         if self._limit is not None:
             matched = matched[: self._limit]
-        return _Result([dict(r) for r in matched])
+        return _Result([dict(r) for r in matched], total)
 
 
 class _Rpc:
@@ -324,7 +330,11 @@ class _Rpc:
         return _Result(self._data)
 
 
-class FakeSupabase:
+class FakeSupabase(PromoLadderModel):
+    """The seat + price functions (138/182/183/192) are the shared MODEL in
+    ``backend/tests/promo_ladder_model.py`` — the same transcription the
+    payments suite's fake uses, switched by ``db.ladder_v2``."""
+
     def __init__(self, subscription: Optional[dict] = None):
         self.tables: dict[str, list[dict]] = {
             "plans": [dict(p) for p in PLAN_ROWS],
@@ -351,32 +361,12 @@ class FakeSupabase:
         self.early_adopter_seats: list[dict] = []
         # The singleton row's existence — what `campaign_disabled` means now.
         self.campaign_row_present = True
+        # pricing campaigns v2 (192): `db.ladder_v2`, `db.promo_batches`.
+        self._init_promo_model()
 
     def table(self, name: str) -> _Query:
+        self._sync_promo_table(name)
         return _Query(self, name)
-
-    def _live_seat(self, user_id):
-        return next(
-            (s for s in self.early_adopter_seats
-             if s.get("user_id") == user_id and not s.get("released_at")),
-            None,
-        )
-
-    def _forfeited(self, user_id) -> bool:
-        """Cancelled and let it stand (§1.6) — the price is gone for good."""
-        return any(
-            s.get("user_id") == user_id and s.get("release_reason") == "cancelled"
-            for s in self.early_adopter_seats
-        )
-
-    def _campaign_open(self) -> bool:
-        if not self.campaign_enabled:
-            return False
-        live = [s for s in self.early_adopter_seats if not s.get("released_at")]
-        return len(live) < self.campaign_seat_limit
-
-    def _plan(self, plan_id):
-        return next((p for p in self.tables["plans"] if p["plan_id"] == plan_id), None)
 
     def _sub(self, user_id):
         return next(
@@ -457,121 +447,20 @@ class FakeSupabase:
         if name == "revoke_plan_grant":
             return _Rpc([{"action": "subtracted"}])
 
-        # ── migration 138 — المشتركون الأوائل ────────────────────────────
-        # A MODEL of `.claude/plans/early_adopters.md` §3.4, not the SQL. The
-        # renewal-side rules it exists to exercise, both load-bearing:
+        # ── migrations 138/182/183/192 — seats, prices, the quote ─────────
+        # The shared MODEL (promo_ladder_model.py). The renewal-side rules it
+        # exists to exercise, both load-bearing:
         #   * the job charges with context 'current', so a live seat inside its
-        #     window pays the promo price — including after the campaign closes,
-        #     because the promise travels with the subscription (§1.4) — and the
-        #     first period that begins after the window (or after a release) pays
-        #     the list price;
+        #     window pays ITS price — including after the campaign closes and
+        #     whatever `enabled` says, because the promise travels with the
+        #     subscription (§1.4) — and the first period that begins after the
+        #     window (or after a release) pays the list price;
         #   * an open campaign does NOT reach 'current', so a renewing non-member
         #     is charged the list price and is never enrolled by a charge they
         #     did not choose to make (§1.2).
-        if name == "effective_plan_price":
-            plan = self._plan(params.get("p_plan_id")) or {}
-            listed, promo = plan.get("price_sar"), plan.get("promo_price_sar")
-            context = params.get("p_context", "purchase")
-            if context not in ("purchase", "current"):
-                # 22023 in 138: the return value IS the amount charged, so an
-                # unknown context must never be answered with a price.
-                raise RuntimeError(
-                    f"22023 invalid_parameter_value: unknown p_context {context!r}"
-                )
-            if promo is None or not self.campaign_enabled:
-                return _Rpc(listed)
-            uid = params.get("p_user_id")
-            if self._forfeited(uid):
-                return _Rpc(listed)          # beats a live seat AND an open campaign
-            seat = self._live_seat(uid)
-            # 182: the seat is tested at `p_at` (the period start the renewal
-            # job is charging for) when given, else at now().
-            at = ps._parse_ts(params.get("p_at")) or _now()
-            in_window = seat is not None and ps._parse_ts(seat["promo_ends_at"]) > at
-            if context == "current":
-                return _Rpc(promo if in_window else listed)
-            if plan.get("plan_id") == "basic":
-                return _Rpc(promo if self._campaign_open() else listed)
-            return _Rpc(promo if (in_window or self._campaign_open()) else listed)
-
-        if name == "claim_early_adopter_seat":
-            # ⚠ The renewal path must never REACH this: a renewal charge does
-            # not enrol anybody (payment_service skips the claim for
-            # `initiated_by='renewal'`). It is modelled anyway because
-            # `_mark_paid_and_grant` is shared with the browser purchase path.
-            uid = params.get("p_user_id")
-            if row is None:
-                return _Rpc([{"seat_id": None, "promo_ends_at": None,
-                              "over_capacity": False, "action": "payment_not_found"}])
-            if not uid or row.get("user_id") != uid:
-                return _Rpc([{"seat_id": None, "promo_ends_at": None,
-                              "over_capacity": False, "action": "user_mismatch"}])
-            if str(row.get("plan_id") or "") not in ss.EARLY_ADOPTER_PLAN_IDS:
-                return _Rpc([{"seat_id": None, "promo_ends_at": None,
-                              "over_capacity": False, "action": "plan_not_eligible"}])
-            if self._forfeited(uid):
-                return _Rpc([{"seat_id": None, "promo_ends_at": None,
-                              "over_capacity": False,
-                              "action": ss.CLAIM_ACTION_FORFEITED}])
-            # The promo-price gate (138), on EVERY claim — there is no "campaign
-            # is full" refusal: a seat holder is precisely someone who was
-            # charged the promotional price. Fails closed on a NULL amount_sar.
-            plan_row = self._plan(row.get("plan_id")) or {}
-            promo, amount = plan_row.get("promo_price_sar"), row.get("amount_sar")
-            quoted = ps.q2(ps._dec(amount) + ps._dec(row.get("upgrade_credit_sar")))
-            if amount is None or promo is None or quoted > ps.q2(promo) + ps._dec("0.01"):
-                return _Rpc([{"seat_id": None, "promo_ends_at": None,
-                              "over_capacity": False,
-                              "action": ss.CLAIM_ACTION_NOT_PROMO_PRICED}])
-            if not self.campaign_row_present:
-                # A missing singleton row — a broken install. `enabled = false`
-                # does NOT land here: the gate above sits ahead of it.
-                return _Rpc([{"seat_id": None, "promo_ends_at": None,
-                              "over_capacity": False,
-                              "action": ss.CLAIM_ACTION_CAMPAIGN_DISABLED}])
-            held = next(
-                (s for s in self.early_adopter_seats if s.get("payment_id") == payment_id),
-                None,
-            ) or self._live_seat(uid)
-            if held is not None:
-                # A RENEWAL by a seat holder must never re-issue the seat: that
-                # would restart the 90 days at every charge and the promo would
-                # never end (§1.3 — a window, not a count of charges).
-                return _Rpc([{"seat_id": held["seat_id"],
-                              "promo_ends_at": held["promo_ends_at"],
-                              "over_capacity": held["over_capacity"],
-                              "action": ss.CLAIM_ACTION_ALREADY_CLAIMED}])
-            seat = {
-                "seat_id": str(uuid.uuid4()), "user_id": uid, "payment_id": payment_id,
-                "claimed_at": _iso(_now()),
-                "promo_ends_at": _iso(_now() + timedelta(days=self.campaign_promo_days)),
-                "released_at": None, "release_reason": None,
-                # Capacity never refuses past the gate — it only stamps.
-                "over_capacity": not self._campaign_open(),
-            }
-            self.early_adopter_seats.append(seat)
-            return _Rpc([{"seat_id": seat["seat_id"],
-                          "promo_ends_at": seat["promo_ends_at"],
-                          "over_capacity": seat["over_capacity"],
-                          "action": ss.CLAIM_ACTION_CLAIMED}])
-
-        if name == "release_early_adopter_seat":
-            seat = self._live_seat(params.get("p_user_id"))
-            if seat is None:
-                return _Rpc(False)
-            seat["released_at"] = _iso(_now())
-            seat["release_reason"] = params.get("p_reason")
-            return _Rpc(True)
-
-        if name == "early_adopter_open":
-            return _Rpc(self._campaign_open())
-
-        if name == "early_adopter_status":
-            uid = params.get("p_user_id")
-            seat = None if self._forfeited(uid) else self._live_seat(uid)
-            return _Rpc([{"campaign_open": self._campaign_open(),
-                          "has_seat": seat is not None,
-                          "promo_ends_at": (seat or {}).get("promo_ends_at")}])
+        answer = self.promo_rpc(name, params, row)
+        if answer is not NOT_MINE:
+            return _Rpc(answer)
 
         raise AssertionError(f"unexpected rpc {name}")
 
@@ -1534,10 +1423,10 @@ def test_a_due_term_is_charged_from_the_catalog_price(flag_on, charges, no_smtp)
     assert stats["renewed"] == 1
     assert len(charges) == 1
     assert charges[0]["token"] == TOKEN
-    assert charges[0]["amount"] == 8990           # plans.price_sar, nothing else
+    assert charges[0]["amount"] == 9490           # plans.price_sar, nothing else
     row = renewal_rows(db)[0]
     assert row["status"] == "paid" and row["fulfilled_at"]
-    assert row["amount_sar"] == "89.90"
+    assert row["amount_sar"] == "94.90"
     assert row["renewal_attempt"] == 0
     assert row["upgrade_credit_sar"] == "0.00"    # a renewal is never prorated
 
@@ -2119,7 +2008,7 @@ def test_the_renewal_prices_the_seat_at_the_period_start(flag_on, charges, no_sm
         # renewal 3: the period starting on day 90. The seat window is anchored at
         # the payment's paid_at, and grant_plan runs AFTER paid_at is stamped, so
         # the day-90 boundary sits a moment past promo_ends_at — full price.
-        (timedelta(seconds=-1), 8990),
+        (timedelta(seconds=-1), 9490),
     ],
 )
 def test_a_seat_holder_gets_exactly_three_promo_charges(
@@ -2145,7 +2034,7 @@ def test_the_seat_is_still_live_at_charge_time_but_the_period_is_not(flag_on, ch
 
     sweep(db)
 
-    assert [c["amount"] for c in charges] == [8990]
+    assert [c["amount"] for c in charges] == [9490]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2170,7 +2059,7 @@ def test_an_offer_checkout_discloses_the_schedule(flag_on, intro_quote):
     text = session["recurring_disclosure_ar"]
     assert session["amount_sar"] == "1.99"
     assert text.startswith(pm.RECURRING_DISCLOSURE_AR)
-    for amount in ("1.99", "49.90", "89.90"):
+    for amount in ("1.99", "49.90", "94.90"):
         assert amount in text, amount
     assert "الشهرين الثاني والثالث" in text
 
@@ -2222,3 +2111,175 @@ def test_unusable_offer_terms_fall_back_to_v2(flag_on):
     row = {"payment_id": "x", "intro_offer_group": "legal", "intro_offer_terms": None}
     assert pm.disclosure_text(row) == pm.RECURRING_DISCLOSURE_AR
     assert pm.disclosure_version(row) == pm.DISCLOSURE_VERSION
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v4-tiers — every seat-batch purchase discloses its schedule
+# (pricing_campaigns_v2.md §3 "Consent disclosure"; migration 192)
+#
+# Built from the batch's MONTHS, frozen into the row's intro_offer_terms at
+# checkout (offer_sar / offer_months / list_sar) plus the row's own amount_sar.
+# Recognised from the row alone, so a flag flip between checkout and capture
+# can never change which text a purchase is hashed against. v3-intro rows keep
+# their v3 text and hash.
+# ═══════════════════════════════════════════════════════════════════════════
+
+V4_TWO_MONTHS = ("يُخصم 19.90 ر.س اليوم، ثم 19.90 ر.س للشهر الثاني، "
+                 "ثم 94.90 ر.س كل 30 يوماً.")
+
+
+def _tiers_row(price, months, list_price, *, amount=None):
+    return {
+        "payment_id": "x", "amount_sar": amount if amount is not None else price,
+        "intro_offer_terms": {
+            "first_month_sar": price, "then_sar": price, "then_months": months - 1,
+            "list_sar": list_price, "offer_sar": price, "offer_months": months,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "price, months, list_price, schedule",
+    [
+        ("19.90", 1, "94.90", "يُخصم 19.90 ر.س اليوم، ثم 94.90 ر.س كل 30 يوماً."),
+        ("19.90", 2, "94.90", V4_TWO_MONTHS),
+        ("189.90", 3, "289.90", "يُخصم 189.90 ر.س اليوم، ثم 189.90 ر.س لكلٍّ من "
+                                "الأشهر 2 التالية، ثم 289.90 ر.س كل 30 يوماً."),
+        ("149.90", 4, "289.90", "يُخصم 149.90 ر.س اليوم، ثم 149.90 ر.س لكلٍّ من "
+                                "الأشهر 3 التالية، ثم 289.90 ر.س كل 30 يوماً."),
+    ],
+    ids=["one_month", "two_months", "three_months", "four_months"],
+)
+def test_v4_the_schedule_is_built_from_the_months(price, months, list_price, schedule):
+    row = _tiers_row(price, months, list_price)
+    assert pm.disclosure_text(row) == f"{pm.RECURRING_DISCLOSURE_AR} {schedule}"
+    assert pm.disclosure_version(row) == pm.TIERS_DISCLOSURE_VERSION == "v4-tiers"
+
+
+def test_v4_today_is_what_is_debited_today():
+    """An upgrade's credit has already come off: the first figure is the row's
+    charge, the later months are the batch price."""
+    row = _tiers_row("149.90", 4, "289.90", amount="132.65")
+    assert pm.disclosure_text(row).endswith(
+        "يُخصم 132.65 ر.س اليوم، ثم 149.90 ر.س لكلٍّ من الأشهر 3 التالية، "
+        "ثم 289.90 ر.س كل 30 يوماً."
+    )
+
+
+@pytest.mark.parametrize("months", [0, -1, 2.5, "two", True, None])
+def test_v4_unusable_terms_fall_back_to_v2_never_to_v3(months):
+    """A v4 row's legacy keys would build a v3 sentence promising «الشهرين
+    الثاني والثالث» for a batch of a different length — so it is v4 or v2."""
+    row = _tiers_row("19.90", 2, "94.90")
+    row["intro_offer_terms"]["offer_months"] = months
+    assert pm.disclosure_text(row) == pm.RECURRING_DISCLOSURE_AR
+    assert pm.disclosure_version(row) == pm.DISCLOSURE_VERSION
+
+
+def test_v4_a_v3_row_keeps_its_v3_text():
+    """Payments already checked out keep their v3 hash (§3)."""
+    row = {"payment_id": "x", "amount_sar": "1.99", "intro_offer_group": "legal",
+           "intro_offer_terms": {"first_month_sar": "1.99", "then_sar": "49.90",
+                                 "then_months": 2, "list_sar": "94.90"}}
+    assert pm.disclosure_version(row) == pm.INTRO_DISCLOSURE_VERSION
+    assert "الشهرين الثاني والثالث" in pm.disclosure_text(row)
+
+
+def _ladder_db(profession="legal"):
+    db = FakeSupabase(sub("free", source="signup", hours_left=None))
+    db.campaign_enabled = True
+    db.intro_offer_enabled = True
+    db.ladder_v2 = True
+    db.tables["users"][0]["profession_first_group"] = profession
+    return db
+
+
+def test_v4_a_tier1_checkout_discloses_its_two_months(flag_on):
+    db = _ladder_db("legal")
+    session = run(ps.create_checkout(db, USER, "pro"))
+    assert session["amount_sar"] == "19.90"
+    assert session["recurring_disclosure_ar"] == f"{pm.RECURRING_DISCLOSURE_AR} {V4_TWO_MONTHS}"
+
+
+def test_v4_a_max_batch_checkout_discloses_its_months_too(flag_on):
+    """Applied to every batch purchase, not only the profession offer."""
+    db = _ladder_db("individual")
+    session = run(ps.create_checkout(db, USER, "max"))
+    assert session["recurring_disclosure_ar"].endswith(
+        "يُخصم 149.90 ر.س اليوم، ثم 149.90 ر.س لكلٍّ من الأشهر 3 التالية، "
+        "ثم 289.90 ر.س كل 30 يوماً."
+    )
+
+
+def test_v4_consent_hashes_the_schedule_it_showed(flag_on):
+    db = _ladder_db("legal")
+    session = run(ps.create_checkout(db, USER, "pro"))
+    result = run(ps.record_recurring_consent(db, USER, session["payment_id"], accepted=True))
+
+    assert result["recurring_disclosure_ar"] == session["recurring_disclosure_ar"]
+    assert result["disclosure_version"] == "v4-tiers"
+    meta = next(r["metadata"] for r in db.tables["audit_logs"]
+                if (r.get("metadata") or {}).get("event") == pm.CONSENT_EVENT)
+    assert meta["consent_text_hash"] == pm.consent_text_hash(session["recurring_disclosure_ar"])
+    assert meta["disclosure_version"] == "v4-tiers"
+
+
+def test_v4_capture_without_a_consent_row_hashes_the_same_schedule(flag_on):
+    """The completed purchase is the consent: the fallback hash is of the v4
+    text the page showed — and it does not care that the flag went down
+    between checkout and capture."""
+    db = _ladder_db("legal")
+    session = run(ps.create_checkout(db, USER, "pro"))
+    db.ladder_v2 = False
+    row = next(r for r in db.tables["payment_transactions"]
+               if r["payment_id"] == session["payment_id"])
+    row = {**row, "paid_at": _iso(_now())}
+
+    assert run(pm.capture_payment_method(db, row, _paid_payload(row["payment_id"])))
+    stored = db.tables["payment_methods"][0]
+    assert stored["consent_text_hash"] == pm.consent_text_hash(session["recurring_disclosure_ar"])
+
+
+def test_v4_flag_off_checkout_still_discloses_v2(flag_on):
+    """Byte-identical with the ladder down."""
+    db = FakeSupabase(sub("free", source="signup", hours_left=None))
+    db.tables["users"][0]["profession_first_group"] = "legal"
+    session = run(ps.create_checkout(db, USER, "pro"))
+    assert session["recurring_disclosure_ar"] == pm.RECURRING_DISCLOSURE_AR
+    assert session["promo"] is None
+
+
+@pytest.mark.parametrize(
+    "window_after_expiry, expected_halalas",
+    [
+        # renewal 1: the period starting on day 30, inside a 2-month window
+        (timedelta(days=30), 1990),
+        # renewal 2: the period starting on day 60 — the window (paid_at + 60d)
+        # ended a moment before it, exactly like 182's day-90 boundary
+        (timedelta(seconds=-1), 9490),
+    ],
+)
+def test_v4_a_two_month_batch_gets_exactly_two_promo_charges(
+    flag_on, charges, no_smtp, window_after_expiry, expected_halalas
+):
+    """Months per batch (§1.4-3): promo_ends_at = paid_at + 30 × months, and
+    the job's p_at = expires_at does the rest — renewal_service unchanged."""
+    expires = ps._parse_ts(sub("pro")["expires_at"])
+    db = FakeSupabase(sub("pro"))
+    db.tables["user_subscriptions"][0]["expires_at"] = _iso(expires)
+    store_method(db)
+    db.ladder_v2 = True
+    db.early_adopter_seats.append({
+        "seat_id": "s", "user_id": USER, "payment_id": "p",
+        "promo_ends_at": _iso(expires + window_after_expiry),
+        "released_at": None, "release_reason": None, "over_capacity": False,
+        "batch_id": "pro_t1_a", "plan_id": "pro", "price_tier": 1, "price_sar": "19.90",
+    })
+
+    sweep(db)
+
+    assert [c["amount"] for c in charges] == [expected_halalas]
+    asked = [p for n, p in db.rpc_params if n == "effective_plan_price"]
+    assert asked[0]["p_context"] == "current"
+    assert ps._parse_ts(asked[0]["p_at"]) == expires

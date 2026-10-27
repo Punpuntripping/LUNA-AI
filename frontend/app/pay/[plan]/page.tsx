@@ -17,13 +17,17 @@ import {
   findPricingPlan,
   formatHalalas,
   formatSar,
+  promoBillingNoteFor,
 } from "@/lib/pricing";
 import { useCheckout } from "@/hooks/use-payments";
 import { Button } from "@/components/ui/button";
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
+import { PromoTermsLink } from "@/components/pricing/PromoTermsLink";
 import {
   INTRO_OFFER_COPY,
   introOfferScheduleRows,
+  parseOfferTerms,
+  termsFromCheckoutPromo,
 } from "@/components/promo/intro-offer-content";
 
 /**
@@ -308,18 +312,30 @@ export default function PayPlanPage() {
   const creditSar = Number(session?.credit_sar ?? 0);
   const hasCredit = creditSar > 0;
 
-  // عرض الشهر الأول — the server priced THIS row by the profession intro offer
-  // (`amount_halalas` already is the first-month price). The block below only
-  // explains that number and the step-up after it; every figure is the
-  // server's. A partial block is ignored rather than half-rendered.
-  const introOffer =
-    session?.intro_offer &&
-    session.intro_offer.first_month_sar &&
-    session.intro_offer.then_sar &&
-    session.intro_offer.list_sar
-      ? session.intro_offer
-      : null;
-  const nonRefundable = Boolean(session?.non_refundable || introOffer);
+  // The profession offer (Pro tier 1) — the server priced THIS row by it
+  // (`amount_halalas` already is the offer price). The block below only
+  // explains that number and the step-up after it; every figure, and the
+  // number of months, is the server's. `parseOfferTerms` reads the current
+  // `offer_sar`/`offer_months` keys and falls back to the legacy first-month
+  // keys of an older backend; a partial block is ignored rather than
+  // half-rendered.
+  const introOfferTerms = parseOfferTerms(session?.intro_offer);
+  // Any other promotional quote (any plan, any price tier). Same rows, same
+  // wording, via the same normalised terms. The profession offer wins when
+  // both arrive — it is the more specific explanation of the same number.
+  const promoTerms = introOfferTerms
+    ? null
+    : termsFromCheckoutPromo(session?.promo);
+  const offerTerms = introOfferTerms ?? promoTerms;
+  // Only the profession offer's FIRST payment is non-refundable; a plain promo
+  // keeps the 24h refund unless the server says otherwise.
+  const nonRefundable = Boolean(session?.non_refundable || introOfferTerms);
+
+  const headerNote = introOfferTerms
+    ? INTRO_OFFER_COPY.billingNote(introOfferTerms)
+    : promoTerms
+      ? promoBillingNoteFor(plan, promoTerms.offer_months)
+      : plan.billingNote;
 
   return (
     <div className="flex flex-col gap-8" data-testid="pay-page">
@@ -327,9 +343,7 @@ export default function PayPlanPage() {
         <h1 className="text-2xl font-bold text-foreground">
           إتمام الاشتراك — باقة {plan.nameAr}
         </h1>
-        <p className="text-sm text-muted-foreground">
-          {introOffer ? INTRO_OFFER_COPY.billingNote : plan.billingNote}
-        </p>
+        <p className="text-sm text-muted-foreground">{headerNote}</p>
       </header>
 
       {/* Order summary. When a prorated upgrade credit applies, the charged
@@ -340,16 +354,16 @@ export default function PayPlanPage() {
           <span className="text-sm text-muted-foreground">سعر الباقة</span>
           <span
             className={
-              introOffer
+              offerTerms
                 ? "flex items-center gap-1 text-sm tabular-nums text-muted-foreground"
                 : "flex items-center gap-1 text-sm tabular-nums text-foreground"
             }
           >
-            {introOffer ? (
+            {offerTerms ? (
               <>
                 <span className="sr-only">بدلاً من</span>
                 <span className="line-through">
-                  {formatSar(introOffer.list_sar)}
+                  {formatSar(offerTerms.list_sar)}
                 </span>
               </>
             ) : (
@@ -359,16 +373,18 @@ export default function PayPlanPage() {
           </span>
         </div>
 
-        {introOffer && (
+        {offerTerms && (
           <div
             className="flex items-baseline justify-between gap-3"
-            data-testid="pay-intro-offer-price"
+            data-testid={
+              introOfferTerms ? "pay-intro-offer-price" : "pay-promo-price"
+            }
           >
             <span className="text-sm font-medium text-primary">
-              {INTRO_OFFER_COPY.offerPriceLabel}
+              {INTRO_OFFER_COPY.offerPriceLabel(offerTerms)}
             </span>
             <span className="flex items-center gap-1 text-sm font-medium tabular-nums text-primary">
-              {formatSar(introOffer.first_month_sar)}
+              {formatSar(offerTerms.offer_sar)}
               <RiyalSymbol className="h-3.5 w-auto" />
             </span>
           </div>
@@ -403,23 +419,22 @@ export default function PayPlanPage() {
         </div>
 
         {/* The step-up, under the amount due and in the same figures the
-            server's disclosure states. The recurring consent text carries no
-            amounts for ordinary purchases, so for an offer that jumps from
-            1.99 to 49.90 on a saved card this block is part of the disclosure,
-            not decoration (profession_intro_offer §3.3 / §4.5). */}
-        {introOffer && (
+            server's disclosure states. For a promo that steps up from 19.90 to
+            94.90 on a saved card this block is part of the disclosure, not
+            decoration (pricing_campaigns_v2 §4; profession_intro_offer §3.3 /
+            §4.5). The promo-terms link travels with the promo price, as on
+            every other surface that shows one. */}
+        {offerTerms && (
           <div
             className="flex flex-col gap-2 border-t border-border pt-3"
-            data-testid="pay-intro-offer-schedule"
+            data-testid={
+              introOfferTerms ? "pay-intro-offer-schedule" : "pay-promo-schedule"
+            }
           >
             <span className="text-xs font-semibold text-muted-foreground">
               {INTRO_OFFER_COPY.scheduleHeading}
             </span>
-            {introOfferScheduleRows(
-              introOffer.then_sar,
-              introOffer.then_months,
-              introOffer.list_sar,
-            ).map((row) => (
+            {introOfferScheduleRows(offerTerms).map((row) => (
               <div
                 key={row.label}
                 className="flex items-baseline justify-between gap-3"
@@ -431,6 +446,7 @@ export default function PayPlanPage() {
                 </span>
               </div>
             ))}
+            <PromoTermsLink className="w-fit" />
           </div>
         )}
 

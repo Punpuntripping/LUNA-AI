@@ -734,7 +734,30 @@ def _no_seat() -> dict:
     """The "not an early adopter" answer, as a FRESH dict every time (this value
     is embedded in an API payload — a shared literal would be one mutation away
     from telling every caller the same lie)."""
-    return {"is_member": False, "promo_ends_at": None, "returnable": False}
+    return {"is_member": False, "promo_ends_at": None, "returnable": False,
+            "tier_rules": False}
+
+
+def ladder_v2_enabled(supabase: SupabaseClient) -> bool:
+    """``early_adopter_campaign.ladder_v2`` (192) — are the price-tier rules in
+    force? Read for ``early_adopter.tier_rules``: the cancel dialog's note
+    differs (v2: cancelling loses the seat and its tier, never-used tiers stay
+    open; before: the promo price is forfeited for good). Never raises; any
+    failure reads False, i.e. today's note."""
+    try:
+        res = (
+            supabase.table("early_adopter_campaign")
+            .select("ladder_v2")
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+    except Exception as exc:  # noqa: BLE001 — includes 192 not being applied
+        logger.warning("early_adopter_campaign.ladder_v2 unreadable (reading False): %s", exc)
+        return False
+    if isinstance(rows, dict):
+        rows = [rows]
+    return bool(rows) and isinstance(rows[0], dict) and rows[0].get("ladder_v2") is True
 
 
 def _rpc_row(res: Any) -> dict:
@@ -900,6 +923,13 @@ def release_early_adopter_seat(
     they may buy back in while seats remain. ``reason='cancelled'`` (§1.6) is the
     permanent forfeiture — only ``restore_early_adopter_seat`` undoes it.
 
+    192 (V5), same signature: on a 'refund' release whose released seat was
+    claimed by a payment that is now ``refunded``, the SQL also gives back the
+    seat that payment superseded ('upgraded', ``released_by_payment_id``) while
+    its window is open — refunding a Pro → Max switch returns the Pro seat. It
+    identifies the switch from the payment row's status, which is why BOTH
+    refund paths stamp ``status='refunded'`` before calling this.
+
     Never raises, for both callers' reasons: on the refund path the money is
     already back with the customer, and on the cancel path the flag write IS the
     cancellation.
@@ -990,7 +1020,8 @@ def _is_intro_offer_member(supabase: SupabaseClient, user_id: str) -> bool:
 
 
 def early_adopter_status(supabase: SupabaseClient, user_id: str) -> dict:
-    """``early_adopter_status(user)`` → ``{is_member, promo_ends_at, returnable}``.
+    """``early_adopter_status(user)`` → ``{is_member, promo_ends_at, returnable,
+    tier_rules}``.
 
     ``returnable`` (183): the caller started on عرض الشهر الأول, so cancelling
     does NOT forfeit the price for good — the dialog shows the "you can come
@@ -1013,6 +1044,7 @@ def early_adopter_status(supabase: SupabaseClient, user_id: str) -> dict:
     """
     if not user_id:
         return _no_seat()
+    tier_rules = ladder_v2_enabled(supabase)
     try:
         row = _rpc_row(
             supabase.rpc("early_adopter_status", {"p_user_id": user_id}).execute()
@@ -1022,9 +1054,13 @@ def early_adopter_status(supabase: SupabaseClient, user_id: str) -> dict:
             "early_adopter_status unavailable for user=%s (reading as 'not a "
             "member'): %s", user_id, exc,
         )
-        return {**_no_seat(), "returnable": _is_intro_offer_member(supabase, user_id)}
+        return {**_no_seat(), "returnable": _is_intro_offer_member(supabase, user_id),
+                "tier_rules": tier_rules}
     return {
         "is_member": bool(row.get("has_seat")),
         "promo_ends_at": row.get("promo_ends_at") if row.get("has_seat") else None,
         "returnable": _is_intro_offer_member(supabase, user_id),
+        # 192: which cancellation note applies (ladder_v2). A boolean about the
+        # RULES, never about capacity — still no count on this payload.
+        "tier_rules": tier_rules,
     }
