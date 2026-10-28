@@ -21,6 +21,7 @@ model cost ``tier_1``/``tier_2`` — see ``CLAUDE.md`` § "Layer vs Tier".
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Literal
 
@@ -132,6 +133,24 @@ _LEVEL_PRIMARY_ID_FIELD: dict[SimpleSearchLevel, str] = {
 }
 
 
+def _is_uuid(value: str) -> bool:
+    """True when ``value`` parses as a UUID — the shape of every primary id.
+
+    All six primary-id columns above are ``uuid`` in Postgres (verified live
+    2026-10-28 on ``information_schema.columns``: ``chunks_v2.id``,
+    ``regulations_v2.id``, ``articles_v2.id``, ``cases.id``, ``circulars.id``,
+    ``services.id``), and so is ``articles_v2.regulation_id``. ``case_ref`` and
+    ``article_number`` are TEXT and never go through this check. Accepts the
+    same spellings ``uuid.UUID`` does (dashed, bare hex, braces) — all of which
+    Postgres' ``uuid`` input also accepts, so nothing valid there is refused here.
+    """
+    try:
+        uuid.UUID(str(value or ""))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
 class ResolvedObject(BaseModel):
     """ONE legal object, identified but **not yet unfolded**.
 
@@ -174,12 +193,31 @@ class ResolvedObject(BaseModel):
         Deliberately a query, not a raise: the searcher resolves incrementally
         and a half-built object is a normal intermediate state. The *unfold*
         entry point is where an unresolvable object becomes an error.
+
+        **Present is not the same as valid.** A primary id that is filled but is
+        not a UUID counts as missing. Measured in prod (convo 93fafee7, the user's
+        retry turn): with no handle to select, the searcher wrote the service's
+        TITLE into ``service_id``. A non-empty check passed it, the unfold missed,
+        the synthesizer rejected the miss, and three cycles went by before the
+        turn saved a degraded line. Rejected here, the same mistake is one
+        Arabic ``ModelRetry`` in the output validator, in the same request.
+
+        A filled-but-invalid primary id also outranks the second identities
+        below, rather than falling through to them: the unfolders key on the
+        primary id whenever it is non-empty (``unfold_judgment`` never falls back
+        to ``case_ref``), so «a title in ``case_id`` plus a real ``case_ref``»
+        would still open nothing.
         """
-        if self.primary_id():
-            return ""
+        primary = self.primary_id()
+        if primary:
+            return "" if _is_uuid(primary) else _LEVEL_PRIMARY_ID_FIELD[self.level]
         # L3 second identity: (regulation_id, article_number) is equally valid.
+        # ``regulation_id`` is a uuid column too, so it gets the same check;
+        # ``article_number`` is TEXT («1-1», «81 مكرر») and only needs to exist.
+        # A filled-but-invalid one is named as such, so the retry points at the
+        # field that is actually wrong rather than at ``article_id``.
         if self.level == "article" and self.regulation_id and self.article_number:
-            return ""
+            return "" if _is_uuid(self.regulation_id) else "regulation_id"
         # L4 second identity: ``case_ref`` alone resolves a ruling. It is the key
         # ``case:<ref>`` references have always carried, so a WI-ref attachment
         # (case C) arrives holding the ref and NOT the uuid — ``unfold_judgment``
@@ -403,6 +441,11 @@ class ResponderDocDigest:
             The responder must not re-announce it, and it must not re-grant it a
             card — the paused leg already published one, and a second publish is
             a duplicate row in a 15-item-capped workspace.
+        card_forced: the compliance agent's artifact
+            (``.claude/plans/simple_search_compliance_path.md`` D5 — "it is
+            always an artifact"). Code publishes it whatever the verdict says,
+            so it renders as ``card="always"`` and the responder frames it as a
+            card — a line or two pointing at it — instead of ruling on one.
     """
 
     label: str
@@ -413,6 +456,7 @@ class ResponderDocDigest:
     truncated: bool = False
     summary_payload: bool = False
     already_delivered: bool = False
+    card_forced: bool = False
 
 
 __all__ = [

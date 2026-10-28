@@ -81,6 +81,10 @@ from typing import Awaitable, Callable, Literal
 
 from pydantic_ai import Agent, RunContext
 
+# Pure schema module (pydantic + stdlib only) — no import cycle with the
+# searcher, which imports THIS module lazily inside ``_register_manual_search``.
+from agents.simple_search.models import ResolvedObject, SimpleSearchLevel
+
 # Reuse, do not re-implement: all four are part of fetch_article's public
 # surface (``__all__``) except the two ambiguity constants, which are imported
 # by name deliberately so the ask-the-user payload has ONE definition across
@@ -104,6 +108,12 @@ DataType = Literal["regs", "judgments", "services", "circulars", "article"]
 # Async ``str -> 1024-d vector``. Structurally what
 # ``agents.utils.embeddings.embed_regulation_query`` is.
 EmbedFn = Callable[[str], Awaitable[list[float]]]
+
+# ``(ResolvedObject) -> handle``. Structurally ``SearcherDeps.register_candidate``
+# (its ``preview`` argument is deliberately never passed — see
+# :func:`_register_objects`). ``None`` for non-agent callers (the eval harness,
+# ``manual_search_result``), which get plain ``[n]`` numbering instead.
+RegisterFn = Callable[[ResolvedObject], str]
 
 
 # --------------------------------------------------------------------------- #
@@ -913,24 +923,49 @@ def _build_ambiguous(candidates: list[dict], data_type: str) -> str:
     )
 
 
-def _render_candidates(candidates: list[dict]) -> str:
-    """Render the Gate-3 table with stable ``C1…Cn`` labels.
+def _render_candidates(
+    candidates: list[dict], handles: list[str] | None = None
+) -> str:
+    """Render the Gate-3 table, labelled with REAL handles when there are any.
 
-    Labels are minted by CODE, never renumbered and never a UUID — the v4
-    reranker convention (``reg_compliance_search/reranker.py:477``). Every
+    ``handles[i]`` is the registry handle minted for ``candidates[i]`` (``""``
+    when that row could not be registered — see :func:`_resolved_object`). Every
     candidate is shown, not a keep-subset: for a one-of-N identity pick the
     rejected rows ARE the evidence the searcher reasons over.
+
+    **Why the labels changed (93fafee7, fix B2).** This table used to mint
+    ``C1…Cn`` from a local ``enumerate`` and register none of them. The searcher
+    selected «C1», the output validator — which resolves against
+    ``SearcherDeps.candidates`` — rejected it as unknown, and the model fell
+    back to inventing ids. Worse, the local numbering COLLIDED with the
+    registry's own ``C…`` sequence: once a ``resolve_regulation`` hit held
+    ``C1``, this table's «C1» silently meant a different document — the
+    wrong-document risk, not merely a wasted request. Now a label is either a
+    registered handle (selectable, unique turn-wide) or a plain ``[n]`` that no
+    resolver could mistake for one. A ``C`` prefix is never minted here.
     """
+    handles = list(handles or [])
+    has_handles = any(handles)
     lines = ["المرشحون:"]
     for i, c in enumerate(candidates, start=1):
-        bits = [f"C{i} · {c.get('title') or '—'}"]
+        handle = handles[i - 1] if i - 1 < len(handles) else ""
+        label = handle or f"[{i}]"
+        bits = [f"{label} · {c.get('title') or '—'}"]
         if c.get("lead"):
             bits.append(str(c["lead"]))
         lines.append(" — ".join(bits))
-    lines.append(
-        "اختر المرشّح المطابق لما ذكره المستخدم ثم أعد الاستدعاء باسمه الكامل، "
-        "أو اسأل المستخدم إن لم يكن أيٌّ منها مطابقًا."
-    )
+    if has_handles:
+        lines.append(
+            "اختر المرشّح المطابق لما ذكره المستخدم وضع معرّفه (مثل "
+            f"{next(h for h in handles if h)}) في `selected` مباشرة — لا حاجة "
+            "لإعادة البحث ولا لكتابة أي معرّف بيدك. "
+            "أو اسأل المستخدم إن لم يكن أيٌّ منها مطابقًا."
+        )
+    else:
+        lines.append(
+            "اختر المرشّح المطابق لما ذكره المستخدم ثم أعد الاستدعاء باسمه الكامل، "
+            "أو اسأل المستخدم إن لم يكن أيٌّ منها مطابقًا."
+        )
     return "\n".join(lines)
 
 
@@ -951,6 +986,141 @@ def _not_found(query: str, data_type: str) -> str:
     """Names the USER's own string, never a resolved one (§5.1)."""
     noun = _NOT_FOUND_NOUN.get(data_type, "عنصر")
     return f"لم يتم العثور على {noun} بهذا الاسم: «{(query or '').strip()}»"
+
+
+# --------------------------------------------------------------------------- #
+# Handles (93fafee7, fixes B1/B2) — what was found becomes SELECTABLE.
+# --------------------------------------------------------------------------- #
+#
+# Before this, a resolved hit came back as a bare ``## <title>``: no id and no
+# handle. ``SearcherDecision`` then told the model to "fill the id fields
+# exactly as the tool reported them", which was impossible — so in prod the
+# searcher re-ran the same lookup 10 times hunting for an id that was never
+# going to appear, hit ``tool_calls_limit``, and the resume leg died with the
+# generic error banner. On the user's retry it gave up and wrote the TITLE into
+# ``service_id``. One registered handle ends that loop after a single call.
+
+#: data_type → the level a hit is opened at. ``article`` is absent on purpose:
+#: its stage-1 winner is the parent نظام, and the object it hands on is built by
+#: stage 2 (:func:`_article_object`), not from a candidate row.
+_LEVEL_BY_TYPE: dict[str, SimpleSearchLevel] = {
+    "regs": "regulation_doc",
+    "judgments": "judgment",
+    "circulars": "circular",
+    "services": "service",
+}
+
+#: level → the ``ResolvedObject`` field a candidate's ``id`` fills. Every one of
+#: these is the source table's own uuid: ``search_index.content_id`` and
+#: ``search_topics.doc_id`` key on it (verified live 2026-10-28 — 1157/1157
+#: judgment rows ∈ ``cases.id``, 1843/1843 circular rows ∈ ``circulars.id``,
+#: 100/100 service rows ∈ ``services.id``), and so do the ILIKE and
+#: ``hybrid_search_cases`` rungs, which select ``id`` directly.
+_ID_FIELD_BY_LEVEL: dict[str, str] = {
+    "regulation_doc": "regulation_id",
+    "judgment": "case_id",
+    "circular": "circular_id",
+    "service": "service_id",
+}
+
+
+def _resolved_object(candidate: dict, data_type: str) -> ResolvedObject | None:
+    """One candidate row → the identity the searcher can hand on, or None.
+
+    ``case_ref`` is NOT needed for a judgment: ``unfold_judgment`` keys on
+    ``cases.id`` when it is present (it only falls back to ``case_ref`` for
+    case-C refs that carry nothing else), and the enrichment step backfills the
+    ref from the row anyway.
+
+    Returns None — no handle, the row is still SHOWN — when the row's id would
+    not survive ``missing_id``: an object the unfold cannot open must never be
+    selectable, because selecting it is exactly the 93fafee7 dead end with a
+    handle in front of it.
+    """
+    level = _LEVEL_BY_TYPE.get(data_type)
+    cid = str(candidate.get("id") or "").strip()
+    if level is None or not cid:
+        return None
+    obj = ResolvedObject(level=level, title=str(candidate.get("title") or "").strip())
+    setattr(obj, _ID_FIELD_BY_LEVEL[level], cid)
+    return None if obj.missing_id() else obj
+
+
+def _article_object(reg_id: str, reg_name: str, number: str) -> ResolvedObject | None:
+    """Stage 2's product as an ``article`` identity — the ``(regulation_id, number)`` pair.
+
+    The same shape ``resolve_article`` registers when ``articles_v2`` has no id
+    for the مادة: the unfold opens it by ``(regulation_id, article_number)`` and
+    falls back to the chunk that owns it. Built only after stage 2 actually
+    returned the body, so the handle never points at an article that is not
+    there.
+    """
+    obj = ResolvedObject(
+        level="article",
+        regulation_id=reg_id,
+        article_number=(number or "").strip(),
+        title=f"المادة {(number or '').strip()}",
+        subtitle=reg_name,
+    )
+    return None if obj.missing_id() else obj
+
+
+async def _register_objects(
+    supabase, register: RegisterFn | None, objects: list[ResolvedObject | None]
+) -> list[str]:
+    """Enrich then register each object; one handle per slot (``""`` for None).
+
+    **Enriched first**, with the searcher's own batched identity join
+    (``searcher._enrich_identities``): ``runner.build_references`` labels the
+    published card from ``title`` / ``subtitle`` / ``doc_type`` /
+    ``source_url``, and a candidate row carries none of the last three — a
+    selected manual-search hit would otherwise publish a card with no link and,
+    for a ruling, a court-less title. One select per level for the whole table.
+    Never raises: the join swallows its own DB errors, and a failed import
+    leaves the objects as they are (still openable — only less labelled).
+
+    **No preview line is passed.** ``register_candidate(obj, preview)`` appends
+    the preview to ``candidate_lines``, which the searcher's instructions render
+    as «Sources already in front of the user» — the case-C list. A search hit is
+    not in front of the user, and listing it there would tell the next cycle the
+    user attached it. ``resolve_regulation`` registers the same way.
+    """
+    if register is None or not any(o is not None for o in objects):
+        return ["" for _ in objects]
+    live = [o for o in objects if o is not None]
+    try:
+        # Lazy: the searcher imports THIS module lazily, so a top-level import
+        # here would be the first leg of a cycle the moment anyone imports
+        # manual_search first (the eval harness, these tests).
+        from agents.simple_search.searcher import _enrich_identities
+
+        await asyncio.to_thread(_enrich_identities, supabase, live)
+    except Exception as exc:  # noqa: BLE001 — enrichment only improves labels
+        logger.warning("manual_search: identity enrichment failed: %s", exc)
+    handles: list[str] = []
+    for obj in objects:
+        if obj is None:
+            handles.append("")
+            continue
+        if not obj.title:
+            obj.title = obj.label_ar()
+        try:
+            handles.append(str(register(obj) or ""))
+        except Exception as exc:  # noqa: BLE001 — a handle is a bonus, not the turn
+            logger.warning("manual_search: handle registration failed: %s", exc)
+            handles.append("")
+    return handles
+
+
+def _with_handle(handle: str, text: str) -> str:
+    """``C4 — <payload>`` plus the one instruction that ends the 93fafee7 loop."""
+    if not handle:
+        return text
+    return (
+        f"{handle} — {text}\n\n"
+        f"(لتسليم هذا المستند ضع المعرّف {handle} في `selected`؛ "
+        "لا تكتب أي معرّف أو عنوان بيدك.)"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -975,6 +1145,34 @@ async def manual_search_result(
     3,951** regulations (45.7 %) have article rows at all, so a resolved نظام
     with no articles is a NORMAL outcome and gets its own distinct message so
     the searcher stops retrying.
+
+    The public, registry-free surface (the eval harness and the tests call
+    it). It mints no handles, so a candidate table is numbered ``[1]…[n]``; the
+    agent tool goes through :func:`_manual_search_text` with the searcher's
+    registry instead and gets real ``C…`` handles.
+    """
+    return await _manual_search_text(
+        supabase, query, data_type,
+        article_number=article_number, embedding_fn=embedding_fn, register=None,
+    )
+
+
+async def _manual_search_text(
+    supabase,
+    query: str,
+    data_type: str,
+    *,
+    article_number: str = "",
+    embedding_fn: EmbedFn | None | _HouseEmbedder = USE_HOUSE_EMBEDDER,
+    register: RegisterFn | None = None,
+) -> str:
+    """:func:`manual_search_result`'s body, with an optional handle registry.
+
+    With ``register`` (the agent tool): a resolved hit is registered and its
+    payload prefixed with the handle (B1), and every candidate-table row is
+    registered and labelled with its real handle (B2). Without it the text is
+    exactly what the registry-free surface has always returned, bar the
+    ``[n]`` numbering of the candidate table.
     """
     candidates = await manual_search_core(
         supabase, query, data_type, embedding_fn=embedding_fn
@@ -996,11 +1194,24 @@ async def manual_search_result(
     if decision.status == "ambiguous":
         return _build_ambiguous(decision.candidates, data_type)
     if decision.status == "candidates":
-        return _render_candidates(decision.candidates)
+        # ``article`` stage-1 candidates are PARENT أنظمة, not the مادة the
+        # user asked for — handing one on would open the whole law. They stay
+        # unregistered ([n]-numbered) and the searcher re-calls with the
+        # chosen title, as before.
+        objects = (
+            [_resolved_object(c, data_type) for c in decision.candidates]
+            if data_type != "article" else []
+        )
+        handles = await _register_objects(supabase, register, objects)
+        return _render_candidates(decision.candidates, handles)
 
     if data_type != "article":
         if decision.status == "resolved" and decision.winner:
-            return _render_resolved(decision.winner, decision.confidence)
+            text = _render_resolved(decision.winner, decision.confidence)
+            (handle,) = await _register_objects(
+                supabase, register, [_resolved_object(decision.winner, data_type)]
+            )
+            return _with_handle(handle, text)
         return _not_found(query, data_type)
 
     # --- article, stage 2 ----------------------------------------------------
@@ -1020,7 +1231,12 @@ async def manual_search_result(
                 f"\n\n— (ثقة متوسطة: «{reg_name}» هو أقرب نظام مطابق للاسم "
                 "المذكور، وليس تطابقًا تامًّا؛ تأكّد أنه النظام المقصود قبل اعتماده.)"
             )
-        return text
+        # The body still comes back (the pre-existing contract); the handle is
+        # what lets the searcher hand the مادة on without a second resolver call.
+        (handle,) = await _register_objects(
+            supabase, register, [_article_object(reg_id, reg_name, num)]
+        )
+        return _with_handle(handle, text)
 
     # Distinguish "this نظام has NO articles indexed at all" from "that one
     # article is missing" — otherwise the searcher retries a lookup that can
@@ -1061,22 +1277,33 @@ def register_manual_search(agent: Agent) -> None:
     (``.supabase``). If the deps ALSO carry a callable ``.embedding_fn`` it is
     used for the semantic rungs; otherwise the house Alibaba embedder is
     resolved lazily. Neither is required — the tool degrades to BM25 + ILIKE.
+    A callable ``.register_candidate`` (``SearcherDeps``) turns every hit into a
+    selectable ``C…`` handle; without one the tool returns handle-free text.
     """
 
+    # ``services`` is deliberately NOT in this Literal (plan
+    # ``simple_search_compliance_path.md`` §2.3). A service question describes a
+    # need, and this tool resolves a NAME — convo 93fafee7 ran it ten times on
+    # the same phrasing, hit ``tool_calls_limit`` and lost the turn. Services
+    # now go through ``SearcherDecision.service_queries`` → the compliance
+    # path, so the searcher cannot even express the old call. The core
+    # (``manual_search_core`` / ``manual_search_result``) still serves
+    # ``services`` for the eval harness — only the agent-facing schema shrank.
     @agent.tool
     async def manual_search(  # noqa: RUF029 — supabase client is sync by design
         ctx: RunContext[HasSupabase],
         query: str,
-        data_type: Literal["regs", "judgments", "services", "circulars", "article"],
+        data_type: Literal["regs", "judgments", "circulars", "article"],
         article_number: str = "",
     ) -> str:
         """Find ONE legal document when you don't already have its id.
 
         Use this to turn the user's phrasing into a specific document. For
-        **judgments, services and circulars this is the only lookup that
-        exists** — reach for it first. For **regulations and articles**, use it
-        when ``fetch_article`` found nothing, returned ``AMBIGUOUS:``, or the
-        user named the law too loosely for an exact title.
+        **judgments and circulars this is the only lookup that exists** —
+        reach for it first. For **regulations and articles**, use it when
+        ``fetch_article`` found nothing, returned ``AMBIGUOUS:``, or the user
+        named the law too loosely for an exact title. **Never for government
+        services** — those are found with ``service_queries``, not by name.
 
         Pass ``query`` EXACTLY as the user wrote it — do not paraphrase,
         translate, expand or "clean up" the name. The search has an exact-title
@@ -1084,19 +1311,25 @@ def register_manual_search(agent: Agent) -> None:
         destroys it and turns a certain answer into a guess.
 
         Returns:
-            - ``## <title>`` plus a short lead when one document was
+            - ``C4 — ## <title>`` plus a short lead when one document was
               identified (with a «(ثقة متوسطة …)» note when the match was
               approximate — verify it's the right one before relying on it).
-            - ``المرشحون:`` followed by a ``C1…Cn`` list when several documents
-              could be meant. Pick the one matching what the user said and call
-              again with its full title, or ask the user.
+              **Put the handle (``C4``) in ``selected``** — that is how you
+              hand the document on. Do not search again for its id and never
+              type an id or a title into ``objects``.
+            - ``المرشحون:`` followed by one line per candidate, each starting
+              with its own handle (``C5 · …``, ``C6 · …``) when several
+              documents could be meant. Put the handle of the one matching
+              what the user said in ``selected`` — no second search needed —
+              or ask the user.
             - A string starting ``AMBIGUOUS:`` when nothing is close enough to
               choose between — use ``ask_user``.
             - ``لم يتم العثور على …`` when nothing matched. Don't retry the same
               wording; ask the user or say you couldn't find it.
-            - For ``data_type="article"``: the article body, or «المادة N غير
-              موجودة في …», or «… غير مفهرس على مستوى المواد» — the last one
-              means that law has no articles indexed, so stop retrying it.
+            - For ``data_type="article"``: ``C7 — `` plus the article body (put
+              ``C7`` in ``selected``), or «المادة N غير موجودة في …», or «… غير
+              مفهرس على مستوى المواد» — the last one means that law has no
+              articles indexed, so stop retrying it.
 
         Args:
             query: The document as the user named it, VERBATIM.
@@ -1117,10 +1350,15 @@ def register_manual_search(agent: Agent) -> None:
         embedder: EmbedFn | None | _HouseEmbedder = (
             dep_fn if callable(dep_fn) else USE_HOUSE_EMBEDDER
         )
+        # The handle registry, guarded exactly like ``embedding_fn``: the
+        # searcher's ``SearcherDeps`` carries it, a bare ``HasSupabase`` deps
+        # (eval harness, older callers) does not and gets the registry-free text.
+        reg_fn = getattr(ctx.deps, "register_candidate", None)
         try:
-            return await manual_search_result(
+            return await _manual_search_text(
                 ctx.deps.supabase, query, data_type,
                 article_number=article_number, embedding_fn=embedder,
+                register=reg_fn if callable(reg_fn) else None,
             )
         except Exception as exc:  # noqa: BLE001
             # Degrade to the not-found string. NEVER ModelRetry — the searcher
@@ -1146,6 +1384,7 @@ __all__ = [
     "Decision",
     "DataType",
     "EmbedFn",
+    "RegisterFn",
     "USE_HOUSE_EMBEDDER",
     "MAX_CALLS_PER_CYCLE",
 ]

@@ -10,11 +10,19 @@ its identity on. Five responsibilities, per plan §2.1:
 3. **Manual search** — registered from :mod:`agents.simple_search.manual_search`
    (C2, its own plan). Its scope is asymmetric: ``fetch_article`` is the repo's
    only identity resolver and it covers regulations and articles alone, so for
-   judgments / services / circulars manual search is not a fallback — it is the
-   **primary and only** path.
+   judgments / circulars manual search is not a fallback — it is the
+   **primary and only** path. **Services are no longer resolved at all**
+   (``.claude/plans/simple_search_compliance_path.md`` §2): a service question
+   describes a need rather than naming a service, so the searcher writes ≤3
+   :attr:`SearcherDecision.service_queries` and the runner hands them to the
+   service search + compliance agent (:mod:`agents.simple_search.compliance`).
+   A service already in front of the user (case B/C) still arrives as a
+   ``C…`` handle and still goes to the L6 synthesizer.
 4. **``ask_user``** when resolution stays ambiguous. Deferred tool + the
    ``paused_runs`` machinery, exactly the planner's pattern
-   (``planner/agent.py:140``).
+   (``planner/agent.py:140``). On a services question it is refused in code
+   until the compliance agent has sent a cycle back
+   (:attr:`SearcherDeps.services_reverted`).
 5. **Abort out-of-scope turns back to the router** via
    :attr:`SearcherDecision.aborted`, mirroring ``PlannerDecision.aborted``
    (``planner/models.py:122-129``).
@@ -156,6 +164,14 @@ class SearcherDeps:
     candidate_lines: list[str] = field(default_factory=list)
     #: Rejection reasons from previous cycles this turn (D3 loop-back).
     rejection_notes: list[str] = field(default_factory=list)
+    #: True once the compliance agent has sent a services cycle BACK this turn
+    #: (plan ``simple_search_compliance_path.md`` D7). Set by the runner, read by
+    #: the ``ask_user`` guard: on a services question the searcher must search
+    #: before it may ask. Its own flag rather than "``rejection_notes`` is
+    #: non-empty", because a synthesizer rejecting a نظام on an earlier cycle
+    #: says nothing about whether a SERVICE search has been tried — reading the
+    #: notes list would let a mixed turn ask on its very first services cycle.
+    services_reverted: bool = False
 
     #: The conversation window — ``ChatMessageSnapshot`` rows from the SAME
     #: loader the planners use (``orchestrator._load_recent_messages``), so the
@@ -195,16 +211,34 @@ class SearcherDecision(BaseModel):
         default_factory=list,
         description=(
             "Handles of the objects to hand on — the C1/C2/… labels the "
-            "resolver tools returned, or the ones listed under the sources "
-            "already in front of the user. Never a raw UUID."
+            "resolver tools returned (resolve_regulation, resolve_article and "
+            "manual_search all return one for what they found), or the ones "
+            "listed under the sources already in front of the user. This is "
+            "the normal way to hand an object on. Never a raw UUID, never a title."
         ),
     )
     objects: list[ResolvedObject] = Field(
         default_factory=list,
         description=(
-            "Identities resolved OUTSIDE the handle registry (a manual-search "
-            "hit, typically). Fill the level and the id fields exactly as the "
-            "tool reported them. Prefer `selected` whenever a handle exists."
+            "Rarely needed. Only for an identity that carries a REAL database "
+            "id (a UUID) you were given verbatim and that has no handle. Never "
+            "type a title or a name into an id field — an id that is not a "
+            "UUID is rejected. If a tool gave you a handle, put the handle in "
+            "`selected` instead."
+        ),
+    )
+    service_queries: list[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description=(
+            "data_type=\"services\" only: 1 to 3 short Arabic search phrases for "
+            "a government-service question — how, where or with what to obtain, "
+            "register, print or verify something on a government platform. "
+            "The first states the user's need in their own words; the others "
+            "cover a second need or a synonym. A search over the services "
+            "catalogue runs on them and a separate agent picks, opens and "
+            "answers. Leave `selected` and `objects` empty when you fill this. "
+            "Empty for every other data type."
         ),
     )
     aborted: bool = Field(
@@ -686,16 +720,17 @@ def _register_manual_search(agent: Agent) -> bool:
     this family stays importable — and testable — before that lane lands: a
     missing module degrades the searcher to its two deterministic resolvers
     plus ``ask_user``, which is exactly the right degradation (regulations and
-    articles still resolve; judgments / services / circulars fall to
-    ``ask_user`` instead of silently returning nothing).
+    articles still resolve; judgments / circulars fall to ``ask_user`` instead
+    of silently returning nothing; services never used this tool since the
+    compliance path).
     """
     try:
         from agents.simple_search.manual_search import register_manual_search
     except ImportError:
         logger.warning(
             "simple_search: manual_search not available — the searcher is "
-            "running with deterministic resolvers only (judgments / services / "
-            "circulars have no other path). See plan §12a C2."
+            "running with deterministic resolvers only (judgments / circulars "
+            "have no other path). See plan §12a C2."
         )
         return False
     register_manual_search(agent)
@@ -837,8 +872,12 @@ def create_searcher_agent(
             )
         return f"{handle} — المادة {num} من {resolved.display}"
 
-    @agent.tool_plain
-    async def ask_user(question: str) -> str:  # noqa: RUF029
+    @agent.tool
+    async def ask_user(  # noqa: RUF029
+        ctx: RunContext[SearcherDeps],
+        question: str,
+        data_type: SimpleSearchDataType,
+    ) -> str:
         """Ask ONE clarifying question, pausing the turn until the user replies.
 
         Use it when resolution is genuinely ambiguous and guessing would cost
@@ -849,6 +888,10 @@ def create_searcher_agent(
         2. Two sources already in front of the user both match what they said.
         3. The object cannot be found at all and you need the title, the number,
            or the court to try again.
+        4. A government-service search came back insufficient and the user's
+           need itself is ambiguous (which entity, فرد or منشأة, issue or
+           print). Never before such a search: on a services question, search
+           with ``service_queries`` first.
 
         Ask about the OBJECT's identity only. Do not ask what they want to do
         with it, and do not ask a question you could answer by resolving.
@@ -857,10 +900,30 @@ def create_searcher_agent(
 
         Args:
             question: one concise Arabic question.
+            data_type: the data type of the lookup you are asking about — the
+                same value you would put in ``data_type``.
 
         Returns:
             The user's reply (delivered on resume).
         """
+        # D7 + plan §2.4 — enforced in code, not only in the prompt. A service
+        # question describes a NEED, and a need is what the service search
+        # exists to match; asking before it has run asks the user to do the
+        # search's job (93fafee7's retry turn ended on exactly such a request).
+        # Only a cycle AFTER the compliance agent sent the turn back may ask, and
+        # the runner is the one that knows that, so it sets the flag.
+        #
+        # Resume-safe: a rehydrated pause hands the reply back as this call's
+        # RESULT, and pydantic-ai neither re-validates the stored args nor
+        # re-runs the body for a non-approval deferred result — so a pause row
+        # written before ``data_type`` existed still resumes.
+        if data_type == "services" and not getattr(ctx.deps, "services_reverted", False):
+            raise ModelRetry(
+                "ابحث أولًا عبر service_queries: سؤال الخدمات يصف حاجة، والبحث في "
+                "دليل الخدمات هو ما يطابقها. لا تسأل المستخدم قبل أن يعود البحث "
+                "بنتيجة غير كافية. اكتب في service_queries من عبارة إلى 3 عبارات "
+                "بحث قصيرة (الأولى حاجة المستخدم بكلماته)، واترك selected فارغًا."
+            )
         raise CallDeferred
 
     @agent.output_validator
@@ -868,6 +931,12 @@ def create_searcher_agent(
         ctx: RunContext[SearcherDeps], value: SearcherDecision
     ) -> SearcherDecision:
         """Resolve handles → objects, dedupe, and enforce the D4 fan-out cap.
+
+        ``service_queries`` short-circuits all of it: with ``data_type ==
+        "services"`` the phrases ARE the decision (``resolved`` stays empty and
+        the runner takes the services path). Paired with any other data type,
+        or with handles / objects, it is a guided Arabic retry — mixed with a
+        نظام / حكم / تعميم the retry says abort (D8: that turn is research).
 
         An unknown handle raises ``ModelRetry`` with an Arabic message so the
         searcher self-corrects — the same guided-retry shape as the router's
@@ -877,6 +946,57 @@ def create_searcher_agent(
         is really "never resolved".
         """
         if value.aborted:
+            value.resolved = []
+            return value
+
+        # ── The services path (plan simple_search_compliance_path.md §2.2). ──
+        # Expansion phrases are a complete decision on their own: the runner
+        # searches the services catalogue with them and the compliance agent
+        # picks, so there is no object to resolve here and the «لم تحدّد أي
+        # كائن» retry below must not fire.
+        queries = [" ".join(str(q or "").split()) for q in value.service_queries]
+        queries = [q for q in queries if q]
+        # Normalised UNCONDITIONALLY: the runner branches on this list being
+        # truthy, so a decision of blank phrases beside a real handle must reach
+        # it as ``[]`` — or the handle is ignored and a search runs on nothing.
+        value.service_queries = queries
+        if queries:
+            if value.data_type != "services":
+                raise ModelRetry(
+                    "service_queries خاصة بأسئلة الخدمات الحكومية "
+                    "(data_type=\"services\"). إن كان السؤال عن إجراء خدمة حكومية "
+                    "فاضبط data_type=\"services\"؛ وإلا فاترك service_queries "
+                    "فارغة وحدّد الكائن في selected."
+                )
+            if value.selected or value.objects:
+                levels = {obj.level for obj in value.objects}
+                for handle in value.selected:
+                    obj = ctx.deps.candidates.get((handle or "").strip().upper())
+                    if obj is None:
+                        # A typo is not a D8 mix — say what is actually wrong.
+                        raise ModelRetry(
+                            f"المُعرّف {handle!r} غير معروف. استخدم أحد المعرّفات التي "
+                            f"أعادتها الأدوات: {sorted(ctx.deps.candidates) or 'لا يوجد'}."
+                        )
+                    levels.add(obj.level)
+                if levels - {"service"}:
+                    # D8: a turn that needs a service AND a نظام / حكم / تعميم is
+                    # asking what the law says around the procedure — that is
+                    # research, and splitting it across two blind agents answers
+                    # neither half. Abort, so the turn goes to deep_search whole.
+                    raise ModelRetry(
+                        "لا تجمع service_queries مع نظام أو مادة أو حكم أو تعميم في "
+                        "الدور نفسه: سؤال يجمع الإجراء الحكومي مع ما يقرره النظام "
+                        "سؤال بحث، لا بحث مباشر. اضبط aborted=true مع abort_reason "
+                        "قصير بالعربية ليُحال الدور إلى البحث المعمّق."
+                    )
+                raise ModelRetry(
+                    "اختر طريقًا واحدًا: إن كان السؤال عن الخدمة المعروضة أمام "
+                    "المستخدم نفسها فضع معرّفها في selected واترك service_queries "
+                    "فارغة؛ وإن احتاج خدمة أخرى فاكتب service_queries واترك "
+                    "selected وobjects فارغتين — البحث يجد الخدمة المعروضة أيضًا "
+                    "إن كانت هي المطلوبة."
+                )
             value.resolved = []
             return value
 
@@ -892,15 +1012,30 @@ def create_searcher_agent(
             resolved.append(obj)
 
         for obj in value.objects:
+            # ``missing_id`` also rejects a filled id that is not a UUID — the
+            # 93fafee7 retry wrote a service's TITLE into ``service_id``. So the
+            # message says "missing OR invalid", and it points at the handle,
+            # because a hand-typed id is the thing that went wrong: every
+            # resolver tool now hands back a ``C…`` handle for what it found.
             missing = obj.missing_id()
             if missing:
                 raise ModelRetry(
-                    f"الكائن من نوع {obj.level!r} ينقصه المعرّف {missing!r}. "
-                    "أعد الحقل كما أعادته الأداة، أو استخدم أداة الحل المناسبة."
+                    f"الكائن من نوع {obj.level!r}: المعرّف {missing!r} مفقود أو غير "
+                    "صالح (المعرّف رقم UUID من قاعدة البيانات، وليس عنوانًا ولا اسمًا). "
+                    "لا تكتب المعرّفات بيدك: ضع في `selected` المعرّف المختصر (C1، C2، …) "
+                    "الذي أعادته أداة الحل لهذا الكائن، أو استدعِ أداة الحل المناسبة "
+                    "للحصول عليه."
                 )
             resolved.append(obj)
 
         if not resolved:
+            if value.data_type == "services":
+                raise ModelRetry(
+                    "لم تحدّد أي كائن. لسؤال عن خدمة حكومية اكتب في service_queries "
+                    "من عبارة إلى 3 عبارات بحث قصيرة؛ أو ضع في `selected` معرّف خدمة "
+                    "معروضة أمام المستخدم، أو اضبط `aborted` إن كان السؤال عن حكم "
+                    "نظامي أو يحتاج أكثر من خدمتين."
+                )
             raise ModelRetry(
                 "لم تحدّد أي كائن. استخدم أدوات الحل ثم ضع المعرّفات في "
                 "`selected`، أو اضبط `aborted` إن كان الطلب خارج نطاق البحث المباشر."

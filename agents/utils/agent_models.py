@@ -354,6 +354,16 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # one holds a single document and the reasoning is bounded, which is the
     # whole point of the family costing less.
     "simple_search_synthesizer":  _FLASH_MEDIUM,
+    # Layer-3 Task — the services path (.claude/plans/simple_search_compliance_path.md
+    # §4). Stands in for the synthesizer on a government-service question: it
+    # reads 5–15 numbered service candidates (title + summary, retrieved in code
+    # by `search_topics`), opens ≤6 of them through `open_service` (card +
+    # «الدليل الشامل», budgeted and sliced), and WRITES the artifact — or reverts
+    # to the searcher with a reason. Same _FLASH_MEDIUM as the synthesizer it
+    # replaces, deliberately: the family's whole premise is that it costs less,
+    # and picking 1–2 main services out of 15 summaries is bounded reasoning. An
+    # A/B against _V41_MEDIUM is a follow-up (plan §9), not a precondition.
+    "simple_search_compliance":   _FLASH_MEDIUM,
     # Layer-3 Task. Runs ONCE per lookup turn, after every synthesizer has
     # settled: it writes the chat bubble's lead-in and owns the publish gate for
     # the whole fan-out (the card decision used to be `wi_warranted`, emitted

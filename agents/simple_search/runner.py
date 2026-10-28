@@ -77,7 +77,27 @@ through this module:
   ``_response_from_artifact`` (``planner/runner.py:140``), which publishes on
   responder failure because there the artifact is the product. Here the bubble
   carries the text, so a raised responder still delivers every body in full and
-  the turn simply leaves no card.
+  the turn simply leaves no card. The services path's compliance artifact is
+  the exception (``_Answer.force_card``): it IS the product, so it is always
+  carded, responder or not.
+
+**The services path** (``.claude/plans/simple_search_compliance_path.md`` §8).
+A searcher decision carrying ``service_queries`` skips resolution and the
+synthesizers: :func:`~agents.simple_search.compliance.run_service_search` finds
+numbered candidates in code and
+:func:`~agents.simple_search.compliance.run_compliance` picks, opens and writes
+ONE artifact (:func:`compliance_answer`), or sends the cycle back to the
+searcher with a reason (D7, :func:`services_revert_note`). Its infra failures
+take the ``compliance_error`` fallback; its judgments never do.
+
+**A failure is a hand-off, not a dead end** (``.claude/plans/
+simple_search_compliance_path.md`` §6). A searcher that exhausts its limits or
+raises, and a loop that ends with nothing accepted, return the SAME aborted
+shape a deliberate abort does — tagged with ``fallback_reason`` — and the
+orchestrator's existing abort branches hand the turn to deep_search. Answers
+already in hand are still delivered, the resume-only «already answered» line
+still stands, and a turn that CHARGED a ruling keeps the degraded line so the
+spend is said (§13l.6). See :func:`fallback_result`.
 """
 from __future__ import annotations
 
@@ -88,9 +108,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from pydantic_ai.exceptions import UsageLimitExceeded
+
 from agents.deep_search_v4.aggregator.models import Reference
 from agents.models import NextStep, WorkspaceItemSnapshot, salvage_next_steps
 from agents.paused_runs import PauseRecord, find_open_pause, record_pause
+# The services path (plan simple_search_compliance_path.md §3/§4). Imported by
+# NAME into this module so the flow tests patch ``runner.run_service_search`` /
+# ``runner.run_compliance`` the same way they patch ``runner.unfold`` — the two
+# I/O edges this module owns. ``compliance.py`` never imports this module.
+from agents.simple_search.compliance import (
+    ComplianceResult,
+    ServiceCandidate,
+    run_compliance,
+    run_service_search,
+)
 from agents.simple_search.models import (
     LEVEL_SOURCE_TYPE,
     ResolvedObject,
@@ -304,6 +336,15 @@ class SimpleSearchRunResult:
     #: Additive to the §12a C1 pin — the orchestrator logs it on the hand-off so
     #: a turn that silently changed family is traceable afterwards.
     abort_reason: str = ""
+    #: The deep_search fallback policy (``.claude/plans/simple_search_compliance_path.md``
+    #: §6): set ONLY when the turn is aborted because simple_search FAILED, as
+    #: opposed to the searcher deciding the turn is not a lookup (that abort
+    #: leaves this empty and says why in ``abort_reason``). One of the
+    #: ``FALLBACK_*`` codes below. Additive to the C1 pin, like ``abort_reason``;
+    #: the orchestrator's existing abort branches do the hand-off unchanged and
+    #: only log this and stamp it on the dispatch span — a high rate of it means
+    #: the router or the searcher is wrong, not that the fallback is working.
+    fallback_reason: str = ""
     #: §13l — every judgment access this turn, in fan-out order. Surfaces the
     #: spend C1 could not express (§13j #4). ``charged=False`` ⇒ the user had
     #: already unlocked that ruling, so the turn opened it for free.
@@ -329,6 +370,100 @@ def _empty(**over: Any) -> SimpleSearchRunResult:
     return SimpleSearchRunResult(
         chat_messages=[], created_item_ids=[], sse_events=[], **over
     )
+
+
+# =========================================================================== #
+# §6 — the deep_search fallback policy. ONE exit shape for every failure.
+# =========================================================================== #
+#
+# Before this, the searcher's own ``aborted`` was the only way a simple_search
+# turn reached deep_search. Every other way out ended the turn with no answer:
+# an uncaught ``UsageLimitExceeded`` became the orchestrator's «عذراً، حدث خطأ»
+# banner (convo 93fafee7, the resume leg), and three cycles with nothing
+# accepted saved ``_DEGRADED_AR`` — «وضّح لي اسم النظام أو رقم المادة…», which
+# is wrong for a services question and asks the user to do work the system
+# failed at (the same convo's retry, 4.5 min). Neither was a judgment that the
+# question was unanswerable; deep_search could still answer both.
+#
+# The mechanism adds NO handoff code: a failure returns the same aborted shape
+# a deliberate abort does, and the orchestrator's existing abort branches
+# (fresh dispatch + resume leg) run deep_search exactly as they already did.
+
+#: The searcher hit ``SEARCHER_LIMITS`` (``UsageLimitExceeded``) — 93fafee7's
+#: resume leg: 10 identical ``manual_search`` calls, then the cap.
+FALLBACK_SEARCHER_BUDGET = "searcher_budget"
+#: The searcher raised anything else — provider chain exhausted, a bug.
+FALLBACK_SEARCHER_ERROR = "searcher_error"
+#: The loop ended with nothing accepted: every round rejected (D3 pool spent),
+#: rejections and crashes mixed, or every services cycle came back
+#: insufficient (the compliance agent's D7 reverts share the same pool).
+FALLBACK_NO_CONFIRMED_SOURCE = "no_confirmed_source"
+#: Every synthesizer that was dispatched crashed; none even got to judge.
+FALLBACK_SYNTHESIZERS_FAILED = "synthesizers_failed"
+#: The services path (plan §4/§8): the service search (embedding, RPC, the
+#: ``services`` select) or the compliance agent raised — ``UsageLimitExceeded``
+#: included. Infra, not a judgment about the question, so it goes straight
+#: here instead of burning searcher cycles. A judgment (``sufficient=false``)
+#: never lands here: that goes back to the searcher (D7).
+FALLBACK_COMPLIANCE_ERROR = "compliance_error"
+#: Orchestrator-side defence in depth: an exception ESCAPED
+#: ``run_simple_search`` / ``resume_simple_search`` altogether. Never set by
+#: this module (by construction it cannot see its own escape); the orchestrator
+#: builds it with :func:`fallback_result` so both paths share one shape.
+FALLBACK_RUNNER_ERROR = "runner_error"
+
+FALLBACK_REASONS: frozenset[str] = frozenset({
+    FALLBACK_SEARCHER_BUDGET,
+    FALLBACK_SEARCHER_ERROR,
+    FALLBACK_NO_CONFIRMED_SOURCE,
+    FALLBACK_SYNTHESIZERS_FAILED,
+    FALLBACK_COMPLIANCE_ERROR,
+    FALLBACK_RUNNER_ERROR,
+})
+
+#: The ``abort_reason`` each code carries — the same short Arabic, logged-only
+#: field a deliberate abort fills, so log lines and dashboards read alike.
+_FALLBACK_ABORT_AR: dict[str, str] = {
+    FALLBACK_SEARCHER_BUDGET: "استنفد البحث المباشر حدّ الأدوات قبل أن يحدّد المصدر",
+    FALLBACK_SEARCHER_ERROR: "تعذّر تشغيل البحث المباشر",
+    FALLBACK_NO_CONFIRMED_SOURCE: "لم يتأكّد البحث المباشر من أي مصدر مطابق للسؤال",
+    FALLBACK_SYNTHESIZERS_FAILED: "تعذّر فتح المصادر التي حدّدها البحث المباشر",
+    FALLBACK_COMPLIANCE_ERROR: "تعذّر إعداد إجابة الخدمات الحكومية",
+    FALLBACK_RUNNER_ERROR: "حدث خطأ غير متوقع في البحث المباشر",
+}
+
+
+def fallback_result(
+    reason: str,
+    *,
+    abort_reason: str = "",
+    unlock_notes: list[dict] | None = None,
+) -> SimpleSearchRunResult:
+    """The §6 exit: an aborted result tagged with WHY, for the deep_search hand-off.
+
+    The one constructor for it, used by :func:`_answer_loop` and by the
+    orchestrator's defence-in-depth catch (``FALLBACK_RUNNER_ERROR``), so the
+    shape cannot drift between the two. ``unlock_notes`` rides along: a ruling
+    opened before the failure was still opened, and C1 says the spend surfaces.
+    """
+    return _empty(
+        aborted=True,
+        abort_reason=abort_reason or _FALLBACK_ABORT_AR.get(reason, ""),
+        fallback_reason=reason,
+        unlock_notes=list(unlock_notes or []),
+    )
+
+
+def _any_charged(records: list["_UnlockRecord"]) -> bool:
+    """True when this turn spent the user's unlock balance on a ruling.
+
+    §13l.6 — money spent must be SAID. A turn with a charge in it never takes
+    the silent deep_search hand-off: it goes through :func:`_finalise`, whose
+    footer acknowledges the charge even when no answer survived (the
+    ``unlock-01`` + ``unlock-02`` case). Handing it to deep_search would answer
+    the question and bury the spend.
+    """
+    return any(rec.charged for rec in records)
 
 
 # =========================================================================== #
@@ -580,6 +715,17 @@ class _Answer:
       unfold is an I/O path and the judgment ledger is charged inside it
       (``_recording_judgment_access``), so a second call is a double charge as
       well as a double read.
+
+    The last two belong to the services path (``.claude/plans/
+    simple_search_compliance_path.md`` §8), built by :func:`compliance_answer`:
+
+    * ``force_card`` — the compliance agent's artifact is ALWAYS a card (D5:
+      "it's always an artifact"). :func:`_finalise` publishes it whatever the
+      responder's verdict, and — the one exception to D7 — even when the
+      responder failed, because here the artifact IS the product, exactly as
+      it is for deep_search's ``_response_from_artifact``.
+    * ``card_title`` — the compliance agent's own ``artifact_title``, the first
+      rung of that card's title chain (before the verdict's and the object's).
     """
 
     group: _Group
@@ -589,6 +735,8 @@ class _Answer:
     fanout_index: int = 0
     truncated: bool = False
     summary_payload: bool = False
+    force_card: bool = False
+    card_title: str = ""
 
 
 #: §13j #5 — the note ``unfold._judgment_refused`` stamps on a no-body result.
@@ -744,6 +892,108 @@ async def _synthesize_group(
         truncated=truncated,
         summary_payload=summary_payload,
     )
+
+
+# =========================================================================== #
+# The services path — one compliance artifact (compliance plan §8).
+# =========================================================================== #
+#
+# A services decision (``SearcherDecision.service_queries``) never reaches
+# ``group_documents`` or a synthesizer: ``run_service_search`` finds 0–15
+# numbered candidates in code, ``run_compliance`` picks 1–2 main services (+ up
+# to 4 supporting), opens them and WRITES the artifact, or returns a reason the
+# next searcher cycle runs on (D7). What this module adds is the seam: one
+# ``_Answer`` built from the result, the revert note, and the bubble line for
+# the one case the responder is not there to write it.
+
+#: How many candidate titles a revert note carries back to the searcher. The
+#: point is "do not search for these again", which the top of the list says; all
+#: 15 «{الجهة} - {اسم الخدمة}» titles would be ~750 chars of instructions that
+#: the next compliance run ALSO reads (as ``<previous_attempts>``).
+_REVERT_NOTE_TITLES = 8
+
+#: The revert note's lead when the compliance agent left its reason blank —
+#: unreachable past its validator (an insufficient output needs a reason), kept
+#: so the note is never a bare list of titles.
+_REVERT_REASON_FALLBACK_AR = "لم تكفِ الخدمات التي ظهرت للإجابة عن السؤال"
+
+
+def compliance_answer(res: ComplianceResult, *, fanout_index: int) -> _Answer:
+    """The ONE ``_Answer`` a sufficient compliance run becomes.
+
+    One document, however many services it cites: the artifact is a single
+    card carrying up to 6 references, so D4's 3-document fan-out cap does not
+    apply to it (plan §8). The group's objects are primary first, then
+    supporting — ``objects[0]`` is what the digest and the card-title chain fall
+    back to, and it must be a MAIN service. The key names the primary services
+    only, so the same answer reached twice keys the same.
+
+    ``res.artifact_md`` / ``res.references`` / ``res.cited_numbers`` arrive
+    already renumbered to ``1..k`` by ``compliance.build_compliance_result``,
+    so the card's ``[n]`` and its المراجع panel agree with no work here.
+    """
+    primary = list(res.primary_objects)
+    group = _Group(
+        key="svc:" + "+".join(obj.service_id for obj in primary),
+        level="service",
+        objects=[*primary, *res.supporting_objects],
+    )
+    return _Answer(
+        group=group,
+        output=SynthesizerOutput(
+            synthesis_md=res.artifact_md,
+            used_refs=list(res.cited_numbers),
+        ),
+        references=list(res.references),
+        fanout_index=fanout_index,
+        truncated=bool(res.sliced),
+        force_card=True,
+        card_title=(res.title or "").strip(),
+    )
+
+
+def services_revert_note(
+    res: ComplianceResult,
+    queries: list[str],
+    candidates: list[ServiceCandidate],
+) -> str:
+    """The note an insufficient services cycle hands the next searcher round.
+
+    Three parts, because the searcher can only act on what it is told: the
+    compliance agent's reason (what was missing — plan §4 makes it name that),
+    the phrases already searched (so it writes different ones), and the
+    services that came back (so it does not chase the same titles again).
+    Opened candidates lead the title list — they were READ and still fell
+    short, which is the strongest "not this" there is.
+    """
+    by_n = {c.n: c for c in candidates}
+    opened = set(res.opened)
+    ordered = [by_n[n] for n in res.opened if n in by_n]
+    ordered += [c for c in candidates if c.n not in opened]
+    parts = [f"بحث الخدمات: {(res.reason or '').strip() or _REVERT_REASON_FALLBACK_AR}"]
+    if queries:
+        parts.append("العبارات التي بُحث بها: " + "، ".join(f"«{q}»" for q in queries))
+    titles = [c.title for c in ordered[:_REVERT_NOTE_TITLES] if c.title]
+    if titles:
+        more = "، …" if len(ordered) > _REVERT_NOTE_TITLES else ""
+        parts.append("الخدمات التي ظهرت: " + "، ".join(f"«{t}»" for t in titles) + more)
+    return " — ".join(parts)
+
+
+def forced_card_pointer(titles: list[str]) -> str:
+    """The bubble line for a forced card the responder never got to frame.
+
+    The responder failed (raised, timed out, or returned an empty lead-in) but
+    the compliance artifact was still published — so the user's bubble would
+    otherwise be the bare greeting or nothing at all. Code-written Arabic, and
+    it claims nothing about the card's contents beyond its title.
+    """
+    names = [t.strip() for t in titles if (t or "").strip()]
+    if not names:
+        return "أعددت لك الإجابة في بطاقة في مساحة العمل."
+    if len(names) == 1:
+        return f"أعددت لك الإجابة في بطاقة «{names[0]}» في مساحة العمل."
+    return "أعددت لك الإجابة في البطاقات: " + "، ".join(f"«{n}»" for n in names) + "."
 
 
 # =========================================================================== #
@@ -1055,7 +1305,11 @@ async def run_simple_search(
     Returns:
         A :class:`SimpleSearchRunResult`. Never raises for an agent-level
         failure: a pause, an abort and an exhausted loop are all normal
-        outcomes with their own shape.
+        outcomes with their own shape. Since §6 a searcher crash, a searcher
+        usage-limit hit and a loop with nothing accepted come back as
+        ``aborted=True`` + ``fallback_reason`` (deep_search answers instead),
+        unless answers are already in hand (delivered) or a ruling was charged
+        (acknowledged via the degraded line).
     """
     prefs = user_preferences or {}
     detail_level = str(prefs.get("detail_level") or "")
@@ -1213,16 +1467,56 @@ async def _answer_loop(
             if "user_prompt" in run_kwargs
             else build_searcher_user_message(question)
         )
-        result = await run_tracked(
-            agent,
-            prompt,
-            deps=deps,
-            stage="simple_search.search",
-            slot=SEARCHER_SLOT,
-            agent_family=AGENT_FAMILY,
-            usage_limits=SEARCHER_LIMITS,
-            **run_kwargs,
-        )
+        # §6 — the searcher run is the one call in this loop that used to have
+        # NO containment: a ``UsageLimitExceeded`` (93fafee7's resume leg) or a
+        # provider exhausted past its fallbacks escaped straight through
+        # ``resume_simple_search`` to the orchestrator's generic banner.
+        # Cancellation is never a failure — it propagates untouched.
+        searcher_failure = ""
+        try:
+            result = await run_tracked(
+                agent,
+                prompt,
+                deps=deps,
+                stage="simple_search.search",
+                slot=SEARCHER_SLOT,
+                agent_family=AGENT_FAMILY,
+                usage_limits=SEARCHER_LIMITS,
+                **run_kwargs,
+            )
+        except asyncio.CancelledError:
+            raise
+        except UsageLimitExceeded as exc:
+            # Before the broad catch: ``UsageLimitExceeded`` IS an Exception.
+            searcher_failure = FALLBACK_SEARCHER_BUDGET
+            logger.warning(
+                "simple_search: searcher exhausted its usage limits on cycle %d "
+                "for conversation %s (%d answer(s) in hand): %s",
+                cycles, conversation_id, len(answers), exc,
+            )
+        except Exception as exc:  # noqa: BLE001 — §6: fall back, never surface
+            searcher_failure = FALLBACK_SEARCHER_ERROR
+            logger.error(
+                "simple_search: searcher raised on cycle %d for conversation %s "
+                "(%d answer(s) in hand): %s",
+                cycles, conversation_id, len(answers), exc, exc_info=True,
+            )
+        if searcher_failure:
+            span.set(searcher_failure=searcher_failure)
+            if answers or _any_charged(unlock_records):
+                # Answers already accepted on an earlier cycle are DELIVERED —
+                # a failed retry for a sibling document must not throw away
+                # work the user is owed (and may have paid an unlock for). The
+                # normal tail below runs ``_finalise`` exactly as it would have
+                # after a third rejected cycle. A charge with no answer also
+                # takes the tail, so the spend is acknowledged (§13l.6).
+                break
+            span.set(outcome="fallback_deep_search", cycles=cycles,
+                     fallback_reason=searcher_failure)
+            return fallback_result(
+                searcher_failure,
+                unlock_notes=unlock_notes_payload(unlock_records),
+            )
         output = result.output
 
         if not isinstance(output, SearcherDecision):
@@ -1329,6 +1623,87 @@ async def _answer_loop(
                 unlock_notes=unlock_notes_payload(unlock_records),
             )
 
+        if output.service_queries:
+            # ── The services path (compliance plan §1/§8). ──────────────────
+            # expand → search → compliance agent, in place of resolve →
+            # synthesizers. The searcher's validator guarantees nothing was
+            # resolved beside the phrases (D8 mixes abort there), so this cycle
+            # is services only. The RAW question goes to the compliance agent —
+            # the phrases are retrieval input and nothing else (§2.1).
+            queries = list(output.service_queries)
+            candidates: list[ServiceCandidate] = []
+            try:
+                candidates = await run_service_search(
+                    supabase,
+                    queries,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                )
+                res = await run_compliance(
+                    question,
+                    candidates,
+                    supabase=supabase,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    recent_messages=recent_messages,
+                    detail_level=detail_level,
+                    rejection_notes=list(deps.rejection_notes),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — §4/§6: infra → fall back
+                # The embedder, the RPC, the ``services`` select, the agent's
+                # ``UsageLimitExceeded`` or its provider chain. None of these is
+                # a judgment that the question cannot be answered here, so none
+                # of them burns a searcher cycle: deep_search answers instead.
+                logger.error(
+                    "simple_search: services path raised on cycle %d for "
+                    "conversation %s (%d candidate(s), %d answer(s) in hand): %s",
+                    cycles, conversation_id, len(candidates), len(answers), exc,
+                    exc_info=True,
+                )
+                span.set(path="services", service_candidates=len(candidates),
+                         compliance_failure=type(exc).__name__)
+                if answers or _any_charged(unlock_records):
+                    # Same rule as the searcher failure above: work already
+                    # accepted (or paid for) on an earlier cycle is delivered.
+                    break
+                span.set(outcome="fallback_deep_search", cycles=cycles,
+                         fallback_reason=FALLBACK_COMPLIANCE_ERROR)
+                return fallback_result(
+                    FALLBACK_COMPLIANCE_ERROR,
+                    unlock_notes=unlock_notes_payload(unlock_records),
+                )
+
+            span.set(
+                path="services",
+                cycles=cycles,
+                service_candidates=len(candidates),
+                service_opened=len(res.opened),
+                compliance_sufficient=bool(res.sufficient),
+            )
+            if res.sufficient:
+                # ONE document, one forced card (D5). D4's cap is for the
+                # synthesizer fan-out, not for this: the artifact is a single
+                # card carrying up to 6 references.
+                answer = compliance_answer(res, fanout_index=dispatched)
+                answers[answer.group.key] = answer
+                dispatched += 1
+                break
+
+            # D7 — insufficient goes BACK to the searcher, never straight to
+            # deep_search. The next cycle reads the note (and may now
+            # ``ask_user``); a third insufficient cycle ends the shared pool and
+            # the tail below falls back as ``no_confirmed_source``.
+            deps.rejection_notes.append(services_revert_note(res, queries, candidates))
+            deps.services_reverted = True
+            logger.info(
+                "simple_search: services cycle %d insufficient for conversation "
+                "%s (%d candidate(s), opened %s): %s",
+                cycles, conversation_id, len(candidates), res.opened, res.reason,
+            )
+            continue
+
         grouped = group_documents(output.resolved)
         # §8 — a group the paused leg already delivered is skipped for synthesis
         # but REMEMBERED for the responder. This is the only place both halves
@@ -1375,6 +1750,51 @@ async def _answer_loop(
         deps.rejection_notes.extend(rejections)
 
     span.set(cycles=cycles, answered=len(answers))
+
+    # A resume that re-selected only documents the paused leg already answered
+    # has nothing new to say — and «لم أتمكّن من تأكيد المصدر» would be a lie
+    # about work that succeeded. That is a TRUE statement, not a failure, so it
+    # is the one zero-answer outcome that neither degrades nor falls back.
+    # Keyed on ``delivered`` (a skipped document was actually re-selected this
+    # leg), not merely on ``skip`` being non-empty: a resume whose NEW document
+    # was rejected three times re-selected nothing old, and telling that user
+    # «هذا هو المصدر نفسه الذي أجبتك عنه» would be the lie in the other direction.
+    already_answered = bool(skip) and bool(delivered) and not answers
+
+    if not answers and not already_answered:
+        if _any_charged(unlock_records):
+            # §13l.6 — the exception to the fallback. A ruling was opened from
+            # the user's balance this turn and every answer it paid for was
+            # rejected (or crashed). deep_search would answer the question and
+            # leave the charge unsaid; ``_finalise`` says it (`unlock-01` +
+            # `unlock-02`). Money spent must be said, so this path keeps the
+            # pre-§6 behaviour: the degraded line plus the acknowledgement.
+            logger.info(
+                "simple_search: no accepted answer but a ruling was CHARGED this "
+                "turn (conversation %s) — keeping the degraded line so the spend "
+                "is acknowledged, not falling back (§13l.6)", conversation_id,
+            )
+        else:
+            # §6 — nothing accepted and nothing spent: deep_search answers it.
+            # ``lost`` counts synthesizers that crashed; every rejection is a
+            # synthesizer that RAN and judged. All crashed ⇒ the documents were
+            # never even judged — infra, worth telling apart on a dashboard.
+            reason = (
+                FALLBACK_SYNTHESIZERS_FAILED
+                if dispatched and lost >= dispatched
+                else FALLBACK_NO_CONFIRMED_SOURCE
+            )
+            logger.warning(
+                "simple_search: no accepted answer after %d cycle(s) for "
+                "conversation %s (%d dispatched, %d crashed) — falling back to "
+                "deep_search (%s)",
+                cycles, conversation_id, dispatched, lost, reason,
+            )
+            span.set(outcome="fallback_deep_search", fallback_reason=reason)
+            return fallback_result(
+                reason, unlock_notes=unlock_notes_payload(unlock_records)
+            )
+
     return await _finalise(
         list(answers.values()),
         supabase=supabase,
@@ -1394,11 +1814,10 @@ async def _answer_loop(
         ),
         delivered_groups=list(delivered.values()),
         unlock_records=unlock_records,
-        # A resume that re-selects only documents the paused leg already
-        # answered has nothing new to say — and «لم أتمكّن من تأكيد المصدر»
-        # would be a lie about work that succeeded. No responder call on that
-        # path either (§8): with no answers there is nothing to respond about.
-        degraded_text=_ALREADY_ANSWERED_AR if (skip and not answers) else _DEGRADED_AR,
+        # No responder call on either degraded path (§8): with no answers there
+        # is nothing to respond about. Since §6 the only zero-answer turns that
+        # reach here are the already-answered resume and the charged turn.
+        degraded_text=_ALREADY_ANSWERED_AR if already_answered else _DEGRADED_AR,
         router_context=router_context,
     )
 
@@ -1630,6 +2049,14 @@ async def _finalise(
     artifact is the product: here the bubble carries the text, so a missing card
     costs the user a re-ask while a wrongly-published one is permanent clutter.
 
+    **The one exception: a forced card** (``_Answer.force_card`` — the services
+    path's compliance artifact, compliance plan D5). There the artifact IS the
+    product, as on deep_search, so it is published on every path: whatever the
+    verdict, on both responder paths, and when the responder failed. In that
+    last case the bubble gets the welcome opening (if any) plus a code-written
+    :func:`forced_card_pointer` line, so it is never empty. Title chain for it:
+    ``card_title`` → the verdict's → ``objects[0]`` → the level noun.
+
     ``degraded_fallback`` is False on the pause path: there, an empty answer set
     is not a failure — the searcher's question IS the turn's message, and
     «لم أتمكّن من تأكيد المصدر» in front of it would contradict it.
@@ -1685,11 +2112,20 @@ async def _finalise(
             ResponderDocDigest(
                 label=f"D{n}",
                 level=answer.group.level,
-                object_title=_object_title(obj),
+                # A compliance artifact is named by what it answers («تسجيل
+                # العنوان الوطني للمنشأة وإثباته»), not by its first service's
+                # «{الجهة} - {اسم الخدمة}» — the responder points at the card
+                # by this name, and the card is published under it.
+                object_title=(
+                    answer.card_title.strip()
+                    if answer.force_card and answer.card_title.strip()
+                    else _object_title(obj)
+                ),
                 excerpt=body[:RESPONDER_EXCERPT_CHARS],
                 body_chars=len(body),
                 truncated=answer.truncated,
                 summary_payload=answer.summary_payload,
+                card_forced=answer.force_card,
             )
         )
     # §8 — the already-delivered set is appended AFTER this leg's answers so
@@ -1830,10 +2266,22 @@ async def _finalise(
     # no answer behind them, which is exactly how §8's "never re-card" is
     # enforced — there is nothing here to publish them from.
     bodies: list[str] = []
+    #: Titles of forced cards published with NO responder behind them — the
+    #: bubble needs a code-written line pointing at each (see the assembly).
+    unframed_cards: list[str] = []
     for answer, digest in zip(live, docs):
         body = answer.output.synthesis_md.strip()
         verdict = responder.verdict_for(digest.label) if responder is not None else None
-        card = bool(verdict is not None and verdict.card)
+        # D5 (compliance path) — the artifact is ALWAYS a card: the verdict is
+        # not consulted, on either responder path, and a FAILED responder does
+        # not cancel it. That last part is the one deliberate exception to D7
+        # below: D7 protects a synthesizer body, which the bubble can carry
+        # whole; a compliance artifact is the product itself, the same reason
+        # ``_response_from_artifact`` publishes on deep_search. The refused-
+        # judgment veto still runs after this (a forced card is never refused —
+        # the services path opens no ruling — but the veto stays total).
+        forced = answer.force_card
+        card = forced or bool(verdict is not None and verdict.card)
         if card and answer.refused:
             # Hard veto, D3. The ledger said no; there is no body to card.
             logger.info(
@@ -1847,6 +2295,16 @@ async def _finalise(
             continue
 
         obj = answer.group.objects[0] if answer.group.objects else None
+        # The fallback chain §6 pins: the responder's title, the object's own,
+        # then the level noun — with the compliance agent's ``artifact_title``
+        # ahead of all three on a forced card (it named what the artifact
+        # answers). The publisher has one more («نتيجة بحث») behind them all.
+        # ``verdict`` may be None here now: a forced card publishes without one.
+        title = (
+            (answer.card_title or "").strip()
+            or ((verdict.title if verdict is not None else "") or "").strip()
+            or _object_title(obj)
+        )
         try:
             published = await publish_simple_search_result(
                 supabase,
@@ -1854,14 +2312,14 @@ async def _finalise(
                 conversation_id=conversation_id,
                 case_id=case_id,
                 message_id=None,
-                # The fallback chain §6 pins: the responder's title, the
-                # object's own, then the level noun. The publisher has one more
-                # («نتيجة بحث») behind all three.
-                title=(verdict.title or "").strip() or _object_title(obj),
+                title=title,
                 content_md=body,
                 references=answer.references,
                 cited_numbers=list(answer.output.used_refs),
                 level=answer.group.level,
+                # Lets a dashboard tell a compliance card from an L6 synthesizer
+                # card — both are ``level="service"``.
+                data_type="services" if forced else "",
             )
         except Exception as exc:  # noqa: BLE001 — the answer is already written
             logger.warning("simple_search: publish failed for %s: %s", answer.group.key, exc)
@@ -1872,6 +2330,8 @@ async def _finalise(
         if published.item_id:
             created_item_ids.append(published.item_id)
             sse_events.extend(published.sse_events)
+            if forced and responder is None:
+                unframed_cards.append(title)
         else:
             bodies.append(_strip_citation_markers(body))
 
@@ -1879,6 +2339,11 @@ async def _finalise(
     chat_messages: list[str] = []
     if summary:
         chat_messages.append(summary)
+    if unframed_cards:
+        # A forced card published on a FAILED responder: the summary slot holds
+        # the bare greeting (or nothing), and a card with no line pointing at it
+        # is a turn whose bubble says nothing. Code writes the pointer.
+        chat_messages.append(forced_card_pointer(unframed_cards))
     chat_messages.extend(bodies)
     # Suppressed twice on purpose: the prompt is told to leave `next_steps`
     # empty (a model instruction), and chips that arrive anyway are dropped
@@ -1890,9 +2355,12 @@ async def _finalise(
         question_basis = None
 
     if not chat_messages and degraded_fallback:
-        # Every round rejected, or every synthesizer failed — so the responder
-        # was never called (trap §11.3) and there is nothing to assemble. Say so
-        # in a line written HERE, in Arabic, rather than returning an empty turn.
+        # Nothing to assemble, so the responder was never called (trap §11.3).
+        # Say so in a line written HERE, in Arabic, rather than returning an
+        # empty turn. Since §6 the loop reaches this only for the resume-only
+        # «already answered» line and for a turn that CHARGED a ruling (the
+        # footer below must have a message to sit in); every other zero-answer
+        # turn is handed to deep_search before ``_finalise`` is called.
         chat_messages.append(degraded_text)
 
     unlock_notes = unlock_notes_payload(unlock_records or [])
@@ -2152,12 +2620,23 @@ __all__ = [
     "AGENT_FAMILY",
     "MAX_CYCLES",
     "SimpleSearchRunResult",
+    "fallback_result",
+    "FALLBACK_REASONS",
+    "FALLBACK_SEARCHER_BUDGET",
+    "FALLBACK_SEARCHER_ERROR",
+    "FALLBACK_NO_CONFIRMED_SOURCE",
+    "FALLBACK_SYNTHESIZERS_FAILED",
+    "FALLBACK_COMPLIANCE_ERROR",
+    "FALLBACK_RUNNER_ERROR",
     "judgment_access_resolver",
     "run_simple_search",
     "resume_simple_search",
     "document_key",
     "group_documents",
     "build_references",
+    "compliance_answer",
+    "services_revert_note",
+    "forced_card_pointer",
     "refusal_message",
     "resolved_from_attachment",
     "unlock_acknowledgement",

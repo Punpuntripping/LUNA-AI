@@ -584,6 +584,271 @@ def _clip(text: str | None, limit: int) -> str:
 
 
 # =========================================================================== #
+# Pure layer — beginning / middle / end slicing (compliance path, plan
+# ``.claude/plans/simple_search_compliance_path.md`` §5).
+# =========================================================================== #
+#
+# Why not ``_clip``: a guide clipped from the front loses its END, and on a
+# government-service guide the end is where the payoff lives — «طباعة الوثيقة»،
+# «تأكيد الطلب»، what the user walks away holding. The middle is where the form
+# the user actually fills sits. A front clip answers «كيف أبدأ؟» and nothing
+# else, so the compliance agent gets three windows instead of one, each a run of
+# WHOLE lines, with a marked hole between them.
+#
+# Measured on the 825 live guides (rendered: guide_md + Σ image descriptions,
+# 2026-10-27): p50 9.0k · p75 14.0k · p90 24.3k · p99 98.9k · max 136k chars.
+# At the compliance path's usual 36k share (two services opened) ~96% of guides
+# never reach this code; it exists for the tail and for the 6-at-once case
+# (12k each).
+
+#: The line that stands in for every elided run. Phrased for the MODEL: it names
+#: what happened and where the full text lives, so the agent says «الدليل المصوّر
+#: كاملًا في صفحته» at that point instead of guessing the missing steps.
+GUIDE_SLICE_GAP_AR = (
+    "> ⚠ [حُذف جزء من الدليل هنا لتجاوز الحد — النص الكامل في صفحة الدليل]"
+)
+
+#: The 40 / 30 / 30 split of the CONTENT budget (what is left after the gap
+#: markers are reserved). The tail is the remainder, so the three always sum to
+#: the budget exactly. The head is the largest share because it carries the
+#: guide's own title + summary paragraph, which is how the agent knows what the
+#: service is before it reads any step.
+SLICE_HEAD_SHARE = 0.40
+SLICE_MIDDLE_SHARE = 0.30
+
+#: What one gap costs once joined: the marker plus the blank lines around it
+#: (``…last\n\n{GAP}\n\nfirst…``). Two are reserved up front — head|gap|middle|
+#: gap|tail is the most a slice ever emits.
+_SLICE_GAP_COST = len(GUIDE_SLICE_GAP_AR) + 4
+
+#: Below this much CONTENT budget (after both gaps are reserved) three windows
+#: would each be a line or two wide — fragments, not context. The slicer then
+#: keeps the opening only (one window + one gap), which is the readable choice
+#: when there is room for almost nothing. ~3 short guide lines.
+_SLICE_MIN_CONTENT_CHARS = 300
+
+
+def _is_guide_image_line(line: str) -> bool:
+    """True for a resolved screenshot line (``> 🖼 **صورة من الدليل:** …``)."""
+    return line.lstrip().startswith(_GUIDE_IMAGE_LABEL_AR.strip())
+
+
+def _take_forward(sizes: list[int], start: int, stop: int, budget: int) -> tuple[int, int]:
+    """Grow a window from ``start`` forward while whole lines fit. → ``(end, used)``."""
+    end, used = start, 0
+    while end < stop and used + sizes[end] <= budget:
+        used += sizes[end]
+        end += 1
+    return end, used
+
+
+def _take_backward(sizes: list[int], end: int, floor: int, budget: int) -> tuple[int, int]:
+    """Grow a window from ``end`` backward while whole lines fit. → ``(start, used)``."""
+    start, used = end, 0
+    while start > floor and used + sizes[start - 1] <= budget:
+        start -= 1
+        used += sizes[start]
+    return start, used
+
+
+def _grow_middle(
+    sizes: list[int], centre: int, lo: int, hi: int, budget: int
+) -> tuple[int, int, int]:
+    """The middle window: seeded at the line holding the text's midpoint, grown
+    outward one whole line at a time, always on the lighter side so it stays
+    centred. Confined to ``[lo, hi)`` — the gap between head and tail.
+
+    When the midpoint line alone exceeds the budget, the seed walks outward
+    (``c, c+1, c-1, c+2, …``) to the nearest line that fits — the window is then
+    slightly off-centre, which beats an empty middle. Returns ``(start, end,
+    used)``; ``start == end`` means no middle window.
+    """
+    if lo >= hi or budget <= 0:
+        return lo, lo, 0
+    centre = min(max(centre, lo), hi - 1)
+    seed = -1
+    for step in range(0, hi - lo):
+        for cand in ((centre + step,) if step == 0 else (centre + step, centre - step)):
+            if lo <= cand < hi and sizes[cand] <= budget:
+                seed = cand
+                break
+        if seed >= 0:
+            break
+    if seed < 0:
+        return lo, lo, 0
+    start, end, used = seed, seed + 1, sizes[seed]
+    above = below = 0
+    while True:
+        up_ok = start > lo and used + sizes[start - 1] <= budget
+        down_ok = end < hi and used + sizes[end] <= budget
+        if not (up_ok or down_ok):
+            break
+        # The lighter side grows first; ties go up, so the window leans toward
+        # the steps that lead INTO the middle rather than away from it.
+        if up_ok and (above <= below or not down_ok):
+            start -= 1
+            used += sizes[start]
+            above += sizes[start]
+        else:
+            used += sizes[end]
+            below += sizes[end]
+            end += 1
+    return start, end, used
+
+
+def _assemble_slices(lines: list[str], windows: list[tuple[int, int]]) -> str:
+    """Join whole-line windows, a gap marker at every elision.
+
+    Windows that touch (or overlap) merge — no marker sits between two runs that
+    are actually contiguous in the source. Blank lines at a window's edge are
+    dropped where it meets a gap, so the marker always stands alone between
+    exactly one blank line on each side.
+    """
+    n = len(lines)
+    merged: list[list[int]] = []
+    for start, end in sorted(w for w in windows if w[1] > w[0]):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    out: list[str] = []
+
+    def _gap() -> None:
+        while out and not out[-1].strip():
+            out.pop()
+        if out and out[-1] == GUIDE_SLICE_GAP_AR:
+            # The window between two holes was all blank lines — one hole, one
+            # marker ("merge gaps when slices touch", seen from the other side).
+            out.append("")
+            return
+        if out:
+            out.append("")
+        out.extend([GUIDE_SLICE_GAP_AR, ""])
+
+    cursor = 0
+    for start, end in merged:
+        if start > cursor:
+            _gap()
+        segment = lines[start:end]
+        if out and out[-1] == "":
+            while segment and not segment[0].strip():
+                segment = segment[1:]
+        out += segment
+        cursor = end
+    if cursor < n:
+        _gap()
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
+def slice_head_middle_tail(text: str, budget_chars: int) -> str:
+    """Fit ``text`` into ``budget_chars`` by keeping its beginning, middle and end.
+
+    Pure. The compliance path's guide slicer (plan §5 / D4): a guide longer than
+    its share loses chunks from the INSIDE, never only its end.
+
+    Contract:
+
+    * **Identity under budget.** ``len(text) <= budget_chars`` → ``text``
+      unchanged, byte for byte.
+    * **Whole lines only.** Every kept line is a complete source line. That is
+      what keeps an image-description line (``> 🖼 **صورة من الدليل:** …``)
+      whole: :func:`render_service_guide` resolves holes BEFORE this runs and
+      folds each description onto one line, so "never split a line" is "never
+      split a description".
+    * **About 40 / 30 / 30.** After two gap markers are reserved, the content
+      budget is split 40% head (from the first line forward), 30% middle
+      (centred on the line holding the text's character midpoint) and 30% tail
+      (from the last line backward). A window stops at the first line that would
+      overrun its share — it never skips a long line to take a shorter one
+      beyond it, because a window with a hole inside it is a window that lies
+      about being contiguous. Whatever a blocked window leaves unspent spills,
+      still whole-line, to the head, then the tail, then the middle.
+    * **One marker per elision.** :data:`GUIDE_SLICE_GAP_AR` stands at every
+      hole; windows that touch merge, so no marker separates contiguous text.
+    * The result is ≤ ``budget_chars`` except in the two degenerate cases below.
+
+    Degenerate cases (documented, tested):
+
+    * ``budget_chars <= 0`` → ``""``. The caller decides how to say "the guide
+      exists but did not fit" (``render_service`` prints the marker itself).
+    * **Tiny budget** (content under :data:`_SLICE_MIN_CONTENT_CHARS` once both
+      gaps are reserved) → the opening only: whole lines from the top, then one
+      marker. If not one line fits, the marker alone — which may exceed a budget
+      smaller than the marker itself, by design: "something was here, see the
+      page" is the least a non-empty guide can honestly render as.
+    * **Nothing whole fits anywhere** (e.g. a guide that is one enormous line):
+      the first line is kept CLIPPED with ``…``, then the marker — the
+      ``truncate_by_position`` rule that a clipped opening beats an empty
+      section. The one exception is an image-description line, which is never
+      clipped: it is dropped whole and only the marker remains.
+    """
+    if len(text) <= budget_chars:
+        return text
+    if budget_chars <= 0:
+        return ""
+
+    lines = text.split("\n")
+    sizes = [len(line) + 1 for line in lines]
+    n = len(lines)
+
+    content = budget_chars - 2 * _SLICE_GAP_COST
+    if content < _SLICE_MIN_CONTENT_CHARS:
+        head_end, _ = _take_forward(sizes, 0, n, max(0, budget_chars - _SLICE_GAP_COST))
+        return _assemble_slices(lines, [(0, head_end)])
+
+    head_budget = int(content * SLICE_HEAD_SHARE)
+    mid_budget = int(content * SLICE_MIDDLE_SHARE)
+    tail_budget = content - head_budget - mid_budget
+
+    head_end, head_used = _take_forward(sizes, 0, n, head_budget)
+    tail_start, tail_used = _take_backward(sizes, n, head_end, tail_budget)
+
+    # The line holding the character midpoint of the WHOLE text — centred on the
+    # document, not on the leftover between head and tail.
+    midpoint, offset, centre = len(text) // 2, 0, 0
+    for i, size in enumerate(sizes):
+        if offset + size > midpoint:
+            centre = i
+            break
+        offset += size
+    mid_start, mid_end, mid_used = _grow_middle(
+        sizes, centre, head_end, tail_start, mid_budget
+    )
+
+    # Spill — a window blocked by one long line leaves its share unspent; hand
+    # it on, whole lines only, rather than return a guide half its budget.
+    leftover = content - head_used - mid_used - tail_used
+    has_mid = mid_end > mid_start
+    if leftover > 0:
+        stop = mid_start if has_mid else tail_start
+        head_end, used = _take_forward(sizes, head_end, stop, leftover)
+        leftover -= used
+    if leftover > 0:
+        floor = mid_end if has_mid else head_end
+        tail_start, used = _take_backward(sizes, tail_start, floor, leftover)
+        leftover -= used
+    if leftover > 0 and has_mid:
+        mid_end, used = _take_forward(sizes, mid_end, tail_start, leftover)
+        leftover -= used
+        mid_start, used = _take_backward(sizes, mid_start, head_end, leftover)
+
+    if head_end == 0 and tail_start == n and mid_end == mid_start:
+        # Nothing whole fits anywhere — see "degenerate cases" above.
+        first = lines[0]
+        if _is_guide_image_line(first):
+            return GUIDE_SLICE_GAP_AR
+        clipped = first[: max(0, content)].rstrip() + _TRUNCATION_MARK
+        return f"{clipped}\n\n{GUIDE_SLICE_GAP_AR}"
+
+    return _assemble_slices(
+        lines, [(0, head_end), (mid_start, mid_end), (tail_start, n)]
+    )
+
+
+# =========================================================================== #
 # Pure layer — renderers. Every one takes plain dicts and returns an
 # UnfoldResult; none of them touches a DB or an agent runtime.
 # =========================================================================== #
@@ -1223,10 +1488,37 @@ def render_service_guide(
     return "\n".join(lines).strip(), unresolved
 
 
+def render_service_card(service_row: dict[str, Any]) -> str:
+    """The service CARD alone — the issuing entity's structured payload.
+
+    ``build_service_aggregator_content`` (``ura/services_unfold.py``) wholesale:
+    intro, steps, requirements, required documents and the official link,
+    falling back to the compact ``service_context`` when the structured fields
+    are absent. Factored out of :func:`render_service` (same call, same
+    arguments) so the compliance path can MEASURE a card before it decides how
+    much of the guide's share is left (plan §5: "the card stays whole, the guide
+    gets the rest of the share").
+    """
+    fallback = build_service_context(service_row)
+    return build_service_aggregator_content(
+        service_name=service_row.get("service_name_ar") or "",
+        intro_title=service_row.get("intro_title") or "",
+        provider_name=service_row.get("provider_name") or "",
+        intro_description=service_row.get("intro_description") or "",
+        steps=service_row.get("steps"),
+        requirements=service_row.get("requirements"),
+        required_documents=service_row.get("required_documents"),
+        service_url=service_row.get("service_url") or "",
+        url=service_row.get("url") or "",
+        fallback_context=fallback,
+    )
+
+
 def render_service(
     service_row: dict[str, Any],
     guide_row: dict[str, Any] | None = None,
     image_rows: list[dict[str, Any]] | None = None,
+    guide_budget_chars: int | None = None,
 ) -> UnfoldResult:
     """Render ONE ``services`` row — plus its guide, when it has one (§4 L6).
 
@@ -1255,32 +1547,50 @@ def render_service(
     wiring (user, 2026-08-23), and the L6 synthesizer prompt was rewritten to
     match. Do not reintroduce it here as a note — a rule that lives in a
     docstring and not in the prompt is a rule the model never reads.
-    """
-    fallback = build_service_context(service_row)
-    content = build_service_aggregator_content(
-        service_name=service_row.get("service_name_ar") or "",
-        intro_title=service_row.get("intro_title") or "",
-        provider_name=service_row.get("provider_name") or "",
-        intro_description=service_row.get("intro_description") or "",
-        steps=service_row.get("steps"),
-        requirements=service_row.get("requirements"),
-        required_documents=service_row.get("required_documents"),
-        service_url=service_row.get("service_url") or "",
-        url=service_row.get("url") or "",
-        fallback_context=fallback,
-    )
-    guide, unresolved_holes = render_service_guide(guide_row, image_rows)
-    guide_kept = _clip(guide, MAX_SERVICE_GUIDE_CHARS)
 
-    # The card gets the REMAINDER, never a constant — see the budget note above.
-    kept = _clip(content, REAL_CONTENT_MAX_CHARS - len(guide_kept))
+    ``guide_budget_chars`` — the compliance path's switch (plan
+    ``simple_search_compliance_path.md`` §5):
+
+    * ``None`` (the default, and the L6 synthesizer's path) — exactly the
+      behaviour above, byte for byte: ``_clip(MAX_SERVICE_GUIDE_CHARS)`` on the
+      guide, the card on the remainder, a trailing truncation note on either.
+    * an ``int`` — the caller has already sized this service's share AROUND the
+      card (``compliance.open_services``), so the card is kept WHOLE and the
+      rendered guide is cut to the budget with :func:`slice_head_middle_tail`
+      (beginning, middle and end; a marker at every hole; the trailing note is
+      not added because the markers already say where text went). Holes are
+      resolved BEFORE the slice — :func:`render_service_guide` runs first — so
+      an image description is one whole line by the time the slicer sees it.
+      A guide sliced to nothing still announces itself (label + marker): the
+      agent must know a guide exists and lives on its page. Adds the note
+      ``guide_sliced`` whenever the guide lost anything.
+    """
+    content = render_service_card(service_row)
+    guide, unresolved_holes = render_service_guide(guide_row, image_rows)
+
+    sliced = False
+    if guide_budget_chars is None:
+        guide_kept = _clip(guide, MAX_SERVICE_GUIDE_CHARS)
+        # The card gets the REMAINDER, never a constant — see the budget note above.
+        kept = _clip(content, REAL_CONTENT_MAX_CHARS - len(guide_kept))
+    else:
+        # ``_clip(…, 0)`` is the strip-only form: the card is never cut here.
+        kept = _clip(content, 0)
+        guide_kept = slice_head_middle_tail(guide, guide_budget_chars) if guide else ""
+        sliced = bool(guide) and guide_kept != guide
+        if guide and not guide_kept:
+            guide_kept = f"{_GUIDE_SECTION_LABEL_AR}\n\n{GUIDE_SLICE_GAP_AR}"
+
+    # Only the clip path can shorten the card; on the slice path a strip is not
+    # a truncation and must not print the «اقتُطع جزء» note.
+    card_clipped = guide_budget_chars is None and bool(content) and len(kept) < len(content)
 
     lines: list[str] = [kept if kept else "(لا توجد تفاصيل لهذه الخدمة)"]
-    if content and len(kept) < len(content):
+    if card_clipped:
         lines += ["", _TRUNCATION_NOTE_AR]
     if guide_kept:
         lines += ["", "---", "", guide_kept]
-        if len(guide_kept) < len(guide):
+        if guide_budget_chars is None and len(guide_kept) < len(guide):
             lines += ["", _TRUNCATION_NOTE_AR]
 
     sections = [
@@ -1292,21 +1602,29 @@ def render_service(
             chars_kept=len(kept),
         )
     ]
-    notes = ["content_over_ceiling"] if content and len(kept) < len(content) else []
+    notes = ["content_over_ceiling"] if card_clipped else []
 
     if guide:
+        guide_chars_kept = len(guide_kept)
+        if sliced:
+            # SOURCE chars kept: the markers are ours, not the guide's, and a
+            # sliced guide must account as truncated however short it was.
+            marker_chars = guide_kept.count(GUIDE_SLICE_GAP_AR) * len(GUIDE_SLICE_GAP_AR)
+            guide_chars_kept = min(len(guide) - 1, max(0, guide_chars_kept - marker_chars))
         sections.append(
             UnfoldSection(
                 name="guide",
                 units_total=1,
                 units_kept=1 if guide_kept else 0,
                 chars_total=len(guide),
-                chars_kept=len(guide_kept),
+                chars_kept=guide_chars_kept,
             )
         )
         notes.append("service_guide")
-        if len(guide_kept) < len(guide):
+        if guide_budget_chars is None and len(guide_kept) < len(guide):
             notes.append("guide_over_ceiling")
+        if sliced:
+            notes.append("guide_sliced")
     if unresolved_holes:
         # Zero on every guide live. Non-zero means the ingest broke the
         # hole↔image pairing, and a silent count is how that goes unnoticed.
@@ -1913,6 +2231,9 @@ __all__ = [
     "MAX_REG_ABSTRACT_CHARS",
     "SIMPLE_SEARCH_SERVICE_CONTEXT_CHARS",
     "MAX_SERVICE_GUIDE_CHARS",
+    "GUIDE_SLICE_GAP_AR",
+    "SLICE_HEAD_SHARE",
+    "SLICE_MIDDLE_SHARE",
     "SIMPLE_CHUNK_SELECT",
     "CHUNK_METADATA_SELECT",
     "REGULATION_SELECT",
@@ -1938,12 +2259,14 @@ __all__ = [
     "choose_rung",
     "split_budget",
     "truncate_by_position",
+    "slice_head_middle_tail",
     "render_chunk",
     "render_regulation_doc",
     "render_article",
     "render_judgment",
     "render_circular",
     "render_service_guide",
+    "render_service_card",
     "render_service",
     # entry points
     "unfold",

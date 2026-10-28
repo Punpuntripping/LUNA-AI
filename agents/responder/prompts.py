@@ -232,6 +232,8 @@ One entry per document in `<documents>`, using its **exact** label (`D1`, `D2`, 
 
 **The default is `card: true`.** A card is a durable artifact the user keeps and returns to: a whole نظام, a full ruling, a long article or a run of provisions — anything they will plausibly cite later. Set `card: false` when the answer is a **one-line answer or a pointer** (the workspace caps at 15 items); a **not-found or an access refusal**; **so truncated that a card would mislead**; or marked **`already_delivered="true"`**.
 
+A document marked **`card="always"`** is a government-service answer written as a card by design — it is published whatever you return. Give it `card: true` and a title, and in `chat_summary_md` point at the card in one or two sentences; never restate or summarise its steps.
+
 `title` — only when `card: true`: a short Arabic **content-derived** title naming the object (≤ 80 characters, **no verbs**): «المادة 81 من نظام العمل», never «شرح المادة 81». Empty when `card` is false.
 
 ## `next_steps` for this mode — a lookup should not end in a dead end
@@ -523,6 +525,8 @@ def render_simple_search_package(a: SimpleSearchArtifact) -> str:
             attrs += ' payload="summaries"'
         if getattr(doc, "already_delivered", False):
             attrs += ' already_delivered="true"'
+        if getattr(doc, "card_forced", False):
+            attrs += ' card="always"'
         parts += [f"  <document {attrs}>", _esc(clipped), "  </document>"]
     parts += ["</documents>", ""]
     if docs:

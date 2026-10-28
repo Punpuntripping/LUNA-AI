@@ -31,6 +31,11 @@ Controls — guard against OVER-correction (new this run)
     X-PAIR-S/D   the §1.1 dangerous pair                → simple / deep
     X-CMP        «قارن نظام العمل بنظام العمل التطوعي»  → deep_search
 
+Government services (2026-10-28, compliance-path plan §9) — fixtures_routing_services.py
+    S-SVC        how/where/what-documents, 1–2 services  → simple_search
+    S-REG        mandatory / penalty / obligation        → deep_search
+    S-MULTI      «وش أحتاج عشان أفتح…» multi-service     → deep_search
+
     .venv/Scripts/python.exe agents/simple_search/eval/ab_rerun.py [--only PREFIX]
 """
 from __future__ import annotations
@@ -50,6 +55,9 @@ from ab_common import (  # noqa: E402
 from agents.models import DispatchAgent  # noqa: E402
 from agents.router.context import load_router_context  # noqa: E402
 from agents.router.router import run_router  # noqa: E402
+from agents.simple_search.eval.fixtures_routing_services import (  # noqa: E402
+    SERVICE_ROUTE_FIXTURES,
+)
 
 CHAT = "chat_response"
 
@@ -206,6 +214,19 @@ CELLS: list[tuple[str, str, str, str, list[str]]] = [
         "وش محتوى هذا النظام باختصار؟",
     ]),
 ]
+
+# ── Government services boundary (simple_search_compliance_path §9 / D8) ─────
+# S-SVC  how/where/what-documents, one or two services → simple_search
+# S-REG  the same topics asked as law (mandatory/penalty/obligation) → deep_search
+# S-MULTI broad multi-service compliance → deep_search
+# Fixtures live in fixtures_routing_services.py (also run standalone, no setup,
+# by rerun_routing_services.py).
+_SERVICE_CELL = {"service_direct": "S-SVC", "service_regulatory": "S-REG",
+                 "service_multi": "S-MULTI"}
+for _cls, _cell in _SERVICE_CELL.items():
+    _fx = [f for f in SERVICE_ROUTE_FIXTURES if f.cls == _cls]
+    CELLS.append((_cell, f"services boundary — {_cls}", "b_bare", _fx[0].expect,
+                  [q for f in _fx for q in f.paraphrases]))
 
 
 # --------------------------------------------------------------------------- #

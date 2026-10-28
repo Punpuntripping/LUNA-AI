@@ -298,6 +298,9 @@ class DocDigest:
     truncated: bool = False
     summary_payload: bool = False
     already_delivered: bool = False
+    #: The compliance artifact — published whatever the verdict (simple_search
+    #: compliance path D5); rendered as ``card="always"``.
+    card_forced: bool = False
 
 
 @dataclass

@@ -77,7 +77,11 @@ from agents.models import (
     WorkspaceItemSnapshot,
     SpecialistResult,
 )
-from agents.simple_search.runner import run_simple_search
+from agents.simple_search.runner import (
+    FALLBACK_RUNNER_ERROR as _SS_FALLBACK_RUNNER_ERROR,
+    fallback_result as _ss_fallback_result,
+    run_simple_search,
+)
 from agents.tool_repository.save_memo import MEMO_SUBTYPE, NOTE_KIND
 from agents.paused_runs import (
     PauseRecord,
@@ -1563,6 +1567,59 @@ async def _resume_major_agent_inner(
     yield {"type": "agent_run_finished", "agent_family": "deep_search"}
 
 
+def _note_simple_search_handoff(
+    ss_outcome: Any,
+    *,
+    leg: str,
+    conversation_id: str,
+    span: Any = None,
+) -> str:
+    """Log + stamp one simple_search → deep_search hand-off. Returns its code.
+
+    Plan ``simple_search_compliance_path.md`` §6: the hand-off now fires on
+    simple_search FAILURES too (``fallback_reason`` set), not only on the
+    searcher's deliberate abort. Both legs (fresh dispatch, resume) emit the
+    same ``simple_search.handoff_deep_search`` event so ONE Logfire query counts
+    the fallback rate across them — a high rate means the router or the
+    searcher is wrong, not that the fallback is working. ``span`` is the
+    dispatch span when there is one (fresh leg): it gets ``dispatch.fallback``
+    — the failure code, or ``searcher_abort`` for a deliberate abort.
+
+    Duck-typed reads (``getattr``): the orchestration tests script a local
+    stand-in for the C1 result, and an older family build has no
+    ``fallback_reason`` at all. Never raises — telemetry must not cost the turn
+    its answer.
+    """
+    reason = str(getattr(ss_outcome, "fallback_reason", "") or "")
+    abort_reason = str(getattr(ss_outcome, "abort_reason", "") or "")
+    code = reason or "searcher_abort"
+    if reason:
+        logger.warning(
+            "simple_search %s FAILED for conversation %s — falling back to "
+            "deep_search (fallback_reason=%s, abort_reason=%s)",
+            leg, conversation_id, reason, abort_reason or "unspecified",
+        )
+    else:
+        logger.info(
+            "simple_search %s aborted for conversation %s — handing off to "
+            "deep_search (reason=%s)",
+            leg, conversation_id, abort_reason or "unspecified",
+        )
+    try:
+        if span is not None:
+            span.set_attributes({"dispatch.fallback": code})
+        _logfire.info(
+            "simple_search.handoff_deep_search",
+            leg=leg,
+            conversation_id=conversation_id,
+            fallback=code,
+            fallback_reason=reason,
+        )
+    except Exception:  # noqa: BLE001 — telemetry only
+        pass
+    return code
+
+
 async def _resume_simple_search_leg(
     *,
     pending: dict,
@@ -1627,31 +1684,55 @@ async def _resume_simple_search_leg(
     # the next turn has to resume.
     _keep_pause = False
     try:
-        ss_outcome = await resume_simple_search(
-            user_reply,
-            pending,
-            supabase,
-            user_id,
-            conversation_id,
-            case_id,
-            # Parity with the fresh dispatch, which hands the family the same
-            # window it hands the planners. The pause row rehydrates the RUN;
-            # it does not carry the conversation the run is happening in.
-            recent_messages=_load_recent_messages(
-                supabase, conversation_id, user_id=user_id
-            ),
-        )
+        try:
+            ss_outcome = await resume_simple_search(
+                user_reply,
+                pending,
+                supabase,
+                user_id,
+                conversation_id,
+                case_id,
+                # Parity with the fresh dispatch, which hands the family the same
+                # window it hands the planners. The pause row rehydrates the RUN;
+                # it does not carry the conversation the run is happening in.
+                recent_messages=_load_recent_messages(
+                    supabase, conversation_id, user_id=user_id
+                ),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — §6: hand off, never banner
+            # Defence in depth (plan simple_search_compliance_path.md §6). The
+            # runner now contains its own searcher failures, but anything that
+            # still ESCAPES the family — this is where 93fafee7's resume leg
+            # showed «عذراً، حدث خطأ أثناء استئناف البحث» — becomes the same
+            # aborted shape the runner returns, so the abort branch below answers
+            # it through deep_search with the reply and the full conversation
+            # window. Contained HERE, around the family call only, and not in the
+            # outer ``except``: by the time that one fires, either deep_search
+            # itself failed (nothing left to fall back to) or part of a
+            # simple_search answer was already streamed, and a second answer on
+            # top of it would be worse than the banner.
+            logger.error(
+                "_resume_simple_search_leg: resume_simple_search raised for "
+                "run_id=%s — falling back to deep_search: %s",
+                run_id, exc, exc_info=True,
+            )
+            ss_outcome = _ss_fallback_result(_SS_FALLBACK_RUNNER_ERROR)
 
         # ── Abort → hand off to deep_search ─────────────────────────────────
         # Same precedent as the fresh-dispatch branch in _dispatch: the searcher
         # has established this is not a lookup, the router already established it
         # is a legal question, and there is exactly one family left. Going
         # straight there is deterministic and terminal — re-routing could loop.
+        # Since §6 this is ALSO the failure path: a searcher that exhausted its
+        # limits or raised, a loop with nothing accepted, and the escape caught
+        # just above all arrive here as ``aborted`` + ``fallback_reason``. The
+        # pause row is still consumed by the finally — harmless now, because the
+        # reply is answered by deep_search instead of being lost to a banner.
         if ss_outcome.aborted:
-            logger.info(
-                "simple_search resume aborted for conversation %s — handing off "
-                "to deep_search (reason=%s)",
-                conversation_id, ss_outcome.abort_reason or "unspecified",
+            _note_simple_search_handoff(
+                ss_outcome, leg="resume", conversation_id=conversation_id,
             )
             major_input = MajorAgentInput(
                 describe_query=user_reply,
@@ -1831,6 +1912,11 @@ async def _resume_simple_search_leg(
         )
         raise
     except Exception as exc:
+        # Reached only AFTER the family returned: a failure escaping the family
+        # itself was already turned into a deep_search hand-off above. What is
+        # left is deep_search failing on that hand-off (nothing left to fall
+        # back to) or delivery failing mid-stream (a second answer would stack
+        # on a partial one) — the generic banner stands for both.
         logger.error(
             "_resume_simple_search_leg: resume failed for run_id=%s: %s",
             run_id, exc, exc_info=True,
@@ -3025,20 +3111,37 @@ async def _dispatch(
                 # runner.run_simple_search owns its own loop — searcher → up to 3
                 # synthesizers, 3 rejection cycles from ONE shared per-turn pool —
                 # and returns the pinned §12a C1 shape.
-                ss_outcome = await run_simple_search(
-                    describe_query,
-                    supabase,
-                    user_id,
-                    conversation_id,
-                    case_id,
-                    attached_items=attached_items,
-                    # The SAME window the planners get — built once above for
-                    # MajorAgentInput, so provenance tags and the masking codec
-                    # ride along rather than being re-derived.
-                    recent_messages=recent_messages,
-                    welcome=welcome,
-                    router_context=router_context,
-                )
+                try:
+                    ss_outcome = await run_simple_search(
+                        describe_query,
+                        supabase,
+                        user_id,
+                        conversation_id,
+                        case_id,
+                        attached_items=attached_items,
+                        # The SAME window the planners get — built once above for
+                        # MajorAgentInput, so provenance tags and the masking codec
+                        # ride along rather than being re-derived.
+                        recent_messages=recent_messages,
+                        welcome=welcome,
+                        router_context=router_context,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — §6: hand off, never banner
+                    # Defence in depth (plan simple_search_compliance_path.md
+                    # §6). The runner contains its own failures now; anything
+                    # that still escapes it used to reach the catch-all below and
+                    # show «عذراً، حدث خطأ أثناء تنفيذ المهمة» on a question
+                    # deep_search could still answer. It becomes the runner's own
+                    # aborted shape instead (``paused=False``, so the pause branch
+                    # cannot fire), and the abort branch below hands it off — ONE
+                    # code path for a deliberate abort and a crash alike.
+                    logger.error(
+                        "simple_search raised for conversation %s — falling back "
+                        "to deep_search: %s", conversation_id, exc, exc_info=True,
+                    )
+                    ss_outcome = _ss_fallback_result(_SS_FALLBACK_RUNNER_ERROR)
 
                 if ss_outcome.paused:
                     # ── §13l.1 deliver-then-ask + §13l.2 question_text wins ────
@@ -3148,10 +3251,14 @@ async def _dispatch(
                     # router already established this is a legal question, the
                     # searcher has now established it is not a lookup, and there
                     # is exactly one family left.
-                    logger.info(
-                        "simple_search aborted for conversation %s — handing off "
-                        "to deep_search (reason=%s)",
-                        conversation_id, ss_outcome.abort_reason or "unspecified",
+                    #
+                    # Since §6 this is ALSO the failure path — a searcher budget
+                    # hit or crash, a loop with nothing accepted, or the escape
+                    # caught just above all arrive as ``aborted`` +
+                    # ``fallback_reason``, logged and stamped on the span here.
+                    _note_simple_search_handoff(
+                        ss_outcome, leg="dispatch",
+                        conversation_id=conversation_id, span=_dispatch_span,
                     )
                     ds_handoff = await _run_deep_search(
                         major_input, supabase,
