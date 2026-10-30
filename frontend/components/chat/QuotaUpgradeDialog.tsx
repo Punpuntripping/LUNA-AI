@@ -39,7 +39,7 @@ import type { SSEDeepSearchGated, SSEQuotaExceeded } from "@/types";
 /**
  * The deep-search plan gate's variant (migration 197) — the ONE place its web
  * copy lives; the body line is the server's `message_ar`.
- * ⚠ PROPOSED copy, not owner-approved yet. Latin digits only.
+ * Copy owner-approved 2026-10-30. Latin digits only.
  */
 const DEEP_SEARCH_GATE_COPY = {
   title: {

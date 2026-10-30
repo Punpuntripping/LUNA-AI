@@ -706,7 +706,7 @@ _ORD_WINDOWS: tuple[tuple[Period, str, str, str, int], ...] = (
     ("monthly", "points_monthly", "monthly_cost", "monthly_oldest", MONTH_WINDOW_S),
 )
 
-# ⚠ PROPOSED copy — not owner-approved yet (deep_search_plan_gate.md §7). This
+# Copy owner-approved 2026-10-30 (deep_search_plan_gate.md §7). This
 # is the ONE place the gate's Arabic lives on the backend. Latin digits only.
 #
 # The REPLY is the turn's assistant message: streamed as `token`s and persisted

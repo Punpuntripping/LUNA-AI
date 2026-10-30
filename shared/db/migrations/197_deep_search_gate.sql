@@ -199,7 +199,7 @@ GRANT EXECUTE ON FUNCTION public.count_user_deep_searches(uuid, timestamptz)
 --   pricing:      «**المجانية** — للتجربة، بحدّ يكفي لبحث معمّق واحد في الجلسة
 --                 ومثله في الأسبوع.» — ALREADY wrong before this gate: free has
 --                 had neither a session nor a weekly window since 129.
--- ⚠ PROPOSED copy — not owner-approved yet. No riyal amount (126), Latin digits.
+-- Copy owner-approved 2026-10-30. No riyal amount (126), Latin digits.
 -- The usage_limits text is the same as frontend/components/learn/UsageLimitsView.
 DO $$
 DECLARE

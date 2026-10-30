@@ -12,7 +12,7 @@ import { useTheme } from "@/theme/ThemeProvider";
 
 const ARABIC = /[؀-ۿ]/;
 const FALLBACK = "تعذّر إرسال رسالتك الآن — حاول مجدداً بعد قليل";
-// Only if the server's `message_ar` is missing. ⚠ PROPOSED copy (migration 197).
+// Only if the server's `message_ar` is missing. Copy owner-approved 2026-10-30 (migration 197).
 const DEEP_SEARCH_GATED_FALLBACK = "البحث المعمّق غير متاح في باقتك الآن.";
 
 function arabic(value: string | null | undefined): string | null {

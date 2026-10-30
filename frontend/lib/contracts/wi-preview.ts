@@ -24,7 +24,7 @@ export const WI_PREVIEW_LEGACY_SUFFIX = "\n\n" + WI_PREVIEW_LEGACY_LINE;
 export const WI_PREVIEW_GATE_KIND = "wi_preview" as const;
 
 /**
- * PROPOSED wall copy (owner to confirm). Neutral on purpose — it states what
+ * Wall copy, owner-approved 2026-10-30. Neutral on purpose — it states what
  * the free plan shows and never tells the reader to buy elsewhere, so the app
  * can show it verbatim under the store rules. The web adds the `cta` button;
  * the app shows it only when its in-app purchase entry is visible.

@@ -152,7 +152,7 @@ const WINDOW_POINTS = [
   },
   {
     title: "المجانية — نافذة واحدة 30 يوماً",
-    // Deep-search plan gate (migration 197) + WI preview lock — PROPOSED copy, not owner-approved.
+    // Deep-search plan gate (migration 197) + WI preview lock — copy owner-approved 2026-10-30.
     body: "لا جلسة ولا أسبوع في الباقة المجانية: 5 نقاط تتحرك على آخر 30 يوماً، ومعها بحث معمّق واحد كل 30 يوماً لتجربته قبل أن تقرر — يظهر لك منه نحو 40% من التقرير، والباقي في الباقات المدفوعة.",
   },
   {
@@ -359,7 +359,7 @@ export function UsageLimitsView() {
               clearer than a row of «—». The deep-search plan gate (migration
               197) adds the two floors; the WI preview lock (wi_preview_lock.md §0/§9)
               adds the ~40% preview sentences. Same text as product_docs.usage_limits.
-              PROPOSED copy, not owner-approved. */}
+              Copy owner-approved 2026-10-30. */}
           <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
             الباقة المجانية خارج الجدول: نافذة واحدة بـ5 نقاط كل 30 يوماً، وفيها
             بحث معمّق واحد كل 30 يوماً يبدأ متى بقيت في رصيدك نقطتان على الأقل —
