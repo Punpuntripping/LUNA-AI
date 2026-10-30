@@ -1,9 +1,50 @@
-import type { WorkspaceItem, WorkspaceItemKind } from "@contracts";
+import { isWiPreviewLocked, wiPreviewVisibleContent, type WorkspaceItem, type WorkspaceItemKind } from "@contracts";
 
 // Pure rules of the workspace screen — a port of the web's chat-pane
 // workspace (frontend/components/workspace/WorkspaceList, WorkspaceCard,
 // WiBadge, AttachmentRenderer, ConvoContextViewer, ReferencesRenderer,
 // WorkspaceAddMenu, NoteEditor). No React Native here so `npm test` covers it.
+
+// --- WI preview lock (.claude/plans/wi_preview_lock.md) ------------------------
+
+/** The part of an item the viewers read the lock from. */
+type PreviewFields = Pick<WorkspaceItem, "content_md" | "preview">;
+
+/**
+ * What a viewer may do with an item's body. The server sends `preview` only on
+ * a preview-locked item (a free user's agent report / draft created after
+ * launch): the body is then its visible part, read-only, and it never leaves
+ * the app — no edit / autosave, مشاركة, حفظ كمدونة or PDF / Word; نسخ stays
+ * and copies the visible part only. Without `preview` (every other item, and
+ * always while the server flag is off) everything is as before.
+ */
+export interface PreviewAccess {
+  /** Render `wiPreviewVisibleContent(item)` + WiPreviewWall. */
+  locked: boolean;
+  /** Body edits and their autosave (a title-only edit is the server's call). */
+  editBody: boolean;
+  /** مشاركة / حفظ كمدونة. */
+  publish: boolean;
+  /** PDF / Word. */
+  export: boolean;
+}
+
+export function previewAccess(item: PreviewFields): PreviewAccess {
+  const locked = isWiPreviewLocked(item);
+  return { locked, editBody: !locked, publish: !locked, export: !locked };
+}
+
+/**
+ * How many sources only the hidden part cites («وN مصادر أخرى في الجزء
+ * المقفل»): the `/references` answer's `hidden_count` when it has one (it goes
+ * with the list on screen), else the item's own `preview` block; 0 on an open
+ * item.
+ */
+export function lockedRefCount(item: PreviewFields, refsHiddenCount: number | undefined): number {
+  if (!isWiPreviewLocked(item)) return 0;
+  const n = refsHiddenCount ?? item.preview?.hidden_ref_count ?? 0;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
 
 // --- list --------------------------------------------------------------------
 
@@ -219,12 +260,19 @@ export interface NoteBaseline {
  * The autosave PATCH for a note — web MarkdownDocEditor `flushPendingSave`:
  * the title is compared and sent TRIMMED; a blank title skips the save
  * altogether; only changed fields go out; `null` = nothing to send.
+ * `bodyLocked` (a preview-locked item): the body is never sent — the server
+ * would refuse it (402) and it holds only the visible part.
  */
-export function notePatch(base: NoteBaseline, title: string, content: string): { title?: string; content_md?: string } | null {
+export function notePatch(
+  base: NoteBaseline,
+  title: string,
+  content: string,
+  bodyLocked = false,
+): { title?: string; content_md?: string } | null {
   const nextTitle = title.trim();
   if (!nextTitle) return null;
   const titleChanged = nextTitle !== base.title;
-  const contentChanged = content !== base.content;
+  const contentChanged = !bodyLocked && content !== base.content;
   if (!titleChanged && !contentChanged) return null;
   return {
     ...(titleChanged ? { title: nextTitle } : {}),
@@ -282,9 +330,9 @@ export function ocrStatusText(status: string | undefined): string {
   return "تعذّر استخراج نص هذا المستند";
 }
 
-export function attachmentView(item: Pick<WorkspaceItem, "content_md" | "metadata">, showOriginal: boolean): AttachmentView {
+export function attachmentView(item: Pick<WorkspaceItem, "content_md" | "metadata" | "preview">, showOriginal: boolean): AttachmentView {
   const meta = attachmentMeta(item);
-  const hasText = (item.content_md ?? "").trim().length > 0;
+  const hasText = wiPreviewVisibleContent(item).trim().length > 0;
   if (hasText && (meta.purged || !showOriginal)) return { kind: "ocr", purged: meta.purged };
   if (meta.purged) {
     return {

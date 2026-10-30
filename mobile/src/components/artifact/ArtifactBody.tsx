@@ -3,13 +3,22 @@ import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 
-import { appendReferencesForCopy, type Reference, type WorkspaceFeedback, type WorkspaceItem } from "@contracts";
+import {
+  appendReferencesForCopy,
+  isWiPreviewLocked,
+  wiPreviewVisibleContent,
+  type Reference,
+  type WorkspaceFeedback,
+  type WorkspaceItem,
+} from "@contracts";
 
 import { errorMessage } from "@/api/errors";
 import { AppText } from "@/components/AppText";
 import { Markdown } from "@/components/markdown/Markdown";
 import { chunkMarkdown } from "@/components/source/chunk-markdown";
 import { sourceHref } from "@/components/source/exits";
+import { WiPreviewFade, WiPreviewHiddenRefs, WiPreviewWall } from "@/components/workspace/WiPreviewWall";
+import { lockedRefCount, previewAccess } from "@/components/workspace/workspace-model";
 import { formatDateTime } from "@/lib/format";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -24,10 +33,13 @@ import { useDraft, useSetFeedback } from "./use-output-actions";
 import { ACTION_BAR_SPACE, WorkspaceItemActionBar, type ManageActions } from "./WorkspaceItemActionBar";
 
 type Row =
-  | { kind: "md"; key: string; text: string }
+  /** `fade`: the last block of a preview-locked body (the wall follows). */
+  | { kind: "md"; key: string; text: string; fade: boolean }
+  | { kind: "wall"; key: string }
   | { kind: "refs-heading"; key: string }
   | { kind: "refs-state"; key: string }
   | { kind: "ref"; key: string; reference: Reference }
+  | { kind: "refs-hidden"; key: string; count: number }
   | { kind: "disclaimer"; key: string };
 
 /** Scroll position to come back to: the first visible row + how far into it. */
@@ -61,6 +73,11 @@ function isAgentKind(kind: WorkspaceItem["kind"]): kind is AgentOutputKind {
  * disclaimer, and the floating action bar (WorkspaceItemActionBar — the web's
  * one standard). Anything else (never auto-opened, but reachable) renders its
  * markdown with a نسخ-only bar (web: convo_context / references).
+ *
+ * WI preview lock (the server sent `preview`): only the visible part, faded
+ * into WiPreviewWall, read-only (no معاينة/تحرير, مشاركة, حفظ كمدونة or PDF —
+ * نسخ copies the visible part); «المراجع» lists what the server returned plus
+ * «وN مصادر أخرى في الجزء المقفل».
  */
 export function ArtifactBody({ itemId, bottomInset, isDemo, restore = null, onLeave, manage }: ArtifactBodyProps) {
   const { colours } = useTheme();
@@ -108,16 +125,26 @@ interface OutputProps {
 
 /** References + publish sheet + 👍/👎 — what both agent outputs share. */
 function useAgentOutput(item: WorkspaceItem, isDemo: boolean, onLeave: (a: ScrollAnchor | null) => void) {
+  const access = previewAccess(item);
   const refs = useReferences(item.item_id, true);
-  const references = useMemo(() => refs.data ?? [], [refs.data]);
+  const references = useMemo(() => refs.data?.references ?? [], [refs.data]);
+  const hiddenCount = lockedRefCount(item, refs.data?.hidden_count);
   const { isPending, isError, refetch } = refs;
   const refsState = useMemo<RefsState>(
-    () => ({ list: references, pending: isPending, error: isError, retry: () => void refetch() }),
-    [references, isPending, isError, refetch],
+    () => ({ list: references, hiddenCount, pending: isPending, error: isError, retry: () => void refetch() }),
+    [references, hiddenCount, isPending, isError, refetch],
   );
+  // The lock flipped while open (upgraded, or the plan ended): the server now
+  // lists a different set of sources — ask again.
+  const lastLocked = useRef(access.locked);
+  useEffect(() => {
+    if (lastLocked.current === access.locked) return;
+    lastLocked.current = access.locked;
+    void refetch();
+  }, [access.locked, refetch]);
   const setFeedback = useSetFeedback();
   const [publish, setPublish] = useState<PublishFlow | null>(null);
-  const spec = barSpec(item.kind as AgentOutputKind, isDemo);
+  const spec = barSpec(item.kind as AgentOutputKind, isDemo, access.locked);
 
   const openSource = useCallback(
     (n: number, anchor: ScrollAnchor | null) => {
@@ -127,11 +154,14 @@ function useAgentOutput(item: WorkspaceItem, isDemo: boolean, onLeave: (a: Scrol
     [item.item_id, onLeave],
   );
 
-  // Omitting `onFeedback` is what hides the thumbs (the bar keys off it).
+  // Omitting a handler is what hides its control (the bar keys off it): no
+  // `onFeedback` → no thumbs; no `onShare` / `onSaveBlog` / `exportTitle` on
+  // a preview-locked item.
   const barProps = {
-    onShare: () => setPublish("share"),
-    onSaveBlog: () => setPublish("saveBlog"),
+    onShare: spec.publish ? () => setPublish("share") : undefined,
+    onSaveBlog: spec.publish ? () => setPublish("saveBlog") : undefined,
     publishDisabledHint: spec.publishDisabled ? DEMO_DISABLED_HINT : undefined,
+    exportTitle: spec.export ? item.title : undefined,
     feedback: spec.feedback ? item.feedback : undefined,
     onFeedback: spec.feedback
       ? (next: WorkspaceFeedback) => setFeedback.mutate({ itemId: item.item_id, feedback: next })
@@ -139,13 +169,18 @@ function useAgentOutput(item: WorkspaceItem, isDemo: boolean, onLeave: (a: Scrol
     feedbackPending: setFeedback.isPending,
   };
 
-  const publishSheet = <PublishSheet itemId={item.item_id} flow={publish} onClose={() => setPublish(null)} />;
-  return { refsState, references, openSource, barProps, publishSheet };
+  // Never offered on a preview-locked item. One already open when the lock
+  // arrives (the server's 402) stays until closed, to show its Arabic message.
+  const publishSheet =
+    spec.publish || publish !== null ? (
+      <PublishSheet itemId={item.item_id} flow={publish} onClose={() => setPublish(null)} />
+    ) : null;
+  return { refsState, references, openSource, barProps, publishSheet, previewLocked: access.locked };
 }
 
 function SearchOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: OutputProps) {
-  const { refsState, references, openSource, barProps, publishSheet } = useAgentOutput(item, isDemo, onLeave);
-  const content = item.content_md ?? "";
+  const { refsState, references, openSource, barProps, publishSheet, previewLocked } = useAgentOutput(item, isDemo, onLeave);
+  const content = wiPreviewVisibleContent(item);
   // نسخ copies the body PLUS «المراجع» (the [n] markers resolve in the paste).
   const copyText = useMemo(() => appendReferencesForCopy(content, references), [content, references]);
 
@@ -154,11 +189,12 @@ function SearchOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: O
       <PreviewList
         content={content}
         refs={refsState}
+        locked={previewLocked}
         bottomInset={bottomInset}
         restore={restore}
         onOpenSource={openSource}
       />
-      <WorkspaceItemActionBar copyText={copyText} exportTitle={item.title} bottomInset={bottomInset} manage={manage} {...barProps} />
+      <WorkspaceItemActionBar copyText={copyText} bottomInset={bottomInset} manage={manage} {...barProps} />
       {publishSheet}
     </View>
   );
@@ -166,11 +202,14 @@ function SearchOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: O
 
 function WritingOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: OutputProps) {
   const { colours } = useTheme();
-  const { refsState, references, openSource, barProps, publishSheet } = useAgentOutput(item, isDemo, onLeave);
+  const { refsState, references, openSource, barProps, publishSheet, previewLocked } = useAgentOutput(item, isDemo, onLeave);
   const locked = isAgentLocked(item);
-  const draft = useDraft(item, locked);
+  const draft = useDraft(item, locked, previewLocked);
+  // Preview-locked: the visible part, read as a document (no معاينة/تحرير).
+  const content = previewLocked ? wiPreviewVisibleContent(item) : draft.content;
+  const mode = previewLocked ? "preview" : draft.mode;
   // LIVE content (not the last saved body), so an edit copies at once.
-  const copyText = useMemo(() => appendReferencesForCopy(draft.content, references), [draft.content, references]);
+  const copyText = useMemo(() => appendReferencesForCopy(content, references), [content, references]);
 
   return (
     <View style={styles.root}>
@@ -192,9 +231,9 @@ function WritingOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: 
           </Pressable>
         </View>
       ) : null}
-      <SaveStatus saving={draft.saving} savedAt={draft.savedAt} updatedAt={item.updated_at} />
+      <SaveStatus saving={draft.saving} savedAt={draft.savedAt} updatedAt={item.updated_at} readOnly={previewLocked} />
 
-      {draft.mode === "edit" ? (
+      {mode === "edit" ? (
         <DraftEditor
           value={draft.content}
           onChangeText={draft.setContent}
@@ -203,14 +242,20 @@ function WritingOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: 
           footer={<ReferencesFooter refs={refsState} onOpenSource={(n) => openSource(n, null)} />}
         />
       ) : (
-        <PreviewList content={draft.content} refs={refsState} bottomInset={bottomInset} restore={restore} onOpenSource={openSource} />
+        <PreviewList
+          content={content}
+          refs={refsState}
+          locked={previewLocked}
+          bottomInset={bottomInset}
+          restore={restore}
+          onOpenSource={openSource}
+        />
       )}
 
       <WorkspaceItemActionBar
         copyText={copyText}
-        exportTitle={item.title}
-        mode={draft.mode}
-        onModeChange={draft.setMode}
+        mode={previewLocked ? undefined : draft.mode}
+        onModeChange={previewLocked ? undefined : draft.setMode}
         editDisabled={locked}
         bottomInset={bottomInset}
         manage={manage}
@@ -223,27 +268,41 @@ function WritingOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: 
 
 /** Non-agent items (reachable, never auto-opened): markdown + نسخ only. */
 function PlainOutput({ item, bottomInset, restore, manage }: Omit<OutputProps, "isDemo">) {
-  const content = item.content_md ?? "";
+  const content = wiPreviewVisibleContent(item);
   return (
     <View style={styles.root}>
-      <PreviewList content={content} refs={null} bottomInset={bottomInset} restore={restore} />
+      <PreviewList content={content} refs={null} locked={isWiPreviewLocked(item)} bottomInset={bottomInset} restore={restore} />
       <WorkspaceItemActionBar copyText={content} bottomInset={bottomInset} manage={manage} />
     </View>
   );
 }
 
-/** «جارٍ الحفظ» / «تم الحفظ تلقائياً» / «التغييرات تُحفظ تلقائياً» + «آخر تحديث». */
-function SaveStatus({ saving, savedAt, updatedAt }: { saving: boolean; savedAt: number | null; updatedAt: string }) {
+/** «جارٍ الحفظ» / «تم الحفظ تلقائياً» / «التغييرات تُحفظ تلقائياً» + «آخر تحديث».
+ *  `readOnly` (preview-locked — nothing is ever saved): «آخر تحديث» only. */
+function SaveStatus({
+  saving,
+  savedAt,
+  updatedAt,
+  readOnly = false,
+}: {
+  saving: boolean;
+  savedAt: number | null;
+  updatedAt: string;
+  readOnly?: boolean;
+}) {
   const { colours } = useTheme();
   const updated = formatDateTime(updatedAt);
+  if (readOnly && !updated) return null;
   return (
     <View style={[styles.status, { borderBottomColor: colours.border }]}>
-      <View style={styles.statusStart}>
-        {saving ? <ActivityIndicator size="small" color={colours.textMuted} /> : null}
-        <AppText variant="xs" tone="muted">
-          {saving ? "جارٍ الحفظ" : savedAt ? "تم الحفظ تلقائياً" : "التغييرات تُحفظ تلقائياً"}
-        </AppText>
-      </View>
+      {readOnly ? null : (
+        <View style={styles.statusStart}>
+          {saving ? <ActivityIndicator size="small" color={colours.textMuted} /> : null}
+          <AppText variant="xs" tone="muted">
+            {saving ? "جارٍ الحفظ" : savedAt ? "تم الحفظ تلقائياً" : "التغييرات تُحفظ تلقائياً"}
+          </AppText>
+        </View>
+      )}
       {updated ? (
         <AppText variant="xs" tone="muted" style={styles.shrink}>
           آخر تحديث: {updated}
@@ -255,6 +314,8 @@ function SaveStatus({ saving, savedAt, updatedAt }: { saving: boolean; savedAt: 
 
 interface RefsState {
   list: Reference[];
+  /** Sources only the hidden part of a preview-locked item cites (0 otherwise). */
+  hiddenCount: number;
   pending: boolean;
   error: boolean;
   retry: () => void;
@@ -272,12 +333,24 @@ function ReferencesFooter({ refs, onOpenSource }: { refs: RefsState; onOpenSourc
   );
 }
 
-function buildRows(content: string, refs: RefsState | null): Row[] {
-  const out: Row[] = chunkMarkdown(content).map((text, i) => ({ kind: "md", key: `md${i}`, text }));
+/** `locked` (preview-locked): the last block fades and the wall follows it,
+ *  before «المراجع»; the hidden-sources line closes the list once it loaded. */
+function buildRows(content: string, refs: RefsState | null, locked = false): Row[] {
+  const chunks = chunkMarkdown(content);
+  const out: Row[] = chunks.map((text, i) => ({
+    kind: "md",
+    key: `md${i}`,
+    text,
+    fade: locked && i === chunks.length - 1,
+  }));
+  if (locked) out.push({ kind: "wall", key: "wall" });
   if (!refs) return out;
-  if (refs.pending || refs.error || refs.list.length > 0) out.push({ kind: "refs-heading", key: "refs-heading" });
-  if (refs.pending || refs.error) out.push({ kind: "refs-state", key: "refs-state" });
+  const settled = !refs.pending && !refs.error;
+  const hidden = settled ? refs.hiddenCount : 0;
+  if (!settled || refs.list.length > 0 || hidden > 0) out.push({ kind: "refs-heading", key: "refs-heading" });
+  if (!settled) out.push({ kind: "refs-state", key: "refs-state" });
   for (const r of [...refs.list].sort((a, b) => a.n - b.n)) out.push({ kind: "ref", key: `ref${r.n}`, reference: r });
+  if (hidden > 0) out.push({ kind: "refs-hidden", key: "refs-hidden", count: hidden });
   out.push({ kind: "disclaimer", key: "disclaimer" });
   return out;
 }
@@ -288,8 +361,17 @@ function renderRow(row: Row, refs: RefsState | null, onOpenSource?: (n: number) 
       return (
         <View style={styles.block}>
           <Markdown content={row.text} variant="reader" onCitationPress={onOpenSource} />
+          {row.fade ? <WiPreviewFade /> : null}
         </View>
       );
+    case "wall":
+      return (
+        <View style={styles.block}>
+          <WiPreviewWall />
+        </View>
+      );
+    case "refs-hidden":
+      return <WiPreviewHiddenRefs count={row.count} />;
     case "refs-heading":
       return (
         <AppText variant="lg" weight={600} accessibilityRole="header" style={styles.refsHeading}>
@@ -335,6 +417,8 @@ interface PreviewListProps {
   content: string;
   /** `null` = not an agent output (no المراجع / disclaimer / `[n]`). */
   refs: RefsState | null;
+  /** Preview-locked: fade + WiPreviewWall after `content` (the visible part). */
+  locked?: boolean;
   bottomInset: number;
   restore: ScrollAnchor | null;
   /** `[n]` / «عرض المصدر» → reader, with where the list was. */
@@ -349,11 +433,11 @@ const RESTORE_MAX_MS = 2_500;
 
 /** The rendered read: markdown blocks + المراجع + disclaimer in one FlashList
  *  (long drafts stay smooth), padded so its end clears the action bar. */
-function PreviewList({ content, refs, bottomInset, restore, onOpenSource }: PreviewListProps) {
+function PreviewList({ content, refs, locked = false, bottomInset, restore, onOpenSource }: PreviewListProps) {
   const listRef = useRef<FlashListRef<Row>>(null);
   // Mount-time value only: a later prop change must not re-scroll the list.
   const [initialAnchor] = useState(restore);
-  const rows = useMemo(() => buildRows(content, refs), [content, refs]);
+  const rows = useMemo(() => buildRows(content, refs, locked), [content, refs, locked]);
   const rowCount = rows.length;
 
   const open = useMemo(

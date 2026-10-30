@@ -1,12 +1,13 @@
 import { StyleSheet, View } from "react-native";
 
-import type { WorkspaceItem } from "@contracts";
+import { isWiPreviewLocked, wiPreviewVisibleContent, type WorkspaceItem } from "@contracts";
 
 import { AppText } from "@/components/AppText";
 import { WorkspaceItemActionBar, type ManageActions } from "@/components/artifact/WorkspaceItemActionBar";
 import { useTheme } from "@/theme/ThemeProvider";
 
 import { MarkdownScroll } from "./MarkdownScroll";
+import { WiPreviewWall } from "./WiPreviewWall";
 import { CONVO_CONTEXT_EMPTY, REFERENCES_STUB_BANNER } from "./workspace-model";
 
 export interface TextItemViewerProps {
@@ -18,11 +19,13 @@ export interface TextItemViewerProps {
 /**
  * View-only kinds — web ConvoContextViewer («لم يُولَّد ملخّص للمحادثة بعد»
  * when empty) and ReferencesRenderer (the «قيد التطوير — قائمة المراجع» stub
- * banner). Markdown body + a نسخ-only bar.
+ * banner). Markdown body + a نسخ-only bar. A preview-locked body (never sent
+ * for these kinds today, honoured anyway) shows its visible part + the wall.
  */
 export function TextItemViewer({ item, bottomInset, manage }: TextItemViewerProps) {
   const { colours } = useTheme();
-  const content = item.content_md ?? "";
+  const content = wiPreviewVisibleContent(item);
+  const previewLocked = isWiPreviewLocked(item);
   const isReferences = item.kind === "references";
 
   if (!isReferences && !content.trim()) {
@@ -47,7 +50,12 @@ export function TextItemViewer({ item, bottomInset, manage }: TextItemViewerProp
           </AppText>
         </View>
       ) : null}
-      <MarkdownScroll content={content} bottomInset={bottomInset} />
+      <MarkdownScroll
+        content={content}
+        bottomInset={bottomInset}
+        fadeEnd={previewLocked}
+        footer={previewLocked ? <WiPreviewWall /> : undefined}
+      />
       <WorkspaceItemActionBar copyText={content} bottomInset={bottomInset} manage={manage} />
     </View>
   );

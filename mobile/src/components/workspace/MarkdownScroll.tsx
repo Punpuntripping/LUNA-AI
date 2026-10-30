@@ -7,6 +7,8 @@ import { Markdown } from "@/components/markdown/Markdown";
 import { chunkMarkdown } from "@/components/source/chunk-markdown";
 import { useTheme } from "@/theme/ThemeProvider";
 
+import { WiPreviewFade } from "./WiPreviewWall";
+
 export interface MarkdownScrollProps {
   content: string;
   bottomInset: number;
@@ -14,6 +16,9 @@ export interface MarkdownScrollProps {
   emptyText?: string;
   /** Under the body, in the same scroll column. */
   footer?: ReactNode;
+  /** A preview-locked body: the canvas fades in over its last block (the
+   *  host puts the WiPreviewWall in `footer`). */
+  fadeEnd?: boolean;
   refreshing?: boolean;
   onRefresh?: () => void;
   testID?: string;
@@ -22,7 +27,16 @@ export interface MarkdownScrollProps {
 /** A stored markdown body (note preview, OCR text, convo summary, references
  *  stub) rendered like the web's ArtifactPreview, padded so its end clears the
  *  docked action bar. Long bodies are split in blocks (as the reader does). */
-export function MarkdownScroll({ content, bottomInset, emptyText, footer, refreshing = false, onRefresh, testID }: MarkdownScrollProps) {
+export function MarkdownScroll({
+  content,
+  bottomInset,
+  emptyText,
+  footer,
+  fadeEnd = false,
+  refreshing = false,
+  onRefresh,
+  testID,
+}: MarkdownScrollProps) {
   const { colours } = useTheme();
   const blocks = useMemo(() => chunkMarkdown(content), [content]);
   const blank = content.trim().length === 0;
@@ -44,6 +58,7 @@ export function MarkdownScroll({ content, bottomInset, emptyText, footer, refres
         blocks.map((text, i) => (
           <View key={i} style={styles.block}>
             <Markdown content={text} variant="reader" />
+            {fadeEnd && i === blocks.length - 1 ? <WiPreviewFade /> : null}
           </View>
         ))
       )}

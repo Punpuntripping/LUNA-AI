@@ -1,6 +1,6 @@
 import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from "react-native";
 
-import type { WorkspaceItem } from "@contracts";
+import { wiPreviewVisibleContent, type WorkspaceItem } from "@contracts";
 
 import { AppText } from "@/components/AppText";
 import { DraftEditor } from "@/components/artifact/DraftEditor";
@@ -13,7 +13,8 @@ import { typeVariants } from "@/theme/typography";
 
 import { MarkdownScroll } from "./MarkdownScroll";
 import { useNoteDraft } from "./use-note-draft";
-import { NOTE_BODY_PLACEHOLDER, NOTE_TITLE_PLACEHOLDER } from "./workspace-model";
+import { WiPreviewWall } from "./WiPreviewWall";
+import { NOTE_BODY_PLACEHOLDER, NOTE_TITLE_PLACEHOLDER, previewAccess } from "./workspace-model";
 
 export interface NoteViewerProps {
   item: WorkspaceItem;
@@ -26,12 +27,19 @@ export interface NoteViewerProps {
  * (opens in تحرير when empty), 800 ms autosave with «جارٍ الحفظ» / «تم الحفظ
  * تلقائياً» / «التغييرات تُحفظ تلقائياً» + «آخر تحديث», the lock and 409
  * banners, and the bar's نسخ (live text). Mount keyed by `item_id`.
+ *
+ * Preview-locked (the server sent `preview` — never for the user's own notes
+ * today, honoured anyway): the visible part, read-only, with the wall; no
+ * معاينة/تحرير. The title stays editable (the server allows title edits).
  */
 export function NoteViewer({ item, bottomInset, manage }: NoteViewerProps) {
   const { colours } = useTheme();
   const locked = isAgentLocked(item);
-  const draft = useNoteDraft(item, locked);
+  const access = previewAccess(item);
+  const draft = useNoteDraft(item, locked, !access.editBody);
   const updated = formatDateTime(item.updated_at);
+  const mode = access.editBody ? draft.mode : "preview";
+  const body = access.locked ? wiPreviewVisibleContent(item) : draft.content;
 
   return (
     <View style={styles.root}>
@@ -83,7 +91,7 @@ export function NoteViewer({ item, bottomInset, manage }: NoteViewerProps) {
         ) : null}
       </View>
 
-      {draft.mode === "edit" ? (
+      {mode === "edit" ? (
         <DraftEditor
           value={draft.content}
           onChangeText={draft.setContent}
@@ -93,13 +101,18 @@ export function NoteViewer({ item, bottomInset, manage }: NoteViewerProps) {
           label="نص الملاحظة"
         />
       ) : (
-        <MarkdownScroll content={draft.content} bottomInset={bottomInset} />
+        <MarkdownScroll
+          content={body}
+          bottomInset={bottomInset}
+          fadeEnd={access.locked}
+          footer={access.locked ? <WiPreviewWall /> : undefined}
+        />
       )}
 
       <WorkspaceItemActionBar
-        copyText={draft.content}
-        mode={draft.mode}
-        onModeChange={draft.setMode}
+        copyText={body}
+        mode={access.editBody ? draft.mode : undefined}
+        onModeChange={access.editBody ? draft.setMode : undefined}
         editDisabled={locked}
         bottomInset={bottomInset}
         manage={manage}

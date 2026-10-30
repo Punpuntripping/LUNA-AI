@@ -44,7 +44,7 @@ export function SourceReader({ itemId, n }: SourceReaderProps) {
   const { colours } = useTheme();
   const insets = useSafeAreaInsets();
   const refs = useReferences(itemId);
-  const reference = refs.data?.find((r) => r.n === n) ?? null;
+  const reference = refs.data?.references.find((r) => r.n === n) ?? null;
 
   // Wait for the free list (no charge for a stub card). A list that failed, or
   // a number it does not know, still asks — the backend has the last word.

@@ -44,6 +44,8 @@ const ICONS = {
   chat: { ios: "bubble.left", android: "chat_bubble" },
   trash: { ios: "trash", android: "delete" },
   hide: { ios: "eye.slash", android: "visibility_off" },
+  // WI preview wall (web gate panels: lucide Lock).
+  lock: { ios: "lock", android: "lock" },
   // Push opt-in (web PushReadyChip / الإشعارات: lucide BellRing).
   bellRing: { ios: "bell.badge", android: "notifications_active" },
   // «رسائل ريحان» beside the settings gear (web AnnouncementsBell: lucide Bell).

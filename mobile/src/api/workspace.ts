@@ -4,7 +4,6 @@ import {
   type CreateReferenceRequest,
   type ExportDocumentRequest,
   type LibraryRefusal,
-  type Reference,
   type ReferenceSourceError,
   type ReferenceSourceResponse,
   type ShareArtifactRequest,
@@ -15,6 +14,7 @@ import {
   type WorkspaceFileUrlResponse,
   type WorkspaceItem,
   type WorkspaceItemListResponse,
+  type WorkspaceItemReferencesResponse,
 } from "@contracts";
 
 import { getAccessToken } from "@/auth/token-store";
@@ -105,11 +105,12 @@ export function exportDocument(body: ExportDocumentRequest): Promise<Uint8Array>
 }
 
 /** The citation mesh of an `agent_search` item — FREE (no source bodies;
- *  `source_view` is always null here). `usedOnly` = only the cited ones. */
-export async function listReferences(itemId: string, opts: { usedOnly?: boolean } = {}): Promise<Reference[]> {
+ *  `source_view` is always null here). `usedOnly` = only the cited ones.
+ *  On a preview-locked item only the sources the visible part cites come
+ *  back, and `hidden_count` says how many the hidden part cites. */
+export function listReferences(itemId: string, opts: { usedOnly?: boolean } = {}): Promise<WorkspaceItemReferencesResponse> {
   const qs = opts.usedOnly ? "?used=true" : "";
-  const res = await apiFetch<{ references: Reference[] }>(`/workspace/${encodeURIComponent(itemId)}/references${qs}`);
-  return res.references;
+  return apiFetch<WorkspaceItemReferencesResponse>(`/workspace/${encodeURIComponent(itemId)}/references${qs}`);
 }
 
 /** A refusal and a 429 are ANSWERS (rendered as cards), not exceptions. */

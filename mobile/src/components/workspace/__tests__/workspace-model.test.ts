@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import type { WorkspaceItem, WorkspaceItemKind } from "@contracts";
+import { WI_PREVIEW_LEGACY_SUFFIX, type WorkspaceItem, type WorkspaceItemKind, type WorkspaceItemPreview } from "@contracts";
 
 import {
   attachmentView,
@@ -12,10 +12,12 @@ import {
   groupItems,
   hiddenCount,
   isUserHidden,
+  lockedRefCount,
   manageSpec,
   notePatch,
   ocrStatusText,
   originalFileMode,
+  previewAccess,
   toggleHiddenLabel,
   visibilityActionLabel,
   visibleItems,
@@ -177,6 +179,50 @@ describe("note autosave patch (web MarkdownDocEditor)", () => {
   });
   test("a blank title skips the save", () => {
     assert.equal(notePatch(base, "   ", "نص جديد"), null);
+  });
+  test("body locked (preview): the body is never sent, a title edit still is", () => {
+    assert.equal(notePatch(base, "ملاحظة", "نص جديد", true), null);
+    assert.deepEqual(notePatch(base, " عنوان ", "نص جديد", true), { title: "عنوان" });
+  });
+});
+
+describe("WI preview lock", () => {
+  const preview = (over: Partial<WorkspaceItemPreview> = {}): WorkspaceItemPreview => ({
+    locked: true,
+    shown_chars: 400,
+    total_chars: 1000,
+    hidden_ref_count: 3,
+    ...over,
+  });
+  const lockedSearch = () =>
+    item("agent_search", { content_md: "## النتيجة\n\nالجزء الظاهر [1]" + WI_PREVIEW_LEGACY_SUFFIX, preview: preview() });
+
+  test("no `preview` key (open item, or the server flag off): everything as before", () => {
+    const open = { locked: false, editBody: true, publish: true, export: true };
+    assert.deepEqual(previewAccess(item("agent_writing", { content_md: "نص" })), open);
+    assert.deepEqual(previewAccess(item("agent_search", { preview: null })), open);
+    assert.deepEqual(previewAccess(item("agent_search", { preview: preview({ locked: false }) })), open);
+  });
+
+  test("locked: read-only, never published or exported", () => {
+    assert.deepEqual(previewAccess(lockedSearch()), { locked: true, editBody: false, publish: false, export: false });
+  });
+
+  test("hidden-sources count: the /references answer wins, else the preview block, 0 when open", () => {
+    const locked = lockedSearch();
+    assert.equal(lockedRefCount(locked, 5), 5);
+    assert.equal(lockedRefCount(locked, undefined), 3);
+    assert.equal(lockedRefCount(locked, 0), 0);
+    assert.equal(lockedRefCount(item("agent_search"), 4), 0);
+    assert.equal(lockedRefCount(item("agent_search", { preview: preview({ hidden_ref_count: -2 }) }), undefined), 0);
+    assert.equal(lockedRefCount(item("agent_search", { preview: preview({ hidden_ref_count: Number.NaN }) }), undefined), 0);
+  });
+
+  test("attachment text is read without the legacy wall line", () => {
+    const onlyLine = item("attachment", { content_md: WI_PREVIEW_LEGACY_SUFFIX, preview: preview() });
+    assert.equal(attachmentView(onlyLine, false).kind, "original");
+    const withText = item("attachment", { content_md: "نص" + WI_PREVIEW_LEGACY_SUFFIX, preview: preview() });
+    assert.deepEqual(attachmentView(withText, false), { kind: "ocr", purged: false });
   });
 });
 

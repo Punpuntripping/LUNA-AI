@@ -75,3 +75,10 @@ export function errorMessage(err: unknown, fallback: string = MSG_UNKNOWN): stri
   if (err instanceof ApiError) return err.message;
   return fallback;
 }
+
+/** 402 `WI_PREVIEW_LOCKED`: the item became preview-locked under us (a body
+ *  edit or a publish was refused). Its Arabic message is shown as usual; the
+ *  caller also refetches the item so the wall and the read-only bar appear. */
+export function isWiPreviewLockedError(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "WI_PREVIEW_LOCKED";
+}

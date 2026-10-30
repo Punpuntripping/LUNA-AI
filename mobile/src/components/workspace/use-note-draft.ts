@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { WorkspaceItem } from "@contracts";
+import { wiPreviewVisibleContent, type WorkspaceItem } from "@contracts";
 
-import { ApiError, errorMessage } from "@/api/errors";
+import { ApiError, errorMessage, isWiPreviewLockedError } from "@/api/errors";
 import { updateWorkspaceItem } from "@/api/workspace";
 import { workspaceKeys } from "@/chat/keys";
 import {
@@ -38,13 +38,17 @@ export interface NoteDraft {
  * nothing local is unsaved. The draft twin for `agent_writing` is
  * `useDraft` (src/components/artifact/use-output-actions.ts).
  *
+ * `bodyReadOnly` = a preview-locked item (wi_preview_lock.md §1.3): the body
+ * is only the visible part and is never edited or sent (the server would
+ * answer 402); a title edit still saves, as the server allows it.
+ *
  * Mount once per item (the host is keyed by `item_id`).
  */
-export function useNoteDraft(item: WorkspaceItem, locked: boolean): NoteDraft {
+export function useNoteDraft(item: WorkspaceItem, locked: boolean, bodyReadOnly = false): NoteDraft {
   const qc = useQueryClient();
   const itemId = item.item_id;
   const serverTitle = item.title;
-  const serverContent = item.content_md ?? "";
+  const serverContent = wiPreviewVisibleContent(item);
 
   const [title, setTitleState] = useState(serverTitle);
   const [content, setContentState] = useState(serverContent);
@@ -59,6 +63,7 @@ export function useNoteDraft(item: WorkspaceItem, locked: boolean): NoteDraft {
   const seq = useRef(0);
   const alive = useRef(true);
   const lockedRef = useRef(locked);
+  const bodyReadOnlyRef = useRef(bodyReadOnly);
 
   const flush = useCallback(
     (teardown: boolean) => {
@@ -71,7 +76,7 @@ export function useNoteDraft(item: WorkspaceItem, locked: boolean): NoteDraft {
       if (lockedRef.current && !teardown) return;
       pending.current = null;
       if (lockedRef.current) return;
-      const patch = notePatch(lastSent.current, next.title, next.content);
+      const patch = notePatch(lastSent.current, next.title, next.content, bodyReadOnlyRef.current);
       if (!patch) return;
 
       const sentTitle = next.title.trim();
@@ -92,6 +97,8 @@ export function useNoteDraft(item: WorkspaceItem, locked: boolean): NoteDraft {
           }
         })
         .catch((err: unknown) => {
+          // Locked under us: the item comes back with its wall, body read-only.
+          if (isWiPreviewLockedError(err)) void qc.invalidateQueries({ queryKey: workspaceKeys.detail(itemId) });
           if (!latest() || !alive.current) return;
           if (err instanceof ApiError && err.kind === "http" && err.status === 409) {
             setConflict(err.message || LOCK_CONFLICT_FALLBACK);
@@ -126,6 +133,7 @@ export function useNoteDraft(item: WorkspaceItem, locked: boolean): NoteDraft {
 
   const setContent = useCallback(
     (next: string) => {
+      if (bodyReadOnlyRef.current) return;
       setContentState(next);
       local.current = { ...local.current, content: next };
       pending.current = { ...local.current };
@@ -133,6 +141,10 @@ export function useNoteDraft(item: WorkspaceItem, locked: boolean): NoteDraft {
     },
     [arm],
   );
+
+  useEffect(() => {
+    bodyReadOnlyRef.current = bodyReadOnly;
+  }, [bodyReadOnly]);
 
   useEffect(() => {
     alive.current = true;

@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
@@ -5,8 +6,9 @@ import { ActivityIndicator, Platform, Pressable, Share, StyleSheet, TextInput, V
 
 import type { ShareDisplayMode } from "@contracts";
 
-import { errorMessage } from "@/api/errors";
+import { errorMessage, isWiPreviewLockedError } from "@/api/errors";
 import { getShareDraft, shareArtifact } from "@/api/workspace";
+import { workspaceKeys } from "@/chat/keys";
 import { Sheet } from "@/components/ActionSheet";
 import { AppText } from "@/components/AppText";
 import { Button } from "@/components/Button";
@@ -38,6 +40,11 @@ export interface PublishSheetProps {
  * from `GET share-draft` and publish with `POST share`; the content is mounted
  * fresh per opening, so every open starts from a clean draft (web: reset on
  * open).
+ *
+ * Never offered for a preview-locked item (the host renders no مشاركة / حفظ
+ * كمدونة there). If the lock arrives while the sheet is open, the server's 402
+ * `WI_PREVIEW_LOCKED` Arabic message shows in the sheet and the item is
+ * refetched, so the bar behind it turns read-only.
  */
 export function PublishSheet({ itemId, flow, onClose }: PublishSheetProps) {
   // Keep the last flow while the sheet slides away (no blank panel), and
@@ -96,6 +103,14 @@ function shareLink(url: string): void {
   void Share.share(Platform.OS === "ios" ? { url } : { message: url }).catch(() => undefined);
 }
 
+/** A refused publish: 402 `WI_PREVIEW_LOCKED` → refetch the item (wall + read-only bar). */
+function useOnPublishRefused(itemId: string): (err: unknown) => void {
+  const qc = useQueryClient();
+  return (err: unknown) => {
+    if (isWiPreviewLockedError(err)) void qc.invalidateQueries({ queryKey: workspaceKeys.detail(itemId) });
+  };
+}
+
 function ShareContent({ itemId, onClose }: { itemId: string; onClose: () => void }) {
   const { colours } = useTheme();
   const [template, setTemplate] = useState<ShareDisplayMode>("question");
@@ -105,6 +120,7 @@ function ShareContent({ itemId, onClose }: { itemId: string; onClose: () => void
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onRefused = useOnPublishRefused(itemId);
   useEffect(
     () => () => {
       if (copiedTimer.current) clearTimeout(copiedTimer.current);
@@ -149,6 +165,7 @@ function ShareContent({ itemId, onClose }: { itemId: string; onClose: () => void
       shareLink(res.public_url);
     } catch (err) {
       draft.setError(errorMessage(err, SHARE_ERRORS.publish));
+      onRefused(err);
     } finally {
       setPublishing(false);
     }
@@ -268,6 +285,7 @@ function SaveBlogContent({ itemId, onClose }: { itemId: string; onClose: () => v
   const [title, setTitle] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const onRefused = useOnPublishRefused(itemId);
   const draft = useShareDraft(
     itemId,
     (q, t) => setTitle(saveBlogDefaultTitle({ default_question: q, default_title: t })),
@@ -287,6 +305,7 @@ function SaveBlogContent({ itemId, onClose }: { itemId: string; onClose: () => v
       setSaved(true);
     } catch (err) {
       draft.setError(errorMessage(err, SAVE_BLOG_ERRORS.save));
+      onRefused(err);
     } finally {
       setSaving(false);
     }

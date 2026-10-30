@@ -1,10 +1,11 @@
-import type {
-  ExportFormat,
-  ShareArtifactRequest,
-  ShareDisplayMode,
-  ShareDraftResponse,
-  UpdateWorkspaceItemRequest,
-  WorkspaceFeedback,
+import {
+  WI_PREVIEW_LEGACY_LINE,
+  type ExportFormat,
+  type ShareArtifactRequest,
+  type ShareDisplayMode,
+  type ShareDraftResponse,
+  type UpdateWorkspaceItemRequest,
+  type WorkspaceFeedback,
 } from "@contracts";
 
 // Pure rules behind the agent-output action bar — a port of the web's
@@ -21,9 +22,14 @@ export type BarSlot = "mode" | "share" | "saveBlog" | "copy" | "export" | "like"
 export interface BarSpec {
   /** معاينة/تحرير — agent_writing only (agent_search is read-only). */
   toggle: boolean;
-  /** مشاركة / حفظ كمدونة render on every agent output; on the shared demo
-   *  conversation they render DISABLED (the server refuses them anyway). */
+  /** مشاركة / حفظ كمدونة render on every agent output except a
+   *  preview-locked one (wi_preview_lock.md §9.4 — never offered there). */
+  publish: boolean;
+  /** On the shared demo conversation they render DISABLED (the server
+   *  refuses them anyway). */
   publishDisabled: boolean;
+  /** PDF / Word — not on a preview-locked item either. */
+  export: boolean;
   /** 👍/👎 — hidden on the demo (`workspace_items.feedback` is ONE shared column). */
   feedback: boolean;
 }
@@ -31,15 +37,25 @@ export interface BarSpec {
 /** The web's hover hint on the demo's disabled publish buttons. */
 export const DEMO_DISABLED_HINT = "متاح في محادثاتك";
 
-export function barSpec(kind: AgentOutputKind, isDemo: boolean): BarSpec {
-  return { toggle: kind === "agent_writing", publishDisabled: isDemo, feedback: !isDemo };
+/** `previewLocked` (the server sent `preview`): read-only — no معاينة/تحرير,
+ *  no مشاركة / حفظ كمدونة, no PDF; نسخ (the visible part) and 👍/👎 stay. */
+export function barSpec(kind: AgentOutputKind, isDemo: boolean, previewLocked = false): BarSpec {
+  return {
+    toggle: kind === "agent_writing" && !previewLocked,
+    publish: !previewLocked,
+    publishDisabled: isDemo,
+    export: !previewLocked,
+    feedback: !isDemo,
+  };
 }
 
 /** Web order: معاينة/تحرير · مشاركة · حفظ كمدونة · نسخ · PDF · 👍 · 👎. */
 export function barSlots(spec: BarSpec): BarSlot[] {
   const out: BarSlot[] = [];
   if (spec.toggle) out.push("mode");
-  out.push("share", "saveBlog", "copy", "export");
+  if (spec.publish) out.push("share", "saveBlog");
+  out.push("copy");
+  if (spec.export) out.push("export");
   if (spec.feedback) out.push("like", "dislike");
   return out;
 }
@@ -185,6 +201,16 @@ export function exportDocTitle(title: string): string {
 
 export function exportFileName(title: string, format: ExportFormat): string {
   return sanitizeExportFilename(title) + EXPORT_EXTENSION[format];
+}
+
+/**
+ * The export backstop (export-file.ts): markdown that still carries the
+ * server's preview-lock line is a locked item's raw `content_md` — it never
+ * becomes a file. The bar offers no PDF on a locked item in the first place
+ * (`barSpec`); this catches a caller that passes the raw body by mistake.
+ */
+export function isPreviewLockedBody(markdown: string): boolean {
+  return markdown.includes(WI_PREVIEW_LEGACY_LINE);
 }
 
 // --- تحرير (autosave) --------------------------------------------------------

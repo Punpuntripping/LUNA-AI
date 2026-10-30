@@ -2,7 +2,7 @@ import { Image } from "expo-image";
 import { useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
-import type { WorkspaceItem } from "@contracts";
+import { isWiPreviewLocked, wiPreviewVisibleContent, type WorkspaceItem } from "@contracts";
 
 import { errorMessage } from "@/api/errors";
 import { AppText } from "@/components/AppText";
@@ -13,6 +13,7 @@ import { useTheme } from "@/theme/ThemeProvider";
 
 import { MarkdownScroll } from "./MarkdownScroll";
 import { useWorkspaceFileUrl } from "./use-workspace";
+import { WiPreviewWall } from "./WiPreviewWall";
 import { attachmentMeta, attachmentView, ATTACHMENT_TEXTS, originalFileMode } from "./workspace-model";
 
 export interface AttachmentViewerProps {
@@ -26,13 +27,15 @@ export interface AttachmentViewerProps {
  * what the agents read), «الملف الأصلي» switches to the original (signed URL
  * from `GET /workspace/{id}/file`) and «النص المستخرج» back. No text yet → the
  * original with the OCR status line. Purged original → the text alone, or
- * only the reason when nothing was extracted.
+ * only the reason when nothing was extracted. (Attachments are never
+ * preview-locked; a `preview` would still show only its visible part + wall.)
  */
 export function AttachmentViewer({ item, bottomInset, manage }: AttachmentViewerProps) {
   const { colours } = useTheme();
   const [showOriginal, setShowOriginal] = useState(false);
   const view = attachmentView(item, showOriginal);
-  const ocrText = (item.content_md ?? "").trim();
+  const ocrText = wiPreviewVisibleContent(item).trim();
+  const previewLocked = isWiPreviewLocked(item);
 
   let body;
   if (view.kind === "ocr") {
@@ -47,7 +50,13 @@ export function AttachmentViewer({ item, bottomInset, manage }: AttachmentViewer
             <ActionChip label={ATTACHMENT_TEXTS.original} variant="ghost" onPress={() => setShowOriginal(true)} testID="wi-attachment-original" />
           )}
         </View>
-        <MarkdownScroll content={ocrText} bottomInset={bottomInset} testID="wi-attachment-ocr" />
+        <MarkdownScroll
+          content={ocrText}
+          bottomInset={bottomInset}
+          fadeEnd={previewLocked}
+          footer={previewLocked ? <WiPreviewWall /> : undefined}
+          testID="wi-attachment-ocr"
+        />
       </>
     );
   } else if (view.kind === "purged-empty") {

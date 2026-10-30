@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import { WI_PREVIEW_LEGACY_SUFFIX, wiPreviewVisibleContent } from "@contracts";
+
 import {
   barSlots,
   barSpec,
@@ -15,6 +17,7 @@ import {
   exportDocTitle,
   exportFileName,
   initialViewMode,
+  isPreviewLockedBody,
   nextFeedback,
   sanitizeExportFilename,
   saveBlogDefaultTitle,
@@ -45,6 +48,42 @@ describe("bar layout (web WorkspaceItemActionBar order)", () => {
     assert.equal(spec.publishDisabled, true);
     assert.equal(spec.feedback, false);
     assert.deepEqual(barSlots(spec), ["share", "saveBlog", "copy", "export"]);
+  });
+});
+
+describe("WI preview lock (read-only bar)", () => {
+  test("an open item (no `preview`, or the flag off) keeps every control", () => {
+    for (const kind of ["agent_search", "agent_writing"] as const) {
+      assert.deepEqual(barSpec(kind, false, false), barSpec(kind, false));
+      const spec = barSpec(kind, false);
+      assert.equal(spec.publish, true);
+      assert.equal(spec.export, true);
+    }
+  });
+
+  test("locked agent_writing: no معاينة/تحرير, مشاركة, حفظ كمدونة or PDF — نسخ and thumbs stay", () => {
+    const spec = barSpec("agent_writing", false, true);
+    assert.deepEqual(spec, { toggle: false, publish: false, publishDisabled: false, export: false, feedback: true });
+    assert.deepEqual(barSlots(spec), ["copy", "like", "dislike"]);
+  });
+
+  test("locked agent_search: نسخ and thumbs only", () => {
+    assert.deepEqual(barSlots(barSpec("agent_search", false, true)), ["copy", "like", "dislike"]);
+  });
+
+  test("locked on the demo: نسخ alone", () => {
+    assert.deepEqual(barSlots(barSpec("agent_writing", true, true)), ["copy"]);
+  });
+
+  test("export backstop: a raw locked body is refused, the visible part and open bodies are not", () => {
+    const item = {
+      content_md: "## التحليل\n\nنص الجزء الظاهر [1]" + WI_PREVIEW_LEGACY_SUFFIX,
+      preview: { locked: true, shown_chars: 26, total_chars: 70, hidden_ref_count: 2 },
+    };
+    assert.equal(isPreviewLockedBody(item.content_md), true);
+    assert.equal(isPreviewLockedBody(wiPreviewVisibleContent(item)), false);
+    assert.equal(isPreviewLockedBody("## مذكرة\n\nنص كامل"), false);
+    assert.equal(isPreviewLockedBody(""), false);
   });
 });
 

@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 
-import type { Reference, WorkspaceItem } from "@contracts";
+import type { WorkspaceItem, WorkspaceItemReferencesResponse } from "@contracts";
 
 import { getWorkspaceItem, listReferences } from "@/api/workspace";
 import { workspaceKeys } from "@/chat/keys";
 
-/** One workspace item (full `content_md`). `null` id = idle. Invalidated by
- *  the chat's `workspace_item_*` events through `workspaceKeys.all`. */
+/** One workspace item (its `content_md` — on a preview-locked item only the
+ *  visible part: read it through `wiPreviewVisibleContent`). `null` id = idle.
+ *  Invalidated by the chat's `workspace_item_*` events through `workspaceKeys.all`. */
 export function useWorkspaceItem(itemId: string | null) {
   return useQuery<WorkspaceItem>({
     queryKey: workspaceKeys.detail(itemId ?? ""),
@@ -15,10 +16,11 @@ export function useWorkspaceItem(itemId: string | null) {
   });
 }
 
-/** The FREE citation list of an agent output (no source bodies). The reader
- *  route reads the same cache entry, so a card opens with no request. */
+/** The FREE citation list of an agent output (no source bodies) + the locked
+ *  item's `hidden_count`. The reader route reads the same cache entry, so a
+ *  card opens with no request. */
 export function useReferences(itemId: string | null, enabled = true) {
-  return useQuery<Reference[]>({
+  return useQuery<WorkspaceItemReferencesResponse>({
     queryKey: workspaceKeys.references(itemId ?? "", false),
     queryFn: () => listReferences(itemId as string),
     enabled: enabled && itemId !== null,

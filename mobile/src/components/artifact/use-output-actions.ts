@@ -1,9 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { WorkspaceFeedback, WorkspaceItem } from "@contracts";
+import { wiPreviewVisibleContent, type WorkspaceFeedback, type WorkspaceItem } from "@contracts";
 
-import { ApiError, errorMessage } from "@/api/errors";
+import { ApiError, errorMessage, isWiPreviewLockedError } from "@/api/errors";
 import { setWorkspaceFeedback, updateWorkspaceItem } from "@/api/workspace";
 import { workspaceKeys } from "@/chat/keys";
 import { showToast } from "@/stores/toast";
@@ -63,12 +63,16 @@ export interface DraftState {
  * of dropping it. A body changed elsewhere (the agent still writing) is
  * adopted only when the user has nothing unsaved.
  *
+ * `readOnly` = a preview-locked item (wi_preview_lock.md §1.3): its body is
+ * only the visible part, so it is never edited and NOTHING is saved — a
+ * queued edit is dropped, not sent (the server would answer 402).
+ *
  * Mount once per item (the host is keyed by `item_id`).
  */
-export function useDraft(item: WorkspaceItem, locked: boolean): DraftState {
+export function useDraft(item: WorkspaceItem, locked: boolean, readOnly = false): DraftState {
   const qc = useQueryClient();
   const itemId = item.item_id;
-  const server = item.content_md ?? "";
+  const server = wiPreviewVisibleContent(item);
 
   const [content, setContentState] = useState(server);
   const [mode, setMode] = useState<ViewMode>(() => initialViewMode(server));
@@ -85,6 +89,7 @@ export function useDraft(item: WorkspaceItem, locked: boolean): DraftState {
   const seq = useRef(0);
   const alive = useRef(true);
   const lockedRef = useRef(locked);
+  const readOnlyRef = useRef(readOnly);
 
   const flush = useCallback(
     (teardown: boolean) => {
@@ -94,6 +99,11 @@ export function useDraft(item: WorkspaceItem, locked: boolean): DraftState {
       }
       const next = pending.current;
       if (next === null) return;
+      // Preview-locked: never saved, whatever is queued.
+      if (readOnlyRef.current) {
+        pending.current = null;
+        return;
+      }
       // Locked: keep it queued (the effect below re-arms it on release). On
       // teardown it is dropped — the server would 409 it anyway.
       if (lockedRef.current && !teardown) return;
@@ -119,6 +129,9 @@ export function useDraft(item: WorkspaceItem, locked: boolean): DraftState {
           }
         })
         .catch((err: unknown) => {
+          // Locked under us (the plan ended mid-edit): the item comes back
+          // with its wall and the read-only bar.
+          if (isWiPreviewLockedError(err)) void qc.invalidateQueries({ queryKey: workspaceKeys.detail(itemId) });
           if (!latest() || !alive.current) return;
           if (err instanceof ApiError && err.kind === "http" && err.status === 409) {
             setConflict(err.message || LOCK_CONFLICT_FALLBACK);
@@ -140,12 +153,22 @@ export function useDraft(item: WorkspaceItem, locked: boolean): DraftState {
 
   const setContent = useCallback(
     (next: string) => {
+      if (readOnlyRef.current) return;
       setContentState(next);
       pending.current = next;
       arm();
     },
     [arm],
   );
+
+  // Turned read-only (the item came back preview-locked): drop what is queued.
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+    if (!readOnly) return;
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    pending.current = null;
+  }, [readOnly]);
 
   // Leaving the draft sends its queued edit right away.
   useEffect(() => {

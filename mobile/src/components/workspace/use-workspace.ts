@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import type { WorkspaceItem, WorkspaceItemListResponse } from "@contracts";
+import { isWiPreviewLocked, type WorkspaceItem, type WorkspaceItemListResponse } from "@contracts";
 
 import {
   createNote,
@@ -105,7 +105,8 @@ export function useDeleteWorkspaceItem() {
  * W4 for an OPEN item: the stream invalidates only the conversation's list on
  * `workspace_item_updated / locked / unlocked`, so when the list's copy of
  * this item is newer than the detail on screen (the agent still writing a
- * draft, a lock taken or released), refetch the detail.
+ * draft, a lock taken or released, the WI preview lock on or off), refetch
+ * the detail.
  */
 export function useFollowListUpdates(item: WorkspaceItem | undefined) {
   const qc = useQueryClient();
@@ -117,8 +118,9 @@ export function useFollowListUpdates(item: WorkspaceItem | undefined) {
     staleTime: 30_000,
   });
   const listRow = item ? list.data?.items.find((i) => i.item_id === item.item_id) : undefined;
-  const listStamp = listRow ? `${listRow.updated_at}|${String(listRow.is_visible)}|${listRow.title}` : null;
-  const itemStamp = item ? `${item.updated_at}|${String(item.is_visible)}|${item.title}` : null;
+  const stamp = (i: WorkspaceItem) => `${i.updated_at}|${String(i.is_visible)}|${i.title}|${String(isWiPreviewLocked(i))}`;
+  const listStamp = listRow ? stamp(listRow) : null;
+  const itemStamp = item ? stamp(item) : null;
   const itemId = item?.item_id;
   useEffect(() => {
     if (!itemId || !listStamp || listStamp === itemStamp) return;

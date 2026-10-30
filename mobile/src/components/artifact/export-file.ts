@@ -7,7 +7,7 @@ import { exportDocument } from "@/api/workspace";
 
 import { parseLastFolder, pickerStartUri, serializeLastFolder } from "@/lib/saf";
 
-import { EXPORT_MIME, exportDocTitle, exportFileName } from "./action-bar";
+import { EXPORT_MIME, exportDocTitle, exportFileName, isPreviewLockedBody } from "./action-bar";
 
 export type ExportOutcome = "shared" | "saved" | "cancelled";
 
@@ -37,6 +37,10 @@ export type ExportDelivery = "share" | "folder";
  * not present over a modal that is still animating out).
  *
  * Throws the `ApiError` of a failed render (Arabic message) — the caller shows it.
+ *
+ * A preview-locked item is never exported (wi_preview_lock.md §9.4): the bar
+ * offers no PDF there, and a raw locked body that still reaches this function
+ * is refused before any request (the caller's Arabic fallback is shown).
  */
 export async function exportAndDeliver(
   format: ExportFormat,
@@ -45,6 +49,7 @@ export async function exportAndDeliver(
   beforePresent: () => Promise<void>,
   delivery: ExportDelivery = "share",
 ): Promise<ExportOutcome> {
+  if (isPreviewLockedBody(markdown)) throw new Error("wi_preview_locked");
   const bytes = await exportDocument({ format, title: exportDocTitle(title), markdown });
   const name = exportFileName(title, format);
   await beforePresent();
