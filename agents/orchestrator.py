@@ -6,6 +6,9 @@ Wave 9 rewrite (Task 7):
 - Full specialist body NEVER streamed to chat; only chat_summary + key_findings.
 - Pre-router memory hook: resummarize_dirty_items + compact_conversation.
 - Cap pre-flight: refuse deep_search / writing dispatch when workspace_items >= 15.
+- Deep-search plan gate (migration 197): every deep_search entry point asks
+  _check_deep_search_gate first; a refusal is streamed + saved as the reply,
+  with a `deep_search_gated` event for the client's upgrade offer.
 - Token/cost: handle_message opens a collect_llm_calls scope; every model call
   in the turn lands one row in the llm_calls ledger (deep_search fed from its
   per_phase_stats), flushed + quota-settled once at turn end. No completed-run
@@ -58,6 +61,7 @@ from supabase import Client as SupabaseClient
 if TYPE_CHECKING:  # annotation only — the helpers are imported where used.
     from agents.deep_search_v4.planner.models import PinnedPlan
     from agents.utils.welcome import WelcomeState
+    from shared.quota import DeepSearchGate, DeepSearchGated
 
 import agents.memory.agent as memory
 from agents.memory.ocr_extractor import run_ocr_extraction
@@ -892,6 +896,65 @@ def _release_agent_answer_tag(
         )
 
 
+# ---------------------------------------------------------------------------
+# Deep-search plan gate (migration 197, .claude/plans/deep_search_plan_gate.md)
+# ---------------------------------------------------------------------------
+
+
+async def _check_deep_search_gate(
+    supabase: SupabaseClient,
+    user_id: str,
+    *,
+    entry: str,
+    conversation_id: str,
+) -> "DeepSearchGated | None":
+    """May a NEW deep search start here? ``None`` = yes.
+
+    Asked at all four deep_search entry points — router dispatch (``_dispatch``,
+    which also covers every re-route back through ``_route``), the simple_search
+    fallback on a fresh turn and on a resume, and a paused deep_search resume.
+    Never on the editorial pin: ``_dispatch`` skips it, and that headless path
+    publishes no gate on the ContextVar either.
+
+    Never raises — a gate failure must not cost the turn its answer
+    (``deep_search_block`` already fails open on its own reads).
+    """
+    from shared import quota
+
+    gate = quota.active_deep_search_gate()
+    if gate is None or not gate.active:
+        return None
+    try:
+        block = await quota.deep_search_block(supabase, user_id, gate)
+    except Exception:  # noqa: BLE001
+        logger.warning("deep-search gate evaluation failed — gate open", exc_info=True)
+        return None
+    if block is not None:
+        # No agent_runs row (no run exists); this event is the record. user_id
+        # stays off it, as on dispatch.specialist.
+        _logfire.info(
+            "deep_search.gated",
+            entry=entry,
+            conversation_id=conversation_id,
+            plan_id=block.plan_id,
+            reason=block.reason,
+            remaining=None if block.remaining is None else round(block.remaining, 2),
+            used=block.used,
+            limit=block.limit,
+        )
+    return block
+
+
+def _gated_events(block: "DeepSearchGated") -> list[dict]:
+    """A refused deep search, as the turn's delivery: the ``deep_search_gated``
+    event (the client's upgrade offer), then the Arabic reply as one ``token`` —
+    which message_service persists as the assistant message at ``done``."""
+    return [
+        {"type": "deep_search_gated", **block.to_event_payload()},
+        {"type": "token", "text": block.reply_ar},
+    ]
+
+
 async def _resume_major_agent(
     pending: dict,
     user_reply: str,
@@ -1222,6 +1285,24 @@ async def _resume_major_agent_inner(
                 assistant_message_id=assistant_message_id,
             ):
                 yield ev
+        return
+
+    # ── Deep-search plan gate (migration 197) — before the planner resumes ──
+    # A deep_search pause is always phase 1, so this leg is where the run would
+    # start retrieving: gate it like a fresh dispatch, before the decider spends
+    # anything. A refused resume MUST resolve its pause row — left open, every
+    # next message would be pulled back into this run. The reply keeps its
+    # agent_answer tag: the abandoned question/answer pair stays out of router
+    # history together, leaving the original request followed by this refusal.
+    gated = await _check_deep_search_gate(
+        supabase, user_id, entry="ds_resume", conversation_id=conversation_id,
+    )
+    if gated is not None:
+        _resolve_pause_loud(supabase, run_id, where="deep_search_gated")
+        for ev in _gated_events(gated):
+            yield ev
+        yield {"type": "done", "usage": _zero_usage("deep_search_gated")}
+        yield {"type": "agent_run_finished", "agent_family": "deep_search"}
         return
 
     # ── Resume the planner_decider (phase 1) with the user's answer ──────────
@@ -1734,6 +1815,19 @@ async def _resume_simple_search_leg(
             _note_simple_search_handoff(
                 ss_outcome, leg="resume", conversation_id=conversation_id,
             )
+            # Deep-search plan gate (migration 197): a refused hand-off answers
+            # with the refusal instead. This leg's pause row is consumed by the
+            # finally below, exactly as on every other outcome here.
+            gated = await _check_deep_search_gate(
+                supabase, user_id, entry="ss_resume_fallback",
+                conversation_id=conversation_id,
+            )
+            if gated is not None:
+                for ev in _gated_events(gated):
+                    yield ev
+                yield {"type": "done", "usage": _zero_usage("deep_search_gated")}
+                yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+                return
             major_input = MajorAgentInput(
                 describe_query=user_reply,
                 task_label=(pending.get("task_label") or "").strip() or "متابعة المحادثة",
@@ -2235,6 +2329,7 @@ async def handle_message(
     assistant_message_id: str | None = None,
     codec: Any = None,
     pinned_plan: "PinnedPlan | None" = None,
+    deep_search_gate: "DeepSearchGate | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Public entry point for all chat turns.
 
@@ -2265,12 +2360,19 @@ async def handle_message(
     unconditionally, whether or not both ``mode`` and ``support`` were supplied.
     Conflating "forces the family" with "carries a decision" is the easy mistake
     here.
+
+    ``deep_search_gate`` (:class:`shared.quota.DeepSearchGate`, migration 197) is
+    what ``message_service``'s quota check returned for this send. Published on
+    a ContextVar for the turn; every deep_search entry point asks it before a
+    new search starts (``_check_deep_search_gate``). ``None`` — the blog API's
+    headless front door — means no gate.
     """
     from backend.app.services.masking_service import (
         build_turn_codec,
         reset_active_codec,
         set_active_codec,
     )
+    from shared import quota as _quota
 
     if codec is None:
         # Sync DB load (one SELECT) off the event loop. build_turn_codec is
@@ -2278,6 +2380,8 @@ async def handle_message(
         codec = await asyncio.to_thread(build_turn_codec, supabase, user_id)
 
     _codec_token = set_active_codec(codec)
+    # Set even when None: a turn must never inherit another turn's gate.
+    _gate_token = _quota.set_deep_search_gate(deep_search_gate)
     try:
         with collect_llm_calls(
             supabase,
@@ -2299,6 +2403,7 @@ async def handle_message(
             ):
                 yield ev
     finally:
+        _quota.reset_deep_search_gate(_gate_token)
         reset_active_codec(_codec_token)
 
 
@@ -2906,6 +3011,21 @@ async def _dispatch(
             yield {"type": "done", "usage": _zero_usage("cap_rejected")}
             return  # NO agent_runs row on cap rejection.
 
+    # ── Deep-search plan gate (migration 197) ───────────────────────────
+    # Same shape as the cap rejection: no run, no agent_run_started, no
+    # progress bar — the refusal streams as this turn's reply and is saved
+    # like one. Covers every re-route back through _route too (planner abort,
+    # writer hand-off). The editorial pin is exempt (headless, no plan).
+    if agent_family == "deep_search" and pinned_plan is None:
+        gated = await _check_deep_search_gate(
+            supabase, user_id, entry="dispatch", conversation_id=conversation_id,
+        )
+        if gated is not None:
+            for ev in _gated_events(gated):
+                yield ev
+            yield {"type": "done", "usage": _zero_usage("deep_search_gated")}
+            return  # NO agent_runs row on a gate refusal either.
+
     t0 = perf_counter()
     yield {"type": "agent_run_started", "agent_family": agent_family, "subtype": subtype}
 
@@ -3260,28 +3380,46 @@ async def _dispatch(
                         ss_outcome, leg="dispatch",
                         conversation_id=conversation_id, span=_dispatch_span,
                     )
-                    ds_handoff = await _run_deep_search(
-                        major_input, supabase,
-                        assistant_message_id=assistant_message_id,
+                    gated = await _check_deep_search_gate(
+                        supabase, user_id, entry="ss_fallback",
+                        conversation_id=conversation_id,
                     )
-                    if ds_handoff.kind == "paused":
-                        _record_deferred(
-                            supabase=supabase,
-                            planner_result=ds_handoff.planner_result,
-                            planner_output=ds_handoff.deferred,
-                            user_id=user_id,
-                            conversation_id=conversation_id,
-                            case_id=case_id,
-                            user_message_id=user_message_id,
-                            agent_family="deep_search",
-                            describe_query=describe_query,
-                            task_label=task_label,
-                            run_id=run_id,
+                    if gated is not None:
+                        # The plan gate (migration 197) refused the hand-off: the
+                        # refusal is this turn's reply, delivered by the normal
+                        # path below (event, text, done, run finished). No
+                        # greeting rides it, so the welcome stays unspent.
+                        run_result = SpecialistResult(
+                            chat_summary=gated.reply_ar,
+                            sse_events=[
+                                {"type": "deep_search_gated", **gated.to_event_payload()}
+                            ],
+                            model_used="deep_search_gated",
                         )
-                        raise _SkipRunRecord()
-                    run_result = ds_handoff.result
+                        welcome = None
+                    else:
+                        ds_handoff = await _run_deep_search(
+                            major_input, supabase,
+                            assistant_message_id=assistant_message_id,
+                        )
+                        if ds_handoff.kind == "paused":
+                            _record_deferred(
+                                supabase=supabase,
+                                planner_result=ds_handoff.planner_result,
+                                planner_output=ds_handoff.deferred,
+                                user_id=user_id,
+                                conversation_id=conversation_id,
+                                case_id=case_id,
+                                user_message_id=user_message_id,
+                                agent_family="deep_search",
+                                describe_query=describe_query,
+                                task_label=task_label,
+                                run_id=run_id,
+                            )
+                            raise _SkipRunRecord()
+                        run_result = ds_handoff.result
                     # Skip the simple_search result assembly below entirely —
-                    # deep_search owns this turn's answer now.
+                    # deep_search (or its refusal) owns this turn's answer now.
                     ss_outcome = None
 
                 # Fan-out: each synthesizer wrote its own reply. They concatenate

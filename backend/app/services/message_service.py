@@ -767,6 +767,11 @@ async def send_message_stream(
             )
         except Exception:  # noqa: BLE001
             est_ocr_pages = len(attachment_ids)
+    # A passing check returns the send's deep-search gate (migration 197, plan
+    # deep_search_plan_gate.md) — built from the same RPC row, handed to
+    # handle_message below. The orchestrator asks it at every deep_search entry
+    # point; a refusal there still saves the turn (it IS the reply).
+    deep_search_gate: quota.DeepSearchGate | None = None
     try:
         if _inflight_others:
             # Fails closed exactly like the gate (QuotaUnavailable / PlanInactive
@@ -774,7 +779,7 @@ async def send_message_stream(
             _cap, _cap_plan = await quota.parallel_cap(supabase, user_id)
             if len(_inflight_others) + 1 > _cap:
                 raise _ParallelLimitReached(_cap, _cap_plan, _inflight_others)
-        await quota.check(
+        deep_search_gate = await quota.check(
             getattr(request.app.state, "redis", None),
             supabase,
             user_id,
@@ -1047,6 +1052,7 @@ async def send_message_stream(
                     user_message_id=user_msg_id,
                     assistant_message_id=assistant_msg_id,
                     codec=codec,
+                    deep_search_gate=deep_search_gate,
                 ):
                     event_type = event.get("type")
 
@@ -1157,6 +1163,22 @@ async def send_message_stream(
                                 for k in ("sources", "queries", "elapsed_s")
                                 if k in raw_data
                             },
+                        }))
+
+                    elif event_type == "deep_search_gated":
+                        # The plan gate refused a deep search (migration 197).
+                        # The Arabic reply already went out as `token`s and is
+                        # persisted at `done` like any reply — this only tells
+                        # the client to offer the upgrade. Static server copy, no
+                        # decode. NEVER `quota_exceeded`: both clients read that
+                        # as "nothing was saved" and drop the user's message.
+                        # Shipped app builds ignore the unknown event name.
+                        await queue.put(_sse_event("deep_search_gated", {
+                            k: event.get(k)
+                            for k in (
+                                "reason", "plan_id", "upgrade_options",
+                                "resets_at", "message_ar",
+                            )
                         }))
 
                     elif event_type == "ask_user":

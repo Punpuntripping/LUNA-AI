@@ -43,6 +43,13 @@ backend.app.services.message_service. The same module exposes a read-only
 report consumed by GET /api/v1/usage → the frontend Usage limits dialog. Both
 read the SAME RPC row, so what's shown is exactly what's enforced.
 
+Deep-search plan gate (migration 197, .claude/plans/deep_search_plan_gate.md):
+a passing ``check()`` returns a ``DeepSearchGate`` — the same RPC row plus the
+plan's ``deep_search_min_points`` / ``deep_search_per_window`` — which rides a
+ContextVar into the orchestrator. Every deep_search dispatch (router, the
+simple_search fallback, a paused-run resume) asks ``deep_search_block()``
+before it starts. No ContextVar (headless editorial) = no gate.
+
 resets_at for a window = oldest-call/anchor + window-length (the soonest the
 used figure drops), not a calendar boundary.
 
@@ -54,8 +61,14 @@ Public API:
         one that binds LONGEST, and every block carries the upgrade ladder that
         would clear that specific window. ``inflight_runs`` > 0 (parallel
         conversations) switches the ord windows to the points-reserve rule.
+        Returns the turn's ``DeepSearchGate`` (None when the catalog is
+        unreadable — that gate fails OPEN, see ``_deep_search_gate``).
     parallel_cap(supabase, user_id) -> (cap, effective_plan_id)
         plans.max_parallel_runs for the user's EFFECTIVE plan (migration 171).
+    deep_search_block(supabase, user_id, gate) -> DeepSearchGated | None
+        Whether a NEW deep search may start under ``gate`` (migration 197).
+    set_deep_search_gate / reset_deep_search_gate / active_deep_search_gate
+        The per-turn ContextVar ``handle_message`` publishes the gate on.
     current_usage_report(redis, supabase, user_id) -> dict
         Read-only snapshot: plan block + every meter+period the UI renders.
     settle_ord / settle_ocr / settle_web (async + _sync variants)
@@ -66,6 +79,7 @@ Public API:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
 from dataclasses import dataclass, field
@@ -395,6 +409,9 @@ _LIMIT_COLUMN: dict[tuple[str, str], str] = {
     ("ord", "monthly"): "points_monthly",
     ("ocr", "monthly"): "ocr_pages_monthly",
     ("web", "monthly"): "web_calls_monthly",
+    # The deep-search plan gate's count block (migration 197). NULL = no cap, so
+    # every paid plan beats free's 1 — the same NULL-is-unlimited rule.
+    ("deep_search", "window"): "deep_search_per_window",
 }
 
 
@@ -523,56 +540,108 @@ async def _quota_block(
     return QuotaExceeded(meter, period, used, limit, resets_at, plan, options, reason)
 
 
-# ── the parallel-run cap (migration 171) ────────────────────────────────────
+# ── per-plan rules from the catalog (migrations 171 + 197) ──────────────────
 #
-# plans.max_parallel_runs is deliberately NOT a get_user_quota_state column:
-# widening that RETURNS TABLE forces a DROP + rebuild of user_subscriptions_live
-# (137 keeps the signature byte-identical for exactly that reason). So the cap
-# is a separate read of the tiny plans catalog, keyed by the EFFECTIVE plan the
-# RPC resolves, and cached in-process — plan rows change by migration only.
-
-_parallel_caps_cache: dict[str, int] | None = None
-_parallel_caps_at: float = 0.0
+# plans.max_parallel_runs and the deep-search gate columns are deliberately NOT
+# get_user_quota_state columns: widening that RETURNS TABLE forces a DROP +
+# rebuild of user_subscriptions_live (137 keeps the signature byte-identical for
+# exactly that reason; 129/129a lost security_invoker that way). So they are a
+# separate read of the tiny plans catalog, keyed by the EFFECTIVE plan the RPC
+# resolves, and cached in-process — tunable by an UPDATE, live within a minute.
 
 
-def _load_parallel_caps(supabase: SupabaseClient) -> dict[str, int]:
-    res = supabase.table("plans").select("plan_id, max_parallel_runs").execute()
-    caps: dict[str, int] = {}
+@dataclass(frozen=True)
+class _PlanRules:
+    """The catalog columns enforced outside the RPC, for one plan.
+
+    ``max_parallel_runs`` None = the column is NULL (the caller's default).
+    ``deep_search_min_points`` — a NEW deep search needs ``remaining >=`` it
+    (block when ``remaining < value``); None = no floor.
+    ``deep_search_per_window`` — deep searches allowed per rolling 30 days
+    (>= 1, a CHECK in 197); None = no cap.
+    """
+
+    max_parallel_runs: Optional[int] = None
+    deep_search_min_points: Optional[float] = None
+    deep_search_per_window: Optional[int] = None
+
+
+_plan_rules_cache: dict[str, _PlanRules] | None = None
+_plan_rules_at: float = 0.0
+
+
+def _opt_int(value: Any, *, floor: int) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return max(floor, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_plan_rules(supabase: SupabaseClient) -> dict[str, _PlanRules]:
+    # `*`, not a column list: a backend that ships ahead of migration 197 then
+    # reads rows WITHOUT the deep_search_* keys (= no gate) instead of 400ing the
+    # parallel-cap read — which fails closed — for every user with a run live.
+    res = supabase.table("plans").select("*").execute()
+    rules: dict[str, _PlanRules] = {}
     for row in getattr(res, "data", None) or []:
         pid = row.get("plan_id")
-        raw = row.get("max_parallel_runs")
-        if not pid or raw is None:
+        if not pid:
             continue
-        try:
-            caps[str(pid)] = max(1, int(raw))
-        except (TypeError, ValueError):
-            continue
-    return caps
+        rules[str(pid)] = _PlanRules(
+            max_parallel_runs=_opt_int(row.get("max_parallel_runs"), floor=1),
+            deep_search_min_points=_opt_float(row.get("deep_search_min_points")),
+            deep_search_per_window=_opt_int(row.get("deep_search_per_window"), floor=1),
+        )
+    return rules
+
+
+async def _plan_rules(supabase: SupabaseClient) -> dict[str, _PlanRules]:
+    """plan_id → _PlanRules, cached ~60s. On a failed read a stale cache is
+    served (logged); with nothing cached the error propagates and the caller
+    decides (parallel cap: fail closed; usage report: the default; deep-search
+    gate: open)."""
+    global _plan_rules_cache, _plan_rules_at
+    now = time.monotonic()
+    if _plan_rules_cache is not None and now - _plan_rules_at < _PARALLEL_CAPS_TTL_S:
+        return _plan_rules_cache
+    try:
+        rules = await asyncio.to_thread(_load_plan_rules, supabase)
+    except Exception as exc:  # noqa: BLE001
+        if _plan_rules_cache is not None:
+            logger.warning("plans catalog read failed, serving stale cache: %s", exc)
+            return _plan_rules_cache
+        raise
+    _plan_rules_cache, _plan_rules_at = rules, now
+    return rules
 
 
 async def _parallel_caps(supabase: SupabaseClient) -> dict[str, int]:
-    """plan_id → max_parallel_runs, cached ~60s. On a failed read a stale
-    cache is served (logged); with nothing cached the error propagates and the
-    caller decides (gate: fail closed; usage report: the default)."""
-    global _parallel_caps_cache, _parallel_caps_at
-    now = time.monotonic()
-    if _parallel_caps_cache is not None and now - _parallel_caps_at < _PARALLEL_CAPS_TTL_S:
-        return _parallel_caps_cache
-    try:
-        caps = await asyncio.to_thread(_load_parallel_caps, supabase)
-    except Exception as exc:  # noqa: BLE001
-        if _parallel_caps_cache is not None:
-            logger.warning("plans.max_parallel_runs read failed, serving stale cache: %s", exc)
-            return _parallel_caps_cache
-        raise
-    _parallel_caps_cache, _parallel_caps_at = caps, now
-    return caps
+    """plan_id → max_parallel_runs (plans with a NULL cap omitted — the caller
+    applies DEFAULT_MAX_PARALLEL_RUNS). Same cache and failure rules as
+    ``_plan_rules``."""
+    rules = await _plan_rules(supabase)
+    return {
+        pid: r.max_parallel_runs
+        for pid, r in rules.items()
+        if r.max_parallel_runs is not None
+    }
 
 
 def _reset_parallel_caps_cache() -> None:
-    """Test hook — drop the in-process cap cache."""
-    global _parallel_caps_cache, _parallel_caps_at
-    _parallel_caps_cache, _parallel_caps_at = None, 0.0
+    """Test hook — drop the in-process plan-rules cache (caps + gate columns)."""
+    global _plan_rules_cache, _plan_rules_at
+    _plan_rules_cache, _plan_rules_at = None, 0.0
 
 
 def _row_plan(st: dict[str, Any]) -> str | None:
@@ -605,6 +674,292 @@ async def parallel_cap(supabase: SupabaseClient, user_id: str) -> tuple[int, str
     return caps.get(str(plan), DEFAULT_MAX_PARALLEL_RUNS), plan
 
 
+# ── the deep-search plan gate (migration 197) ───────────────────────────────
+#
+# The points gate stops a send whose window is SPENT; it cannot stop a deep
+# search — the heaviest thing a turn does (cheapest real run 2.68 pts, median
+# 5.14, p90 9.16) — from STARTING on a near-empty window, and it has no notion
+# of "how many". Owner rules 2026-10-30:
+#
+#   free  — 1 deep search per rolling 30 days, and none with < 2 points left;
+#   basic — none with ≤ 1 point left (min 1.01 under the `remaining < min` rule);
+#   pro / max / dev / marketing_* — no gate (NULL columns).
+#
+# Neither threshold prevents an overrun; the gate only stops a NEW search from
+# starting. Both values are plans columns, tunable with an UPDATE.
+#
+# Evaluated per DISPATCH, not per send: whether a turn becomes a deep search is
+# the router's (or simple_search's) call, made after check() ran. check()
+# packages what it already read into a DeepSearchGate, message_service hands it
+# to handle_message (ContextVar), and the orchestrator asks deep_search_block()
+# at each deep_search entry point. Points spent earlier in the SAME turn (the
+# router, a simple_search run before its fallback) are not in the snapshot —
+# accepted (≤ ~0.5 pt).
+
+DEEP_SEARCH_WINDOW_S = MONTH_WINDOW_S  # free's count window = its points window
+
+# (period, limit, used cost, oldest, length) for the three ord windows of the
+# RPC row, in check()'s tie order — shorter window first.
+_ORD_WINDOWS: tuple[tuple[Period, str, str, str, int], ...] = (
+    ("session", "points_session", "session_cost", "session_oldest", SESSION_WINDOW_S),
+    ("weekly", "points_weekly", "weekly_cost", "weekly_oldest", WEEK_WINDOW_S),
+    ("monthly", "points_monthly", "monthly_cost", "monthly_oldest", MONTH_WINDOW_S),
+)
+
+# ⚠ PROPOSED copy — not owner-approved yet (deep_search_plan_gate.md §7). This
+# is the ONE place the gate's Arabic lives on the backend. Latin digits only.
+#
+# The REPLY is the turn's assistant message: streamed as `token`s and persisted
+# like any reply, so a shipped app build that drops the unknown
+# `deep_search_gated` event still shows it, and the router reads it next turn.
+# No date in it — the saved row outlives any countdown; clients render
+# `resets_at` live instead.
+DEEP_SEARCH_GATED_REPLY_AR = {
+    "free_limit": (
+        "يحتاج هذا الطلب إلى بحث معمّق، وقد استخدمت البحث المعمّق المتاح في "
+        "باقتك لهذه الفترة ({limit} بحث معمّق كل 30 يوماً). يمكنك طرح سؤال "
+        "مباشر لا يحتاج إلى بحث معمّق، أو {upgrade} للمتابعة فوراً."
+    ),
+    "low_points": (
+        "يحتاج هذا الطلب إلى بحث معمّق، ورصيدك المتبقي من النقاط لا يكفي لبدء "
+        "بحث معمّق جديد. يمكنك طرح سؤال مباشر لا يحتاج إلى بحث معمّق، أو انتظار "
+        "تجدّد نقاطك، أو {upgrade} للمتابعة فوراً."
+    ),
+}
+_UPGRADE_FREE_AR = "الاشتراك في إحدى الباقات المدفوعة"
+_UPGRADE_PAID_AR = "ترقية باقتك"
+# The banner line beside the upgrade button (the SSE event's `message_ar`).
+DEEP_SEARCH_GATED_MESSAGE_AR = {
+    "free_limit": "استخدمت البحث المعمّق المتاح في باقتك لهذه الفترة.",
+    "low_points": "رصيدك المتبقي لا يكفي لبدء بحث معمّق جديد.",
+}
+
+
+@dataclass(frozen=True)
+class DeepSearchGate:
+    """What the deep-search gate knows about one send — built by ``check`` from
+    the RPC row it already read plus the plan's catalog columns.
+
+    ``windows`` — (period, points left, resets_at) for every LIMITED ord window
+    of the EFFECTIVE plan (an expired basic is free here, as in the RPC); empty =
+    unlimited. ``window_start`` = now − 30d, the floor of the count window — the
+    RPC raises it to ``usage_reset_at`` itself, exactly as the points window does.
+    """
+
+    plan_id: Optional[str]
+    min_points: Optional[float]
+    per_window: Optional[int]
+    windows: tuple[tuple[Period, float, datetime], ...]
+    window_start: datetime
+
+    @property
+    def active(self) -> bool:
+        return self.min_points is not None or self.per_window is not None
+
+    @property
+    def remaining(self) -> Optional[float]:
+        """Points left in the TIGHTEST limited window; None = unlimited."""
+        return min((w[1] for w in self.windows), default=None)
+
+
+@dataclass
+class DeepSearchGated:
+    """A refused deep search: the reply to stream + the ``deep_search_gated``
+    SSE payload. Never ``quota_exceeded`` — web and mobile treat that event as
+    "nothing was saved" and delete the optimistic message, while here the turn
+    IS saved (the reply is the assistant message)."""
+
+    reason: str  # "free_limit" | "low_points"
+    plan_id: Optional[str]
+    resets_at: Optional[datetime]
+    remaining: Optional[float]
+    used: Optional[int] = None    # free_limit: deep searches counted in the window
+    limit: Optional[int] = None   # free_limit: the plan's per-window cap
+    # Same contract as QuotaExceeded.upgrade_options — the plans that would
+    # clear THIS block, cheapest first; never a shared mutable default.
+    upgrade_options: list[str] = field(default_factory=list)
+
+    @property
+    def reply_ar(self) -> str:
+        upgrade = _UPGRADE_FREE_AR if self.plan_id == "free" else _UPGRADE_PAID_AR
+        return DEEP_SEARCH_GATED_REPLY_AR[self.reason].format(
+            limit=self.limit if self.limit is not None else 1, upgrade=upgrade,
+        )
+
+    @property
+    def message_ar(self) -> str:
+        return DEEP_SEARCH_GATED_MESSAGE_AR[self.reason]
+
+    def to_event_payload(self) -> dict:
+        return {
+            "reason": self.reason,
+            "plan_id": self.plan_id,
+            "upgrade_options": list(self.upgrade_options or []),
+            "resets_at": self.resets_at.isoformat() if self.resets_at else None,
+            "message_ar": self.message_ar,
+        }
+
+
+async def _deep_search_gate(
+    supabase: SupabaseClient, st: dict[str, Any]
+) -> DeepSearchGate | None:
+    """The send's DeepSearchGate, from the RPC row ``check`` already holds.
+
+    Fails OPEN (None, logged) when the catalog is unreadable: the points gate has
+    already admitted the send, and a refusal here would tell a user they spent a
+    search they never ran. ``check``'s own reads stay fail-closed."""
+    plan = _row_plan(st)
+    try:
+        rules = await _plan_rules(supabase)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("plans catalog read failed — deep-search gate open for this send: %s", exc)
+        return None
+    r = rules.get(str(plan)) or _PlanRules()
+    windows: list[tuple[Period, float, datetime]] = []
+    for period, limit_key, cost_key, oldest_key, window_s in _ORD_WINDOWS:
+        if st.get(limit_key) is None:
+            continue
+        left = float(st[limit_key]) - float(st.get(cost_key) or 0.0) * POINTS_PER_USD
+        # 6 dp: the ledger stores cost_usd to 6 dp, and float noise (0.1399 × 100
+        # = 13.990000000000002) must not flip the 1.01 boundary.
+        windows.append((period, round(left, 6), _rolling_reset(st.get(oldest_key), window_s)))
+    return DeepSearchGate(
+        plan_id=plan,
+        min_points=r.deep_search_min_points,
+        per_window=r.deep_search_per_window,
+        windows=tuple(windows),
+        window_start=datetime.now(timezone.utc) - timedelta(seconds=DEEP_SEARCH_WINDOW_S),
+    )
+
+
+async def count_deep_searches(
+    supabase: SupabaseClient, user_id: str, since: datetime
+) -> tuple[int, list[datetime]]:
+    """(runs, start instants oldest first) of the user's deep searches that
+    REACHED RETRIEVAL since GREATEST(since, usage_reset_at) — the
+    ``count_user_deep_searches`` RPC (migration 197). A run counts once however
+    many legs it had (pause/resume keep the run_id; the simple_search fallback
+    rides simple_search's). Raises on DB failure."""
+    def _call() -> dict[str, Any] | None:
+        res = supabase.rpc(
+            "count_user_deep_searches",
+            {"p_user_id": user_id, "p_since": since.isoformat()},
+        ).execute()
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else None
+
+    row = await asyncio.to_thread(_call)
+    if not row:
+        return 0, []
+    starts = sorted(
+        t for t in (_parse_ts(v) for v in (row.get("run_starts") or [])) if t is not None
+    )
+    return int(row.get("runs") or 0), starts
+
+
+async def _deep_search_gated(
+    supabase: SupabaseClient,
+    gate: DeepSearchGate,
+    reason: str,
+    *,
+    resets_at: Optional[datetime],
+    ladder: tuple[str, str],
+    used: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> DeepSearchGated:
+    """Build a confirmed block, ladder included — best-effort like
+    ``_quota_block``: a failed upsell read never turns the block into an error."""
+    try:
+        options = await _upgrade_options(supabase, gate.plan_id, ladder[0], ladder[1])  # type: ignore[arg-type]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "upgrade ladder failed for deep-search gate plan=%s %s (block stands): %s",
+            gate.plan_id, reason, exc,
+        )
+        options = []
+    return DeepSearchGated(
+        reason=reason,
+        plan_id=gate.plan_id,
+        resets_at=resets_at,
+        remaining=gate.remaining,
+        used=used,
+        limit=limit,
+        upgrade_options=options,
+    )
+
+
+async def deep_search_block(
+    supabase: SupabaseClient, user_id: str, gate: DeepSearchGate | None
+) -> DeepSearchGated | None:
+    """None = a NEW deep search may start. Otherwise the block.
+
+    The count is read only when the plan caps it (free), once per gated
+    dispatch. It fails OPEN (logged), for the same reason as the gate itself.
+    The count block is checked first: when both apply, "you used your search" is
+    the truth that more points would not change.
+
+    The low-points block reports the window that binds LONGEST among those under
+    the floor — check()'s rule: telling someone their search is back when the
+    5-hour session resets is wrong if the week is also under it.
+    """
+    if gate is None or not gate.active:
+        return None
+
+    if gate.per_window is not None:
+        try:
+            runs, starts = await count_deep_searches(supabase, user_id, gate.window_start)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("count_user_deep_searches failed — deep-search gate open: %s", exc)
+            runs, starts = 0, []
+        if runs >= gate.per_window:
+            # The count drops under the cap when the (runs − cap + 1)-th oldest
+            # counted run ages out of the 30-day window.
+            idx = runs - gate.per_window
+            frees_at = starts[idx] if 0 <= idx < len(starts) else None
+            return await _deep_search_gated(
+                supabase, gate, "free_limit",
+                resets_at=(
+                    frees_at + timedelta(seconds=DEEP_SEARCH_WINDOW_S)
+                    if frees_at else _rolling_reset(None, DEEP_SEARCH_WINDOW_S)
+                ),
+                ladder=("deep_search", "window"),
+                used=runs,
+                limit=gate.per_window,
+            )
+
+    if gate.min_points is not None:
+        below = [w for w in gate.windows if w[1] < gate.min_points]
+        if below:
+            period, _left, resets = max(below, key=lambda w: w[2])
+            return await _deep_search_gated(
+                supabase, gate, "low_points", resets_at=resets, ladder=("ord", period),
+            )
+    return None
+
+
+# The send's gate, published by agents.orchestrator.handle_message for the whole
+# turn (same pattern as masking_service.active_codec). Unset — the headless
+# editorial front door, CLI, tests — means NO gate.
+_ACTIVE_DEEP_SEARCH_GATE: contextvars.ContextVar[Optional[DeepSearchGate]] = (
+    contextvars.ContextVar("luna_deep_search_gate", default=None)
+)
+
+
+def set_deep_search_gate(gate: Optional[DeepSearchGate]) -> contextvars.Token:
+    return _ACTIVE_DEEP_SEARCH_GATE.set(gate)
+
+
+def reset_deep_search_gate(token: contextvars.Token) -> None:
+    try:
+        _ACTIVE_DEEP_SEARCH_GATE.reset(token)
+    except Exception:  # noqa: BLE001 — a cross-context reset must not kill the turn
+        logger.debug("reset_deep_search_gate: token reset failed", exc_info=True)
+
+
+def active_deep_search_gate() -> Optional[DeepSearchGate]:
+    return _ACTIVE_DEEP_SEARCH_GATE.get()
+
+
 # ── the gate ────────────────────────────────────────────────────────────────
 
 async def check(
@@ -618,10 +973,16 @@ async def check(
     needs_web: bool = False,
     est_web_calls: int = 0,
     inflight_runs: int = 0,
-) -> None:
+) -> DeepSearchGate | None:
     """Raises ``PlanInactive`` (no plan assigned), ``QuotaExceeded`` on a failing
     (meter, period), or ``QuotaUnavailable`` when the quota-state RPC is
     unreachable (fail closed — blocking unknowable spend is the gate's job).
+
+    A send that passes returns its ``DeepSearchGate`` (migration 197) — built
+    from the SAME RPC row, so the deep-search gate costs no second state read.
+    ``None`` = the catalog was unreadable and the deep-search gate is open for
+    this send (see ``_deep_search_gate``); callers that ignore the return value
+    keep today's behaviour exactly.
 
     **Ord windows are ALL evaluated, and the block reported is the one with the
     FURTHEST ``resets_at``** — i.e. the window that actually binds. The gate used
@@ -756,6 +1117,8 @@ async def check(
             supabase, plan, "web", "monthly", 0, 0,
             _rolling_reset(None, MONTH_WINDOW_S),
         )
+
+    return await _deep_search_gate(supabase, st)
 
 
 # ── read-only snapshot for the UI ───────────────────────────────────────────
@@ -943,6 +1306,15 @@ __all__ = [
     "PARALLEL_RESERVE_AR",
     "DEFAULT_MAX_PARALLEL_RUNS",
     "parallel_cap",
+    "DEEP_SEARCH_GATED_REPLY_AR",
+    "DEEP_SEARCH_GATED_MESSAGE_AR",
+    "DeepSearchGate",
+    "DeepSearchGated",
+    "count_deep_searches",
+    "deep_search_block",
+    "set_deep_search_gate",
+    "reset_deep_search_gate",
+    "active_deep_search_gate",
     "QuotaExceeded",
     "QuotaUnavailable",
     "PlanInactive",
