@@ -152,8 +152,8 @@ const WINDOW_POINTS = [
   },
   {
     title: "المجانية — نافذة واحدة 30 يوماً",
-    // Deep-search plan gate (migration 197) — PROPOSED copy, not owner-approved.
-    body: "لا جلسة ولا أسبوع في الباقة المجانية: 5 نقاط تتحرك على آخر 30 يوماً، ومعها بحث معمّق واحد كل 30 يوماً لتجربته قبل أن تقرر.",
+    // Deep-search plan gate (migration 197) + WI preview lock — PROPOSED copy, not owner-approved.
+    body: "لا جلسة ولا أسبوع في الباقة المجانية: 5 نقاط تتحرك على آخر 30 يوماً، ومعها بحث معمّق واحد كل 30 يوماً لتجربته قبل أن تقرر — يظهر لك منه نحو 40% من التقرير، والباقي في الباقات المدفوعة.",
   },
   {
     title: "النقاط لا تُرحّل",
@@ -164,7 +164,7 @@ const WINDOW_POINTS = [
 const FREE_ITEMS = [
   "قراءة محادثاتك السابقة ومساحة عملك ومكتبتك",
   "تصفّح المدونة والمكتبة القانونية العامة",
-  "حفظ العناصر وتصديرها ومشاركتها",
+  "حفظ العناصر وتصديرها ومشاركتها (عدا معاينات الباقة المجانية)",
   "إنشاء القضايا والقوالب وتنظيمها",
 ] as const;
 
@@ -357,12 +357,17 @@ export function UsageLimitsView() {
           {/* free is out of the table on purpose — it has neither of the two
               columns the table is built on. Stating its single window here is
               clearer than a row of «—». The deep-search plan gate (migration
-              197) adds the two floors; same text as product_docs.usage_limits.
+              197) adds the two floors; the WI preview lock (wi_preview_lock.md §0/§9)
+              adds the ~40% preview sentences. Same text as product_docs.usage_limits.
               PROPOSED copy, not owner-approved. */}
           <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
             الباقة المجانية خارج الجدول: نافذة واحدة بـ5 نقاط كل 30 يوماً، وفيها
             بحث معمّق واحد كل 30 يوماً يبدأ متى بقيت في رصيدك نقطتان على الأقل —
             لتجربة ريحان قبل الاشتراك.
+            تقارير الباحث ومسودات الكاتب التي تُنشأ فيها تظهر معاينةً بنحو 40% من
+            النص، والباقي في الباقات المدفوعة، ولا تُشارَك المعاينة ولا تُحفظ
+            مدونة ولا تُصدَّر. ما أُنشئ أثناء اشتراك مدفوع يبقى كاملاً، والعناصر
+            التي سبقت هذه السياسة لا تتأثر.
           </p>
           <p className="mt-2 text-center text-xs leading-relaxed text-muted-foreground">
             وفي الباقة الأساسية لا يبدأ بحث معمّق جديد إذا بقيت لك نقطة واحدة أو

@@ -42,8 +42,10 @@ import { stashGateAttribution } from "@/components/analytics/signup-attribution"
 
 /** Which CTA the reader took out of a gate. Matches the §3 taxonomy.
  *  `google` = the one-tap OAuth path (`GoogleQuickSignup`) — leaves for Google
- *  directly, so it never produces a `signup_started` (`/login` is skipped). */
-export type GateCta = "register" | "login" | "google";
+ *  directly, so it never produces a `signup_started` (`/login` is skipped).
+ *  `upgrade` = a signed-in reader opened the plan picker from a plan wall
+ *  (`WiPreviewWall`, wi_preview_lock.md §8) — an account already exists. */
+export type GateCta = "register" | "login" | "google" | "upgrade";
 
 export interface GateImpressionOptions {
   /**

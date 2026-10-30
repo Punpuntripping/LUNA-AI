@@ -128,6 +128,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       "75 نقطة استخدام طوال الاشتراك (7 أيام)",
       "15 نقطة لكل جلسة (5 ساعات)",
       "15 صفحة استخراج نص",
+      "تقارير الباحث ومسودات الكاتب كاملة مع مشاركتها وتصديرها",
       "الوصول الكامل للمكتبة القانونية",
     ],
   },
@@ -146,6 +147,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       "100 نقطة استخدام أسبوعياً",
       "20 نقطة لكل جلسة (5 ساعات)",
       "40 صفحة استخراج نص شهرياً",
+      "تقارير الباحث ومسودات الكاتب كاملة مع مشاركتها وتصديرها",
       "الوصول الكامل للمكتبة القانونية",
     ],
   },
@@ -163,6 +165,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       "100 نقطة لكل جلسة (5 ساعات)",
       "500 صفحة استخراج نص شهرياً",
       "حتى 5 محادثات متزامنة",
+      "تقارير الباحث ومسودات الكاتب كاملة مع مشاركتها وتصديرها",
       "الوصول الكامل للمكتبة القانونية",
     ],
   },
@@ -240,6 +243,23 @@ export function pricingPlansAbove(
   return PRICING_PLANS.filter((plan) => priceToNumber(plan.price) > floor).sort(
     (a, b) => priceToNumber(a.price) - priceToNumber(b.price),
   );
+}
+
+/**
+ * The ladder a DELIBERATE opening of the plan picker offers — no blocking
+ * window, so no server ladder (`QuotaUpgradeDialog` without `info`).
+ *
+ * `pricingPlansAbove`, except for `"free"`: it has no card to rank against (so
+ * `pricingPlansAbove` answers `[]`), yet it sits below every paid plan — the
+ * server's `PLAN_RANK` holds paid plans only and lets a free user buy any of
+ * them. The whole catalog is therefore a real step up, exactly the pre-ladder
+ * free paywall. Surfaces: Settings → الاشتراك (a subscriber's own plan) and
+ * `WiPreviewWall` (a free user's preview-locked item, wi_preview_lock.md §7).
+ */
+export function deliberateUpgradePlans(
+  planId: string | null | undefined,
+): PricingPlan[] {
+  return planId === "free" ? PRICING_PLANS : pricingPlansAbove(planId);
 }
 
 /**

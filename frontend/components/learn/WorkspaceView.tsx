@@ -275,6 +275,17 @@ export function WorkspaceView() {
               </li>
             ))}
           </ul>
+          {/* «حرّر» / «شارك» above stop being true for a free user's new
+              reports and drafts (wi_preview_lock.md §0/§9) — said once, here,
+              rather than by rewording every card. */}
+          <p className="mt-6 rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm leading-relaxed text-muted-foreground">
+            <b className="text-foreground">في الباقة المجانية</b> — تقارير
+            الباحث ومسودات الكاتب الجديدة تظهر معاينةً: نحو 40% من النص،
+            والباقي في الباقات المدفوعة. المعاينة لا تُحرَّر ولا تُشارَك ولا
+            تُحفظ مدونة ولا تُصدَّر، ويبقى نسخ الجزء الظاهر منها متاحاً. ما
+            أُنشئ أثناء اشتراك مدفوع يبقى كاملاً، والعناصر التي سبقت هذه
+            السياسة لا تتأثر.
+          </p>
         </div>
       </section>
 

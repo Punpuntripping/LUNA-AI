@@ -12,8 +12,16 @@ import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
 import { SaveAsBlogDialog } from "@/components/workspace/SaveAsBlogDialog";
-import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
+import { WiPreviewWall } from "@/components/workspace/WiPreviewWall";
+import {
+  useWorkspaceItemReferences,
+  useWorkspaceItemReferencesHiddenCount,
+} from "@/hooks/use-workspace-item-references";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
+import {
+  isWiPreviewLocked,
+  wiPreviewVisibleContent,
+} from "@/lib/contracts/wi-preview";
 import type { WorkspaceItem } from "@/types";
 
 const USER_EDITABLE_KINDS: ReadonlySet<WorkspaceItem["kind"]> = new Set<
@@ -22,6 +30,9 @@ const USER_EDITABLE_KINDS: ReadonlySet<WorkspaceItem["kind"]> = new Set<
 
 function isUserEditable(item: WorkspaceItem): boolean {
   if (!USER_EDITABLE_KINDS.has(item.kind)) return false;
+  // WI preview lock (wi_preview_lock.md §1.3): the client holds only the
+  // visible part — saving it would overwrite the hidden rest (server: 402).
+  if (isWiPreviewLocked(item)) return false;
   if (item.kind === "agent_writing") {
     const lockedUntil =
       (item.metadata as { locked_until?: string } | undefined)?.locked_until;
@@ -40,13 +51,22 @@ interface WorkspaceItemViewerProps {
 export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   const { data: item, isLoading, error } = useWorkspaceItem(itemId);
   const updateItem = useUpdateWorkspaceItem();
+  // WI preview lock: a free user's locked report / draft — read-only, visible
+  // part only, wall at the end, no share / save-as-blog (see NoteEditor).
+  const previewLocked = isWiPreviewLocked(item);
   // Migration 049: refs come from workspace_item_references, not metadata.
   // Only fetched when the item is an agent_search kind; ``enabled`` keeps
   // us from spamming the endpoint on note / attachment / convo_context.
+  const referenceOpts = {
+    enabled: item?.kind === "agent_search",
+    locked: previewLocked,
+  };
   const { data: references = [], isLoading: isLoadingReferences } =
-    useWorkspaceItemReferences(itemId, {
-      enabled: item?.kind === "agent_search",
-    });
+    useWorkspaceItemReferences(itemId, referenceOpts);
+  const hiddenReferenceCount = useWorkspaceItemReferencesHiddenCount(
+    itemId,
+    referenceOpts,
+  );
 
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -67,7 +87,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   }, [itemId]);
 
   function enterEditMode() {
-    if (!item) return;
+    if (!item || !isUserEditable(item)) return;
     setEditContent(item.content_md ?? "");
     setEditTitle(item.title);
     setIsEditing(true);
@@ -80,7 +100,8 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   }
 
   function handleSave() {
-    if (!item) return;
+    // Never PATCH a preview's visible part over the whole body.
+    if (!item || isWiPreviewLocked(item)) return;
 
     updateItem.mutate(
       {
@@ -118,11 +139,16 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   }
 
   const editable = isUserEditable(item);
+  // A preview can never be in edit mode — even if the lock arrived (refetch)
+  // while the textarea was open.
+  const editing = isEditing && !previewLocked;
+  // Share / save-as-blog: agent drafts that are NOT a preview (§9.4).
+  const publishable = item.kind === "agent_writing" && !previewLocked;
 
   return (
     <div className="flex flex-1 flex-col min-h-0">
       <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        {isEditing ? (
+        {editing ? (
           <input
             type="text"
             value={editTitle}
@@ -136,9 +162,9 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
           </h3>
         )}
 
-        {!isEditing && (
+        {!editing && (
           <div className="flex items-center gap-1 shrink-0">
-            {item.kind === "agent_writing" && (
+            {publishable && (
               <Button
                 variant="ghost"
                 size="icon"
@@ -149,7 +175,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
                 <Share2 className="h-4 w-4" />
               </Button>
             )}
-            {item.kind === "agent_writing" && (
+            {publishable && (
               <Button
                 variant="ghost"
                 size="icon"
@@ -174,7 +200,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
           </div>
         )}
 
-        {isEditing && (
+        {editing && (
           <div className="flex items-center gap-1 shrink-0">
             <Button
               variant="ghost"
@@ -204,7 +230,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
         )}
       </div>
 
-      {isEditing ? (
+      {editing ? (
         <div className="flex-1 p-4">
           <textarea
             value={editContent}
@@ -216,15 +242,31 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
         </div>
       ) : (
         <ArtifactPreview
-          content={item.content_md ?? ""}
+          // A preview renders and copies its visible part only — never the
+          // legacy wall line the server appends for old builds.
+          content={wiPreviewVisibleContent(item)}
           footer={
-            item.kind === "agent_search" ? (
-              <ReferencePanel
-                references={references}
-                // Access-tiers Phase C: enables the on-demand source reveal.
-                itemId={item.item_id}
-                isLoading={isLoadingReferences}
-              />
+            item.kind === "agent_search" || (previewLocked && item.preview) ? (
+              <>
+                {previewLocked && item.preview && (
+                  <WiPreviewWall
+                    preview={item.preview}
+                    contentType={item.kind}
+                    // No ReferencePanel for a draft here, so the wall itself
+                    // carries «وN مصادر أخرى في الجزء المقفل».
+                    showHiddenRefs={item.kind !== "agent_search"}
+                  />
+                )}
+                {item.kind === "agent_search" && (
+                  <ReferencePanel
+                    references={references}
+                    // Access-tiers Phase C: enables the on-demand source reveal.
+                    itemId={item.item_id}
+                    isLoading={isLoadingReferences}
+                    hiddenCount={previewLocked ? hiddenReferenceCount : undefined}
+                  />
+                )}
+              </>
             ) : null
           }
         />
@@ -240,7 +282,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
         </span>
       </div>
 
-      {item.kind === "agent_writing" && (
+      {publishable && (
         <ShareArtifactDialog
           itemId={item.item_id}
           open={shareOpen}
@@ -248,7 +290,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
         />
       )}
 
-      {item.kind === "agent_writing" && (
+      {publishable && (
         <SaveAsBlogDialog
           itemId={item.item_id}
           open={saveBlogOpen}

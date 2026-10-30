@@ -16,7 +16,6 @@ import type {
   DownloadResponse,
   Memory,
   MemoryListResponse,
-  Reference,
   WorkspaceItem,
   WorkspaceItemListResponse,
   CreateNoteRequest,
@@ -63,6 +62,7 @@ import type {
   OtpRequestResponse,
   PasswordForgotResponse,
   PasswordResetRequest,
+  WorkspaceItemReferencesResponse,
 } from "@/lib/contracts";
 import { supabase } from "@/lib/supabase";
 import { loginHref } from "@/lib/safe-next";
@@ -934,10 +934,14 @@ export const workspaceApi = {
    * and are reconstructed by the backend via JOINs to chunks_v2 / cases /
    * services. Response shape matches the pre-049 ``Reference[]`` so the
    * existing ReferencePanel renders identically.
+   *
+   * WI preview lock: on a preview-locked item ``references`` holds only the
+   * sources the visible part cites and ``hidden_count`` counts the rest
+   * (absent on every open item).
    */
   listReferences: (itemId: string, opts?: { usedOnly?: boolean }) => {
     const qs = opts?.usedOnly ? "?used=true" : "";
-    return api.get<{ references: Reference[] }>(
+    return api.get<WorkspaceItemReferencesResponse>(
       `/workspace/${itemId}/references${qs}`,
     );
   },

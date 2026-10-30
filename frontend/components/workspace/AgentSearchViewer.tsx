@@ -7,9 +7,17 @@ import { ShareArtifactDialog } from "./ShareArtifactDialog";
 import { SaveAsBlogDialog } from "./SaveAsBlogDialog";
 import { AgentOutputDisclaimer } from "./AgentOutputDisclaimer";
 import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
+import { WiPreviewWall } from "./WiPreviewWall";
 import { useSetWorkspaceItemFeedback } from "@/hooks/use-workspace";
-import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
+import {
+  useWorkspaceItemReferences,
+  useWorkspaceItemReferencesHiddenCount,
+} from "@/hooks/use-workspace-item-references";
 import { DEMO_DISABLED_HINT } from "@/hooks/use-demo-conversation";
+import {
+  isWiPreviewLocked,
+  wiPreviewVisibleContent,
+} from "@/lib/contracts/wi-preview";
 import type { WorkspaceFeedback, WorkspaceItem } from "@/types";
 
 interface AgentSearchViewerProps {
@@ -54,6 +62,12 @@ interface AgentSearchViewerProps {
  *
  * Both flows feed ReferencePanel via a single coalesced ``focusedN`` value.
  * Whichever fires most recently wins; ``onFlashDone`` clears BOTH.
+ *
+ * WI preview lock (wi_preview_lock.md §7): a free user's locked report renders
+ * the visible part only (``wiPreviewVisibleContent`` — the server's legacy line
+ * stripped), ``WiPreviewWall`` right after it, the server-filtered reference
+ * list with its hidden-count line, and NO مشاركة / حفظ كمدونة / PDF — نسخ
+ * stays and copies the visible part. Without ``preview`` nothing changes.
  */
 export function AgentSearchViewer({
   item,
@@ -61,8 +75,15 @@ export function AgentSearchViewer({
   onFlashDone,
   isDemo = false,
 }: AgentSearchViewerProps) {
+  const previewLocked = isWiPreviewLocked(item);
+  const visibleContent = wiPreviewVisibleContent(item);
+  const referenceOpts = { locked: previewLocked };
   const { data: references = [], isLoading: isLoadingReferences } =
-    useWorkspaceItemReferences(item.item_id);
+    useWorkspaceItemReferences(item.item_id, referenceOpts);
+  const hiddenReferenceCount = useWorkspaceItemReferencesHiddenCount(
+    item.item_id,
+    referenceOpts,
+  );
   const setFeedback = useSetWorkspaceItemFeedback();
   const [localFocusedN, setLocalFocusedN] = useState<number | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
@@ -100,9 +121,10 @@ export function AgentSearchViewer({
   // this the user would copy [n] markers with no titles to resolve them.
   // ``appendReferencesForCopy`` (ReferencePanel) builds the «المراجع» block —
   // one ``{n}-{referenceCopyLabel}`` line each; the writer editor shares it.
+  // A preview copies its visible part only (never the legacy wall line).
   const copyContent = useMemo(
-    () => appendReferencesForCopy(item.content_md ?? "", references),
-    [item.content_md, references],
+    () => appendReferencesForCopy(visibleContent, references),
+    [visibleContent, references],
   );
 
   return (
@@ -114,12 +136,15 @@ export function AgentSearchViewer({
       data-tour="wi-body"
     >
       <ArtifactPreview
-        content={item.content_md ?? ""}
+        content={visibleContent}
         copyContent={copyContent}
         hideToolbar
         onCitationClick={handleBodyCitationClick}
         footer={
           <>
+            {previewLocked && item.preview && (
+              <WiPreviewWall preview={item.preview} contentType={item.kind} />
+            )}
             <ReferencePanel
               references={references}
               // Access-tiers Phase C: source bodies no longer ride the list.
@@ -130,6 +155,7 @@ export function AgentSearchViewer({
               focusedReferenceN={focusedN}
               onFlashDone={handleFlashDone}
               isLoading={isLoadingReferences}
+              hiddenCount={previewLocked ? hiddenReferenceCount : undefined}
             />
             <AgentOutputDisclaimer />
           </>
@@ -138,10 +164,12 @@ export function AgentSearchViewer({
       <WorkspaceItemActionBar
         floating
         copyText={copyContent}
-        // «PDF» export (PDF / Word) of the same payload نسخ copies.
-        exportTitle={item.title}
-        onShare={() => setShareOpen(true)}
-        onSaveBlog={() => setSaveBlogOpen(true)}
+        // «PDF» export (PDF / Word) of the same payload نسخ copies. Never
+        // offered for a preview (§9.4) — nor مشاركة / حفظ كمدونة, which the
+        // server would refuse with 402 anyway.
+        exportTitle={previewLocked ? undefined : item.title}
+        onShare={previewLocked ? undefined : () => setShareOpen(true)}
+        onSaveBlog={previewLocked ? undefined : () => setSaveBlogOpen(true)}
         publishDisabledHint={isDemo ? DEMO_DISABLED_HINT : undefined}
         // Omitting `onFeedback` is what HIDES the thumbs (the bar keys the
         // pair off that prop) — the shared-column reason is on `isDemo`.
@@ -149,16 +177,20 @@ export function AgentSearchViewer({
         onFeedback={isDemo ? undefined : handleFeedback}
         feedbackPending={setFeedback.isPending}
       />
-      <ShareArtifactDialog
-        itemId={item.item_id}
-        open={shareOpen}
-        onOpenChange={setShareOpen}
-      />
-      <SaveAsBlogDialog
-        itemId={item.item_id}
-        open={saveBlogOpen}
-        onOpenChange={setSaveBlogOpen}
-      />
+      {!previewLocked && (
+        <ShareArtifactDialog
+          itemId={item.item_id}
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+        />
+      )}
+      {!previewLocked && (
+        <SaveAsBlogDialog
+          itemId={item.item_id}
+          open={saveBlogOpen}
+          onOpenChange={setSaveBlogOpen}
+        />
+      )}
     </div>
   );
 }

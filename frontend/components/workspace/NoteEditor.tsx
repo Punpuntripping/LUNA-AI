@@ -7,13 +7,21 @@ import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
 import { SaveAsBlogDialog } from "@/components/workspace/SaveAsBlogDialog";
 import { AgentOutputDisclaimer } from "@/components/workspace/AgentOutputDisclaimer";
+import { WiPreviewWall } from "@/components/workspace/WiPreviewWall";
 import {
   useConversationWorkspace,
   useSetWorkspaceItemFeedback,
   useUpdateWorkspaceItem,
 } from "@/hooks/use-workspace";
-import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
+import {
+  useWorkspaceItemReferences,
+  useWorkspaceItemReferencesHiddenCount,
+} from "@/hooks/use-workspace-item-references";
 import { ApiClientError } from "@/lib/api";
+import {
+  isWiPreviewLocked,
+  wiPreviewVisibleContent,
+} from "@/lib/contracts/wi-preview";
 import { useChatStore } from "@/stores/chat-store";
 import type {
   Reference,
@@ -122,6 +130,11 @@ function overlayWriterAttribution(
  * - Title is editable in a small input above the body for ``note`` items.
  *   For ``agent_writing`` items the title comes from the agent and is
  *   read-only here.
+ * - WI preview lock (wi_preview_lock.md §1.3, §7): a free user's
+ *   preview-locked draft holds only the visible part, so it is READ-ONLY for
+ *   good (saving it would overwrite the hidden rest — the server answers 402),
+ *   shows ``WiPreviewWall`` before المراجع, and offers no مشاركة / حفظ كمدونة /
+ *   PDF. نسخ stays and copies the visible part. No ``preview`` ⇒ unchanged.
  */
 export function NoteEditor({ item }: NoteEditorProps) {
   const update = useUpdateWorkspaceItem();
@@ -132,9 +145,12 @@ export function NoteEditor({ item }: NoteEditorProps) {
   // Body-citation focus: clicking ``[n]`` in the preview scrolls/opens the
   // matching reference card (agent_writing only — notes have no references).
   const [focusedN, setFocusedN] = useState<number | null>(null);
-  // Share + 👍/👎 + references are agent-output features; on agent_writing only.
+  // 👍/👎 + references are agent-output features; on agent_writing only.
   const isAgentOutput = item.kind === "agent_writing";
-  const isShareable = isAgentOutput;
+  // The server only ever locks agent output; notes are the user's own words.
+  const previewLocked = isAgentOutput && isWiPreviewLocked(item);
+  // Share + save-as-blog + export: agent output that is NOT a preview (§9.4).
+  const isShareable = isAgentOutput && !previewLocked;
 
   const lockedUntilTs = getLockedUntil(item);
   const isLocked = lockedUntilTs !== null;
@@ -148,10 +164,16 @@ export function NoteEditor({ item }: NoteEditorProps) {
   // each citation. We fetch the rich Reference[] from the backend (same
   // endpoint as ``agent_search``) and overlay ``source_wi`` / ``source_n``
   // from the metadata blob so the panel can show provenance.
+  const referenceOpts = {
+    enabled: item.kind === "agent_writing",
+    locked: previewLocked,
+  };
   const { data: rawReferences = [], isLoading: isLoadingReferences } =
-    useWorkspaceItemReferences(item.item_id, {
-      enabled: item.kind === "agent_writing",
-    });
+    useWorkspaceItemReferences(item.item_id, referenceOpts);
+  const hiddenReferenceCount = useWorkspaceItemReferencesHiddenCount(
+    item.item_id,
+    referenceOpts,
+  );
   const metadataRefsView = useMemo(
     () => readWriterMetadataRefsView(item),
     [item],
@@ -225,6 +247,14 @@ export function NoteEditor({ item }: NoteEditorProps) {
   const handleSaveError = (err: unknown) => {
     if (err instanceof ApiClientError && err.status === 409) {
       setConflict(err.message || "ريحان يحرر هذا الملف الآن، حاول مجدداً");
+    } else if (
+      err instanceof ApiClientError &&
+      err.code === "WI_PREVIEW_LOCKED" &&
+      err.message
+    ) {
+      // Unreachable from this UI (a preview is read-only) — but if the lock
+      // landed between render and save, show the server's Arabic reason.
+      setConflict(err.message);
     }
   };
 
@@ -268,8 +298,11 @@ export function NoteEditor({ item }: NoteEditorProps) {
     [setFeedback, item.item_id],
   );
 
-  const footerSlot = isShareable ? (
+  const footerSlot = isAgentOutput ? (
     <>
+      {previewLocked && item.preview && (
+        <WiPreviewWall preview={item.preview} contentType={item.kind} />
+      )}
       <ReferencePanel
         references={references}
         // Access-tiers Phase C: the metered source reveal is scoped to the WI
@@ -282,6 +315,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
         onFlashDone={() => setFocusedN(null)}
         onOpenSourceWi={handleOpenSourceWi}
         canOpenSourceWi={canOpenSourceWi}
+        hiddenCount={previewLocked ? hiddenReferenceCount : undefined}
       />
       <AgentOutputDisclaimer />
     </>
@@ -293,11 +327,18 @@ export function NoteEditor({ item }: NoteEditorProps) {
         key={item.item_id}
         docId={item.item_id}
         initialTitle={item.title}
-        initialContent={item.content_md ?? ""}
+        // A preview renders (and copies) its visible part — never the legacy
+        // wall line the server appends for old builds.
+        initialContent={wiPreviewVisibleContent(item)}
         updatedAt={item.updated_at}
         onSave={handleSave}
         onSaveError={handleSaveError}
-        readOnly={isLocked}
+        // ``readOnly`` suspends autosave entirely (MarkdownDocEditor: no
+        // keystroke can schedule a save, and a queued one is dropped, never
+        // sent) — so a preview can never PATCH the visible part over the whole.
+        readOnly={isLocked || previewLocked}
+        // «التغييرات تُحفظ تلقائياً» would be false on a preview.
+        hideSaveStatus={previewLocked}
         titleReadOnly={titleReadOnly}
         titlePlaceholder="عنوان الملاحظة..."
         bodyPlaceholder={
@@ -311,10 +352,12 @@ export function NoteEditor({ item }: NoteEditorProps) {
         onFeedback={isAgentOutput ? handleFeedback : undefined}
         feedbackPending={setFeedback.isPending}
         onBodyCitationClick={isAgentOutput ? handleBodyCitationClick : undefined}
-        // agent_writing only: نسخ appends «المراجع» (notes have none).
-        copyReferences={isShareable ? references : undefined}
-        // agent_writing only: «PDF» export (PDF / Word) of the same payload.
-        exportable={isAgentOutput}
+        // agent_writing only: نسخ appends «المراجع» (notes have none). On a
+        // preview that is the server-filtered list (visible part's sources).
+        copyReferences={isAgentOutput ? references : undefined}
+        // agent_writing only: «PDF» export (PDF / Word) of the same payload —
+        // never for a preview.
+        exportable={isShareable}
       />
       {isShareable && (
         <ShareArtifactDialog

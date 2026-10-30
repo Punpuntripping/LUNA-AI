@@ -393,6 +393,7 @@ export type {
   WorkspaceFeedback,
   WorkspaceItemSubtype,
   WorkspaceItem,
+  WorkspaceItemPreview,
   WorkspaceItemListResponse,
 } from "@/lib/contracts";
 

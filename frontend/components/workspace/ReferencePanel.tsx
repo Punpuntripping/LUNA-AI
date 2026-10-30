@@ -16,6 +16,7 @@ import {
   Copy,
   Check,
   Loader2,
+  Lock,
   Sparkles,
 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -63,6 +64,7 @@ import {
   sourceViewExternalUrl,
   usableDocType,
 } from "@/lib/contracts/reference-labels";
+import { wiPreviewHiddenRefsLine } from "@/lib/contracts/wi-preview";
 
 interface ReferencePanelProps {
   references: Reference[];
@@ -127,6 +129,14 @@ interface ReferencePanelProps {
    * gets the plain span, which is the safe half of the failure.
    */
   canOpenSourceWi?: (seq: number) => boolean;
+  /**
+   * WI preview lock (wi_preview_lock.md §9.3): on a free user's preview-locked
+   * item ``references`` holds only the sources the visible part cites, and this
+   * counts the rest (the references endpoint's ``hidden_count``). Rendered as
+   * one line under the list — «و3 مصادر أخرى في الجزء المقفل». Absent / 0 ⇒
+   * nothing changes (every open item, the public blog).
+   */
+  hiddenCount?: number;
 }
 
 /**
@@ -219,6 +229,7 @@ export function ReferencePanel({
   isLoading = false,
   onOpenSourceWi,
   canOpenSourceWi,
+  hiddenCount,
 }: ReferencePanelProps) {
   // The open reference is tracked by ``n``, not by the object: the dialog now
   // owns a fetch keyed on (itemId, n), and holding a stale Reference across a
@@ -300,7 +311,21 @@ export function ReferencePanel({
     );
   }
 
-  if (!references || references.length === 0) return null;
+  // «وN مصادر أخرى في الجزء المقفل» — "" for 0 / absent, so an open item
+  // renders exactly as before.
+  const hiddenLine = wiPreviewHiddenRefsLine(hiddenCount ?? 0);
+
+  if (!references || references.length === 0) {
+    if (!hiddenLine) return null;
+    // A preview whose visible part cites nothing: the list is empty but the
+    // sources still exist — say so instead of dropping المراجع altogether.
+    return (
+      <div dir="rtl" className="mt-6 border-t pt-4">
+        <h3 className="mb-3 text-sm font-semibold text-foreground">المراجع</h3>
+        <HiddenReferencesLine text={hiddenLine} />
+      </div>
+    );
+  }
 
   const handleAnimationEnd = (n: number) => {
     const el = itemRefs.current.get(n);
@@ -336,6 +361,7 @@ export function ReferencePanel({
           />
         ))}
       </ul>
+      {hiddenLine && <HiddenReferencesLine text={hiddenLine} className="mt-2" />}
 
       <Dialog
         // Keyed off the resolved reference, not the raw ``openN``: if the list
@@ -369,6 +395,28 @@ export function ReferencePanel({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** The preview lock's hidden-sources count, under (or instead of) the list. */
+function HiddenReferencesLine({
+  text,
+  className,
+}: {
+  text: string;
+  className?: string;
+}) {
+  return (
+    <p
+      className={cn(
+        "flex items-center gap-1.5 text-xs text-muted-foreground",
+        className,
+      )}
+      data-testid="wi-preview-hidden-refs"
+    >
+      <Lock aria-hidden="true" className="h-3 w-3 shrink-0" />
+      <span>{text}</span>
+    </p>
   );
 }
 

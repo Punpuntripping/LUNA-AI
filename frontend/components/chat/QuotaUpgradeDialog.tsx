@@ -20,8 +20,8 @@ import {
   PRICING_PLANS,
   SEATS_LIMITED_NOTE,
   cheapestPricingPlan,
+  deliberateUpgradePlans,
   findPricingPlan,
-  pricingPlansAbove,
   resolvePlanPricing,
 } from "@/lib/pricing";
 import type { PricingPlan } from "@/lib/pricing";
@@ -74,7 +74,7 @@ interface QuotaUpgradeDialogProps {
   /**
    * The user's plan, for the block-less surfaces. Only read when neither
    * `info` nor `deepSearchGate` is set; the ladder is then derived from the
-   * catalog by price.
+   * catalog by price (`"free"` → the whole catalog — the WiPreviewWall surface).
    */
   currentPlanId?: string | null;
 }
@@ -151,8 +151,9 @@ export function QuotaUpgradeDialog({
     // No block → Settings. Derived by LIST price (the plan rank), since there
     // is no blocking window to ask the server about. Promo prices are batch
     // data that can change with no deploy, so they never rank the ladder — see
-    // `pricingPlansAbove`.
-    if (!blocked) return pricingPlansAbove(currentPlanId);
+    // `pricingPlansAbove`. `"free"` (the WiPreviewWall path) → the whole
+    // catalog — see `deliberateUpgradePlans`.
+    if (!blocked) return deliberateUpgradePlans(currentPlanId);
     // Deploy skew: a backend from before the ladder shipped sends no field at
     // all. Fall back to the whole catalog — i.e. exactly the pre-ladder free
     // paywall — rather than to an empty dialog. An EMPTY array is different:

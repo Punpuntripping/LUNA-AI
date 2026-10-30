@@ -126,7 +126,9 @@ export type AnalyticsEventName =
  * `gate_banner` = the retired library GateBanner (kept so historical rows stay
  * readable; nothing emits it any more) · `hub_wall` = HubCtaWall ·
  * `blog_cta` = BlogConversionCta · `search_modal` = SearchCtaModal ·
- * `judgment_summary` = JudgmentSummary.
+ * `judgment_summary` = JudgmentSummary · `wi_preview` = WiPreviewWall (a free
+ * user's preview-locked workspace item — wi_preview_lock.md §8; an UPGRADE
+ * surface, so its CTA is `upgrade`, never `register`).
  */
 export type GateKind =
   | "anon_popup"
@@ -135,7 +137,8 @@ export type GateKind =
   | "hub_wall"
   | "blog_cta"
   | "search_modal"
-  | "judgment_summary";
+  | "judgment_summary"
+  | "wi_preview";
 
 /**
  * The field the whole chat-depth question turns on (§3b): it is what separates
