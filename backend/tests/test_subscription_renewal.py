@@ -515,7 +515,9 @@ class _Charges(list):
 def charges(monkeypatch):
     """Record every token charge and script its outcome."""
     calls = _Charges()
-    script: dict[str, Any] = {"status": "paid", "exc": None}
+    # `response_code`: the bank's code in source.response_code — 51 (insufficient
+    # funds, SOFT) unless a test scripts a hard one.
+    script: dict[str, Any] = {"status": "paid", "exc": None, "response_code": "51"}
 
     async def _charge(*, token, amount_halalas, description, payment_id, metadata=None):
         calls.append({"token": token, "amount": amount_halalas,
@@ -531,7 +533,8 @@ def charges(monkeypatch):
             "metadata": {"payment_id": payment_id},
             "source": {"type": "creditcard", "company": "mada",
                        "number": "4111-11XX-XXXX-1111", "token": token,
-                       "message": "Insufficient funds"},
+                       "message": "Insufficient funds",
+                       "response_code": script["response_code"]},
         }
 
     monkeypatch.setattr(ps, "charge_saved_card", _charge)
@@ -553,14 +556,20 @@ def provider_revokes(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# "Due at the next tick": 6 minutes out, inside the job's 15-minute horizon
+# (renewal_retry_grace.md §4 — the job charges AT expiry, not a day early).
+DUE_HOURS = 0.1
+
+
 def sub(
     plan_id="pro",
     *,
     source="payment",
-    hours_left: Optional[float] = 6,
+    hours_left: Optional[float] = DUE_HOURS,
     cancelled_at=None,
     failed_count=0,
     attempt_at=None,
+    grace_until=None,
     user_id=USER,
 ):
     expires = _iso(_now() + timedelta(hours=hours_left)) if hours_left is not None else None
@@ -570,6 +579,7 @@ def sub(
         "renewal_cancelled_at": cancelled_at,
         "renewal_attempt_at": attempt_at,
         "renewal_failed_count": failed_count,
+        "renewal_grace_until": grace_until,
     }
 
 
@@ -599,6 +609,29 @@ def renewal_rows(db):
 
 def sweep(db):
     return run(rs.run_due_renewals(db))
+
+
+_TS_FIELDS = {
+    "user_subscriptions": ("started_at", "expires_at", "renewal_attempt_at",
+                           "renewal_grace_until", "renewal_cancelled_at"),
+    "payment_transactions": ("period_start", "created_at", "paid_at", "fulfilled_at"),
+}
+
+
+def travel(db, *, hours: float) -> None:
+    """Let ``hours`` pass. The fake's now() is the wall clock, so time moves the
+    other way: every stored timestamp slides into the past — the subscription
+    AND the ledger's period_start, so a retry still keys the same period."""
+    for table, fields in _TS_FIELDS.items():
+        for row in db.tables.get(table, []):
+            for field in fields:
+                ts = _parse(row.get(field))
+                if ts is not None:
+                    row[field] = _iso(ts - timedelta(hours=hours))
+
+
+def the_sub(db) -> dict:
+    return db.tables["user_subscriptions"][0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1415,7 +1448,7 @@ def test_purge_revoke_never_raises_when_the_table_is_missing(flag_on):
 
 
 def test_a_due_term_is_charged_from_the_catalog_price(flag_on, charges, no_smtp):
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
 
     stats = sweep(db)
@@ -1433,7 +1466,7 @@ def test_a_due_term_is_charged_from_the_catalog_price(flag_on, charges, no_smtp)
 
 def test_the_amount_is_never_the_last_payments_amount(flag_on, charges, no_smtp):
     """A prorated upgrade paid 200.00 for `max`; the RENEWAL is 289.90."""
-    db = FakeSupabase(sub("max", hours_left=6))
+    db = FakeSupabase(sub("max", hours_left=DUE_HOURS))
     store_method(db)
     db.tables["payment_transactions"].append({
         "payment_id": str(uuid.uuid4()), "user_id": USER, "plan_id": "max",
@@ -1446,9 +1479,10 @@ def test_the_amount_is_never_the_last_payments_amount(flag_on, charges, no_smtp)
 
 
 def test_term_extends_from_expires_at_not_now(flag_on, charges, no_smtp):
-    """Plan trap 3. The job runs at 03:30; a term that renewed from now() would
-    shave hours off EVERY cycle, and nobody would notice for months."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    """Plan trap 3. The job runs up to 15 minutes before expiry; a term that
+    renewed from now() would shave that off EVERY cycle, and nobody would
+    notice for months."""
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     old_expiry = _parse(db.tables["user_subscriptions"][0]["expires_at"])
 
@@ -1456,14 +1490,14 @@ def test_term_extends_from_expires_at_not_now(flag_on, charges, no_smtp):
 
     new_expiry = _parse(db.tables["user_subscriptions"][0]["expires_at"])
     assert new_expiry == old_expiry + timedelta(days=30)
-    # …and emphatically not now() + 30d, which would be ~6h earlier.
-    assert new_expiry > _now() + timedelta(days=30, hours=5)
+    # …and emphatically not now() + 30d, which would be ~6 minutes earlier.
+    assert new_expiry > _now() + timedelta(days=30, minutes=5)
 
 
 def test_two_sweeps_charge_exactly_once(flag_on, charges, no_smtp):
     """THE test. Two ticks, a retry, or a redeploy mid-run must not double-charge
     — and the guard that stops it is the DB unique index, not Python."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
 
     first = sweep(db)
@@ -1478,7 +1512,7 @@ def test_two_sweeps_charge_exactly_once(flag_on, charges, no_smtp):
 def test_a_racing_insert_loses_at_the_database(flag_on, charges, no_smtp):
     """The pre-filter is a convenience; the constraint is the guard. Strip the
     pre-filter and the DB must still refuse the second row."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     subscription = dict(db.tables["user_subscriptions"][0])
 
@@ -1500,7 +1534,7 @@ def test_a_racing_insert_loses_at_the_database(flag_on, charges, no_smtp):
 def test_a_cancelled_subscriber_is_never_charged(flag_on, charges, no_smtp):
     """The promise «لن يُجدَّد اشتراكك» that 120's UI has been making since
     before an engine existed. This filter is what finally makes it true."""
-    db = FakeSupabase(sub("pro", hours_left=6, cancelled_at=_iso(_now())))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS, cancelled_at=_iso(_now())))
     store_method(db)
     assert sweep(db) == {"scanned": 0}
     assert charges == [] and renewal_rows(db) == []
@@ -1510,14 +1544,14 @@ def test_a_cancelled_subscriber_is_never_charged(flag_on, charges, no_smtp):
 def test_a_non_payment_grant_is_never_charged(flag_on, charges, no_smtp, source):
     """A code / marketing / manual / signup grant has no card behind it. Even
     with a stored token on the account, it must not be touched."""
-    db = FakeSupabase(sub("pro", source=source, hours_left=6))
+    db = FakeSupabase(sub("pro", source=source, hours_left=DUE_HOURS))
     store_method(db)
     assert sweep(db)["scanned"] == 0
     assert charges == []
 
 
 def test_basic_is_never_renewed(flag_on, charges, no_smtp):
-    db = FakeSupabase(sub("basic", hours_left=6))
+    db = FakeSupabase(sub("basic", hours_left=DUE_HOURS))
     store_method(db)
     assert sweep(db)["scanned"] == 0
     assert charges == []
@@ -1525,7 +1559,7 @@ def test_basic_is_never_renewed(flag_on, charges, no_smtp):
 
 def test_a_one_time_billing_cycle_stops_the_job(flag_on, charges, no_smtp):
     """Second wall: even a pro row is refused if the catalog says one_time."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     for plan in db.tables["plans"]:
         if plan["plan_id"] == "pro":
@@ -1534,15 +1568,38 @@ def test_a_one_time_billing_cycle_stops_the_job(flag_on, charges, no_smtp):
     assert charges == [] and renewal_rows(db) == []
 
 
-def test_a_term_outside_the_horizon_waits(flag_on, charges, no_smtp):
-    db = FakeSupabase(sub("pro", hours_left=48))
+@pytest.mark.parametrize("hours_left", [48, 6, 0.5])
+def test_a_term_outside_the_horizon_waits(flag_on, charges, no_smtp, hours_left):
+    """Charge AT expiry (renewal_retry_grace.md §0.1): a term 6h out used to be
+    charged by the daily job; now it waits for the last tick before it lapses."""
+    db = FakeSupabase(sub("pro", hours_left=hours_left))
+    store_method(db)
+    assert sweep(db)["scanned"] == 0
+    assert charges == []
+
+
+def test_the_horizon_is_one_tick():
+    assert rs.DUE_HORIZON == timedelta(minutes=15)
+
+
+def test_a_missed_tick_still_charges_a_term_that_just_lapsed(flag_on, charges, no_smtp):
+    """The tick before expiry was missed (a restart): the next one still renews
+    — a lower bound of `now` would have let the term lapse with no attempt."""
+    db = FakeSupabase(sub("pro", hours_left=-1))
+    store_method(db)
+    assert sweep(db)["renewed"] == 1
+    assert len(charges) == 1
+
+
+def test_a_term_lapsed_past_the_retry_grace_is_never_charged(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("pro", hours_left=-3))
     store_method(db)
     assert sweep(db)["scanned"] == 0
     assert charges == []
 
 
 def test_no_stored_card_means_no_charge_and_no_row(flag_on, charges, no_smtp):
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     assert sweep(db)["skipped_no_method"] == 1
     assert charges == [] and renewal_rows(db) == []
 
@@ -1550,14 +1607,14 @@ def test_no_stored_card_means_no_charge_and_no_row(flag_on, charges, no_smtp):
 def test_a_card_without_consent_is_not_chargeable(flag_on, charges, no_smtp):
     """A token with no consent artefact is a credential we hold with no right to
     use it (plan §5.1)."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db, consent=False)
     assert sweep(db)["skipped_no_method"] == 1
     assert charges == []
 
 
 def test_a_revoked_card_is_not_chargeable(flag_on, charges, no_smtp):
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db, revoked=True)
     assert sweep(db)["skipped_no_method"] == 1
     assert charges == []
@@ -1572,7 +1629,7 @@ def test_the_ledger_row_exists_before_the_provider_is_called(flag_on, no_smtp, m
         seen["rows"] = [dict(r) for r in renewal_rows(db)]
         raise ps.MoyasarUnavailable("boom")
 
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     monkeypatch.setattr(ps, "charge_saved_card", _charge)
 
@@ -1585,7 +1642,7 @@ def test_the_renewal_never_touches_plan_id(flag_on, charges, no_smtp):
     """⚠ `trg_user_subscriptions_assignment` is BEFORE UPDATE **OF plan_id** and
     re-derives expires_at. A bookkeeping write that named plan_id would re-stamp
     the very term this job just paid to extend."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     sweep(db)
 
@@ -1601,12 +1658,14 @@ def test_the_renewal_never_touches_plan_id(flag_on, charges, no_smtp):
 
 
 def test_a_successful_renewal_resets_the_ladder(flag_on, charges, no_smtp):
-    db = FakeSupabase(sub("pro", hours_left=6, failed_count=1,
-                          attempt_at=_iso(_now() - timedelta(days=2))))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS, failed_count=1,
+                          attempt_at=_iso(_now() - timedelta(hours=13)),
+                          grace_until=_iso(_now() + timedelta(hours=12))))
     store_method(db)
     sweep(db)
     row = db.tables["user_subscriptions"][0]
     assert row["renewal_failed_count"] == 0 and row["renewal_attempt_at"]
+    assert row["renewal_grace_until"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1617,7 +1676,7 @@ def test_a_successful_renewal_resets_the_ladder(flag_on, charges, no_smtp):
 def test_a_transport_failure_blocks_the_period_instead_of_retrying(flag_on, charges, no_smtp):
     """We never saw an answer, so the money may well have moved. Retrying blind
     is the double charge; blocking is a support ticket."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     charges.script["exc"] = ps.MoyasarUnavailable("timeout")   # type: ignore[attr-defined]
 
@@ -1637,7 +1696,7 @@ def test_an_unresolved_row_blocks_at_the_database_too(flag_on, charges, no_smtp)
     """Belt AND braces. Strip the Python pre-filter and 132's index still
     refuses: its predicate is `status <> 'failed'`, so an `initiated` row keeps
     the period closed at ANY attempt number."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     charges.script["exc"] = ps.MoyasarUnavailable("timeout")
 
@@ -1668,7 +1727,7 @@ def test_an_upgrade_mid_charge_holds_the_grant_instead_of_downgrading(
     their pro renewal is in flight. grant_plan writes plan_id unconditionally, so
     granting would silently downgrade somebody who just paid 289.90 — and neither
     they nor support would ever work out why."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
 
     original = ps.charge_saved_card
@@ -1695,7 +1754,7 @@ def test_an_upgrade_mid_charge_holds_the_grant_instead_of_downgrading(
 def test_a_provider_refusal_is_an_ordinary_decline(flag_on, charges, no_smtp):
     """A 4xx is Moyasar saying "no" BEFORE taking money — provable no-charge, so
     the ladder may advance."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     charges.script["exc"] = ps.MoyasarError("bad token", status=400)  # type: ignore[attr-defined]
 
@@ -1708,7 +1767,7 @@ def test_a_decline_records_the_providers_reason(flag_on, charges, no_smtp):
     """`decline_reason` (migration 133) is what makes "expired card vs empty
     balance" a GROUP BY instead of a JSON dig. The full response still lands in
     raw_payload; this is the aggregatable copy."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     charges.script["exc"] = ps.MoyasarError("card expired", status=402)  # type: ignore[attr-defined]
 
@@ -1722,7 +1781,7 @@ def test_a_decline_records_the_providers_reason(flag_on, charges, no_smtp):
 def test_a_decline_reason_is_truncated_not_stored_whole(flag_on, charges, no_smtp):
     """A provider is free to return an essay; this column exists to be grouped,
     not read as a document."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     charges.script["exc"] = ps.MoyasarError("x" * 4000, status=402)  # type: ignore[attr-defined]
 
@@ -1748,7 +1807,7 @@ def test_only_a_provable_no_charge_advances_the_ladder(exc, provable):
 def test_an_unconfigured_provider_burns_no_rung(flag_on, monkeypatch, no_smtp):
     """Our misconfiguration must not cost the customer a retry, or leave an
     unresolvable row behind."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     settings = get_settings()
     monkeypatch.setattr(settings, "MOYASAR_SECRET_KEY", None)
@@ -1759,39 +1818,47 @@ def test_an_unconfigured_provider_burns_no_rung(flag_on, monkeypatch, no_smtp):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Dunning (§8) — day 0, +1, +3, then lapse
+# Dunning (renewal_retry_grace.md) — 0, +12h, +24h inside a 24h grace, then lapse
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_the_ladder_is_zero_one_three():
-    assert rs.LADDER_DAYS == (0, 1, 3) and rs.MAX_ATTEMPTS == 3
+def test_the_ladder_is_zero_twelve_twentyfour():
+    assert rs.LADDER_HOURS == (0, 12, 24) and rs.MAX_ATTEMPTS == 3
+    assert rs.GRACE_PERIOD == timedelta(hours=24, minutes=30)
 
 
 def test_a_retry_waits_for_its_rung(flag_on, charges, no_smtp):
     db = FakeSupabase(sub("pro", hours_left=-2, failed_count=1,
-                          attempt_at=_iso(_now() - timedelta(hours=3))))
+                          attempt_at=_iso(_now() - timedelta(hours=3)),
+                          grace_until=_iso(_now() + timedelta(hours=22))))
     store_method(db)
-    assert sweep(db)["scanned"] == 0            # +1 day has not passed
+    assert sweep(db)["scanned"] == 0            # +12h has not passed
     assert charges == []
 
 
+def test_the_rung_fires_on_the_tick_it_is_due_on():
+    """Prod 2026-10-28/29: renewal_attempt_at is stamped seconds AFTER the tick
+    (03:30:11), so "12h since" is first true seconds after the tick 12h later —
+    and without slack the rung slipped a whole tick (the daily job: a day)."""
+    now = _now()
+    row = sub("pro", hours_left=-12, failed_count=1,
+              grace_until=_iso(now + timedelta(hours=12)))
+    row["renewal_attempt_at"] = _iso(now - timedelta(hours=12) + timedelta(seconds=11))
+    assert rs._retry_is_due(row, now) is True
+    row["renewal_attempt_at"] = _iso(now - timedelta(hours=11, minutes=45))
+    assert rs._retry_is_due(row, now) is False   # one tick early is still early
+
+
 def test_each_attempt_is_its_own_row_with_an_incremented_number(flag_on, charges, no_smtp):
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     charges.script["status"] = "failed"          # type: ignore[attr-defined]
 
-    # day 0
-    assert sweep(db)["declined"] == 1
-    # +1 day
-    db.tables["user_subscriptions"][0]["renewal_attempt_at"] = _iso(
-        _now() - timedelta(days=1, minutes=5)
-    )
-    assert sweep(db)["declined"] == 1
-    # +3 days (two more after the previous rung)
-    db.tables["user_subscriptions"][0]["renewal_attempt_at"] = _iso(
-        _now() - timedelta(days=2, minutes=5)
-    )
-    assert sweep(db)["lapsed"] == 1
+    assert sweep(db)["declined"] == 1           # attempt 0, at expiry
+    travel(db, hours=12)
+    assert sweep(db)["declined"] == 1           # +12h
+    travel(db, hours=12)
+    assert sweep(db)["lapsed"] == 1             # +24h — the last rung
 
     rows = sorted(renewal_rows(db), key=lambda r: r["renewal_attempt"])
     assert [r["renewal_attempt"] for r in rows] == [0, 1, 2]
@@ -1800,6 +1867,199 @@ def test_each_attempt_is_its_own_row_with_an_incremented_number(flag_on, charges
     # able to tell a retry from a duplicate.
     assert len({r["period_start"] for r in rows}) == 1
     assert len(charges) == 3
+
+    travel(db, hours=12)
+    assert sweep(db)["scanned"] == 0            # the ladder is over
+    assert len(charges) == 3
+
+
+def test_a_soft_decline_opens_the_grace(flag_on, charges, no_smtp):
+    """§0.1: on a soft decline the user keeps Pro/Max while the card is
+    retried — access until expires_at + 24h (+30 min for the last attempt)."""
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    store_method(db)
+    expires = _parse(the_sub(db)["expires_at"])
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+
+    assert sweep(db)["declined"] == 1
+    row = the_sub(db)
+    assert row["renewal_failed_count"] == 1
+    assert _parse(row["renewal_grace_until"]) == expires + rs.GRACE_PERIOD
+    assert row["expires_at"] == _iso(expires)    # the period key never moves
+
+
+def test_a_late_first_attempt_still_gets_its_whole_ladder(flag_on, charges, no_smtp):
+    """A first attempt after a missed tick anchors the grace on NOW, so the
+    +24h rung still lands inside it."""
+    db = FakeSupabase(sub("pro", hours_left=-1))
+    store_method(db)
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+
+    before = _now()
+    assert sweep(db)["declined"] == 1
+    assert _parse(the_sub(db)["renewal_grace_until"]) >= before + rs.GRACE_PERIOD
+
+
+def test_the_middle_rung_keeps_the_grace(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    store_method(db)
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+    sweep(db)
+    travel(db, hours=12)
+    grace = the_sub(db)["renewal_grace_until"]
+
+    assert sweep(db)["declined"] == 1
+    assert the_sub(db)["renewal_grace_until"] == grace
+    assert the_sub(db)["renewal_failed_count"] == 2
+
+
+def test_the_last_rung_lapses_now(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    store_method(db)
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+    sweep(db)
+    travel(db, hours=12)
+    sweep(db)
+    travel(db, hours=12)
+
+    assert sweep(db)["lapsed"] == 1
+    row = the_sub(db)
+    assert row["renewal_failed_count"] == rs.MAX_ATTEMPTS
+    # grace = now(): the term ended a day ago, so access ends with this tick
+    assert _parse(row["renewal_grace_until"]) <= _now()
+    assert _parse(row["expires_at"]) < _now()
+
+
+@pytest.mark.parametrize("code", sorted(rs.HARD_DECLINE_CODES))
+def test_a_hard_decline_gives_up_at_once(flag_on, charges, monkeypatch, code):
+    """§0.3: a lost / stolen / expired card cannot be fixed by retrying — no
+    ladder, no grace, the final email."""
+    notices: list[dict] = []
+
+    async def _notice(_db, *, payment_row, plan_name_ar, expires_at=None, final=False):
+        notices.append({"final": final, "expires_at": expires_at})
+
+    monkeypatch.setattr(rs, "send_renewal_failed_notice", _notice)
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    store_method(db)
+    charges.script.update(status="failed", response_code=code)  # type: ignore[attr-defined]
+
+    assert sweep(db)["lapsed"] == 1
+    row = the_sub(db)
+    assert row["renewal_failed_count"] == rs.MAX_ATTEMPTS
+    # "now" is before this term's own end: paid time stands, no grace past it
+    assert _parse(row["renewal_grace_until"]) <= _parse(row["expires_at"])
+    assert notices == [{"final": True, "expires_at": None}]
+
+    travel(db, hours=12)
+    assert sweep(db)["scanned"] == 0             # nothing retries
+    assert len(charges) == 1
+
+
+@pytest.mark.parametrize(
+    "raw,code,hard",
+    [("51", "51", False),           # insufficient funds — the ladder exists for it
+     ("05", "05", False),           # do not honour — soft by owner decision
+     (5, "05", False),
+     ("57", "57", True), (12, "12", True), ("54", "54", True),
+     (None, None, False),           # no code at all → soft
+     ("XYZ", "XYZ", False)],        # unknown → soft
+)
+def test_decline_codes_are_read_and_classified(raw, code, hard):
+    fetched = {"status": "failed", "source": {"response_code": raw}}
+    assert rs._decline_code(fetched) == code
+    assert (rs._decline_code(fetched) in rs.HARD_DECLINE_CODES) is hard
+
+
+def test_a_provider_refusal_without_a_code_is_soft(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    store_method(db)
+    charges.script["exc"] = ps.MoyasarError("declined", status=402)  # type: ignore[attr-defined]
+    assert sweep(db)["declined"] == 1
+    assert the_sub(db)["renewal_failed_count"] == 1
+    assert the_sub(db)["renewal_grace_until"]
+
+
+def test_no_retry_runs_long_after_the_grace_ended(flag_on, charges, no_smtp):
+    """An outage ate the last rung: the user has been on the free plan since
+    the grace ended. A late tick within RETRY_GRACE may still try; past it,
+    never — a surprise charge is a chargeback."""
+    late = FakeSupabase(sub("pro", hours_left=-25, failed_count=2,
+                            attempt_at=_iso(_now() - timedelta(hours=13)),
+                            grace_until=_iso(_now() - timedelta(hours=1))))
+    store_method(late)
+    assert sweep(late)["renewed"] == 1           # 1h past the grace: tolerated
+
+    gone = FakeSupabase(sub("pro", hours_left=-27, failed_count=2,
+                            attempt_at=_iso(_now() - timedelta(hours=15)),
+                            grace_until=_iso(_now() - timedelta(hours=3))))
+    store_method(gone)
+    assert sweep(gone)["scanned"] == 0           # 3h past: never
+
+
+def test_a_ladder_with_no_grace_column_still_finishes(flag_on, charges, no_smtp):
+    """A row declined by the pre-196 backend has failed_count but no grace:
+    its ladder is bounded as if the grace had been written."""
+    db = FakeSupabase(sub("pro", hours_left=-20, failed_count=1,
+                          attempt_at=_iso(_now() - timedelta(hours=13))))
+    store_method(db)
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+    assert sweep(db)["declined"] == 1
+
+
+def test_a_success_inside_the_grace_stacks_onto_the_old_expiry(flag_on, charges, no_smtp):
+    """§3 B2. grant_plan stacks only onto a LIVE term, so the +12h retry would
+    open a fresh window from now() and slip the billing date by 12h. The job
+    puts the term back at period_start + 30 days — in a write that never names
+    plan_id (the assignment trigger is BEFORE UPDATE OF plan_id)."""
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    store_method(db)
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+    sweep(db)                                     # attempt 0 declines at expiry
+    travel(db, hours=12)
+    old_expiry = _parse(the_sub(db)["expires_at"])
+    assert old_expiry < _now()                    # in the grace now
+    started = the_sub(db)["started_at"]
+
+    charges.script["status"] = "paid"            # type: ignore[attr-defined]
+    assert sweep(db)["renewed"] == 1
+
+    row = the_sub(db)
+    assert _parse(row["expires_at"]) == old_expiry + timedelta(days=30)
+    assert row["started_at"] == started           # one continuous subscription
+    assert row["renewal_grace_until"] is None and row["renewal_failed_count"] == 0
+    paid = [r for r in renewal_rows(db) if r["status"] == "paid"]
+    assert len(paid) == 1 and paid[0]["renewal_attempt"] == 1
+    assert _parse(paid[0]["period_start"]) == old_expiry
+    restack = [w for w in db.writes
+               if w[0] == "user_subscriptions" and w[1] == "update"
+               and "expires_at" in w[2]]
+    assert restack and all("plan_id" not in w[2] for w in restack)
+
+
+def test_an_on_time_renewal_writes_no_restack(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    store_method(db)
+    sweep(db)
+    assert not [w for w in db.writes
+                if w[0] == "user_subscriptions" and w[1] == "update"
+                and "expires_at" in w[2]]
+
+
+def test_the_restack_yields_to_a_row_that_moved(flag_on):
+    """Compare-and-set: if anything rewrote the term between the grant and the
+    restack (an upgrade, a stacked purchase), that newer state stands."""
+    old = _now() - timedelta(hours=12)
+    db = FakeSupabase({**sub("pro", hours_left=None), "expires_at": _iso(_now() + timedelta(days=45))})
+    subscription = {**the_sub(db), "expires_at": _iso(old)}
+    granted = _iso(_now() + timedelta(days=30))  # not what the row holds now
+
+    kept = run(rs._keep_the_billing_date(
+        db, subscription=subscription, plan={"duration_days": 30},
+        granted_expires_at=granted,
+    ))
+    assert kept == granted
+    assert _parse(the_sub(db)["expires_at"]) > _now() + timedelta(days=44)
 
 
 def test_the_ladder_stops_and_lets_the_term_lapse(flag_on, charges, no_smtp):
@@ -1837,32 +2097,33 @@ def test_a_decline_emails_the_customer(flag_on, charges, monkeypatch):
     notices: list[dict] = []
 
     async def _notice(_db, *, payment_row, plan_name_ar, expires_at=None, final=False):
-        notices.append({"plan": plan_name_ar, "final": final})
+        notices.append({"plan": plan_name_ar, "final": final, "expires_at": expires_at})
 
     monkeypatch.setattr(rs, "send_renewal_failed_notice", _notice)
 
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     charges.script["status"] = "failed"          # type: ignore[attr-defined]
 
     sweep(db)                                     # attempt 0 → email
-    db.tables["user_subscriptions"][0]["renewal_attempt_at"] = _iso(
-        _now() - timedelta(days=1, minutes=5)
-    )
+    grace = the_sub(db)["renewal_grace_until"]
+    travel(db, hours=12)
     sweep(db)                                     # attempt 1 → silent
-    db.tables["user_subscriptions"][0]["renewal_attempt_at"] = _iso(
-        _now() - timedelta(days=2, minutes=5)
-    )
+    travel(db, hours=12)
     sweep(db)                                     # attempt 2 → final email
 
     assert [n["final"] for n in notices] == [False, True]
     assert notices[0]["plan"] == "الاحترافية"
+    # The first email's «فعّال حتى» is the GRACE's end — the term's own expiry
+    # is minutes away and would read as "already over". The final one has none.
+    assert notices[0]["expires_at"] == grace
+    assert notices[1]["expires_at"] is None
 
 
 def test_the_dunning_email_never_raises_with_the_transport_down(flag_on, no_smtp):
     """Receipts are parked on the 465/SSL issue; the call is wired anyway so it
     starts working the day the transport does."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     run(receipt_service.send_renewal_failed_notice(
         db,
         payment_row={"payment_id": str(uuid.uuid4()), "user_id": USER,
@@ -1884,6 +2145,122 @@ def test_the_dunning_templates_render_both_shapes():
         assert "الاحترافية" in html and "ريحان" in html
 
 
+def test_the_dunning_copy_matches_the_24h_ladder():
+    """§5: the retry is within 24 hours and the plan keeps running meanwhile;
+    the final email neither claims several attempts (a hard decline is the
+    first) nor a paid period still to come (it ended a day ago)."""
+    _, first = receipt_service.render_renewal_failed_notice(
+        customer_name=CUSTOMER_NAME, plan_name_ar="الاحترافية", amount_sar="94.90",
+        expires_at=_now() + timedelta(hours=24), final=False,
+    )
+    assert "خلال 24 ساعة" in first and "الأيام القادمة" not in first
+    assert "اشتراكك فعّال حتى" in first
+
+    _, final = receipt_service.render_renewal_failed_notice(
+        customer_name=CUSTOMER_NAME, plan_name_ar="الاحترافية", amount_sar="94.90",
+        expires_at=None, final=True,
+    )
+    assert "أكثر من مرة" not in final and "سينتهي" not in final
+    assert "الباقة المجانية" in final
+    assert "اشتراكك فعّال حتى" not in final
+
+
+def test_the_job_ticks_every_fifteen_minutes():
+    """The ladder's clock is the tick: a daily 03:30 cron put the first attempt
+    up to a day early and slipped every retry by a day."""
+    source = Path(__file__).resolve().parents[1].joinpath("app", "main.py").read_text(
+        encoding="utf-8"
+    )
+    lines = source.splitlines()
+    job = next(i for i, l in enumerate(lines) if 'id="subscription_renewals"' in l)
+    trigger = lines[job - 1]
+    assert 'CronTrigger(minute="*/15")' in trigger
+    block = "\n".join(lines[job - 3: job + 12])
+    assert "max_instances=1" in block and "coalesce=True" in block
+
+
+def test_a_skip_is_logged_once_not_every_tick(flag_on, charges, no_smtp, caplog):
+    """A card-less term is re-selected on every tick of its window; the line
+    that says so is written once."""
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
+    with caplog.at_level(logging.INFO, logger=rs.logger.name):
+        for _ in range(3):
+            assert sweep(db)["skipped_no_method"] == 1
+    lines = [r for r in caplog.records
+             if r.levelno == logging.INFO and "no chargeable stored card" in r.getMessage()]
+    assert len(lines) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The grace on the settings surface (subscription_service, §4/§5)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _in_grace_db():
+    return FakeSupabase(sub("pro", hours_left=-1, failed_count=1,
+                            attempt_at=_iso(_now() - timedelta(hours=1)),
+                            grace_until=_iso(_now() + timedelta(hours=23))))
+
+
+def test_the_grace_counts_as_a_running_plan(flag_on):
+    """No "ended" state while the user still has Pro/Max; cancel stays possible
+    — it is how they stop the retries."""
+    from backend.app.services import subscription_service as ss
+
+    state = run(ss.get_subscription(_in_grace_db(), USER))
+    assert state["cancellable"] is True
+    assert _parse(state["renewal_grace_until"]) > _now() + timedelta(hours=22)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"source": "code"},                                            # another grant took over
+     {"renewal_grace_until": _iso(_now() - timedelta(hours=2))}],   # earlier than the term
+)
+def test_a_grace_that_extends_nothing_is_not_reported(flag_on, overrides):
+    from backend.app.services import subscription_service as ss
+
+    db = FakeSupabase({**sub("pro", hours_left=-1), "renewal_grace_until":
+                       _iso(_now() + timedelta(hours=23)), **overrides})
+    state = run(ss.get_subscription(db, USER))
+    assert state["renewal_grace_until"] is None
+    assert state["cancellable"] is False
+
+
+def test_cancel_during_the_grace_lapses_now(flag_on, charges, no_smtp):
+    """§4: an opt-out mid-ladder stops the retries AND ends the grace in the
+    same write. The paid term already ended, so /terms §3 holds."""
+    from backend.app.services import subscription_service as ss
+
+    db = _in_grace_db()
+    store_method(db)
+    state = run(ss.cancel_renewal(db, USER, reason="expensive"))
+
+    row = the_sub(db)
+    assert row["renewal_cancelled_at"]
+    assert row["renewal_grace_until"] == row["renewal_cancelled_at"]
+    assert state["cancellable"] is False         # the section closes
+    flag_writes = [w for w in db.writes
+                   if w[0] == "user_subscriptions" and w[1] == "update"
+                   and "renewal_cancelled_at" in w[2]]
+    assert len(flag_writes) == 1 and "renewal_grace_until" in flag_writes[0][2]
+    assert "plan_id" not in flag_writes[0][2]
+
+    travel(db, hours=12)
+    assert sweep(db)["scanned"] == 0
+    assert charges == []
+
+
+def test_cancel_before_expiry_never_touches_a_grace(flag_on):
+    from backend.app.services import subscription_service as ss
+
+    db = FakeSupabase(sub("pro", hours_left=24 * 10))
+    run(ss.cancel_renewal(db, USER, reason="other"))
+    flag_writes = [w for w in db.writes
+                   if w[0] == "user_subscriptions" and w[1] == "update"]
+    assert flag_writes and all("renewal_grace_until" not in w[2] for w in flag_writes)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # §7's ⚠ — a renewal row must survive the open-checkout sweep
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1894,7 +2271,7 @@ def test_a_renewal_row_survives_a_new_checkout(flag_on):
     renewal window and _expire_open_checkouts supersedes the renewal row, the
     charge lands on an `expired` row, the period key is spent, and the
     subscription lapses despite a working card."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     renewal = {
         "payment_id": str(uuid.uuid4()), "user_id": USER, "plan_id": "pro",
         "amount_sar": "89.90", "status": "initiated", "provider": "moyasar",
@@ -1920,7 +2297,7 @@ def test_the_supersede_falls_back_when_132_is_unapplied(flag_off):
     """Zero behaviour change on a flag-off deploy that lands ahead of the
     migration: no initiated_by column means no renewal rows exist, so the
     pre-132 unfiltered sweep is exactly right."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     db.missing_columns = {"initiated_by", "renewal_attempt", "period_start",
                           "payment_method_id"}
     stale = {
@@ -1943,10 +2320,10 @@ def test_the_supersede_falls_back_when_132_is_unapplied(flag_off):
 
 
 def test_one_bad_subscription_never_stops_the_sweep(flag_on, charges, no_smtp, monkeypatch):
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
     db.tables["user_subscriptions"].append(
-        sub("pro", hours_left=5, user_id=OTHER_USER)
+        sub("pro", hours_left=DUE_HOURS, user_id=OTHER_USER)
     )
     store_method(db, user_id=OTHER_USER, token="token_other")
 
@@ -1969,7 +2346,7 @@ def test_one_bad_subscription_never_stops_the_sweep(flag_on, charges, no_smtp, m
 def test_a_broken_selection_query_returns_cleanly(flag_on, charges, no_smtp):
     """42703 when the backend runs ahead of 132: log and return, never crash the
     scheduler tick."""
-    db = FakeSupabase(sub("pro", hours_left=6))
+    db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     db.missing_columns = {"renewal_failed_count"}
     assert sweep(db) == {"scanned": 0, "error": 1}
     assert charges == []
@@ -1979,14 +2356,15 @@ def test_a_broken_selection_query_returns_cleanly(flag_on, charges, no_smtp):
 # 182 — the seat is tested at the START of the period being charged
 # (profession_intro_offer.md §2.1)
 #
-# The job charges up to 24h BEFORE expiry. Testing the seat at now() billed the
-# period that BEGINS on day 90 at the promo price: four promo charges for every
-# seat holder instead of the three §1.3 promises.
+# The job charged up to 24h BEFORE expiry (up to 15 min since 196, and a retry
+# runs AFTER it). Testing the seat at now() billed the period that BEGINS on day
+# 90 at the promo price: four promo charges for every seat holder instead of the
+# three §1.3 promises.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def _seat_db(promo_ends_at):
-    db = FakeSupabase(sub("pro"))                  # expires in 6h — due now
+    db = FakeSupabase(sub("pro"))                  # expires in 6 min — due now
     store_method(db)
     db.campaign_enabled = True
     db.early_adopter_seats.append({
@@ -2040,8 +2418,8 @@ def test_a_seat_holder_gets_exactly_three_promo_charges(
 
 def test_the_seat_is_still_live_at_charge_time_but_the_period_is_not(flag_on, charges, no_smtp):
     """The exact pre-182 bug, stated directly: the seat is LIVE right now (ends
-    in 3h) but the period being bought starts in 6h, after it. List price."""
-    db = _seat_db(_now() + timedelta(hours=3))
+    in 3 min) but the period being bought starts in 6 min, after it. List price."""
+    db = _seat_db(_now() + timedelta(minutes=3))
 
     sweep(db)
 

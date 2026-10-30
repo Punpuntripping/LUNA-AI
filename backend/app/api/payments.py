@@ -475,6 +475,9 @@ async def subscription(
           "source": "payment",                  # payment|code|manual|signup
           "cancellable": true,                  # a PAID term still running
           "renewal_cancelled_at": null,         # set = already opted out
+          "renewal_grace_until": null,          # 196: set ONLY while a declined
+                                                #   renewal keeps the plan past
+                                                #   expires_at — it runs to here
           "early_adopter": {                    # المشتركون الأوائل — the CALLER's own seat
             "is_member": true,
             "promo_ends_at": "2026-11-14T…",    # null when not a member

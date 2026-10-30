@@ -2,9 +2,10 @@
 
 WHY THIS EXISTS
 ---------------
-``renewal_service.run_due_renewals`` is registered on APScheduler at 03:30 UTC.
-Waiting a day to learn whether a mada merchant-initiated charge works is not a
-feedback loop. This invokes the same function directly.
+``renewal_service.run_due_renewals`` is registered on APScheduler every 15
+minutes and charges at expiry. Waiting for a term to come due to learn whether a
+mada merchant-initiated charge works is not a feedback loop. This invokes the
+same function directly.
 
 ⚠ THIS SPENDS REAL MONEY. It charges stored card tokens for every subscription
 the selection window catches. It is not a dry run and there is no confirmation
@@ -32,7 +33,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -51,11 +52,15 @@ def _preview(supabase) -> list[dict]:
     it this listed every payment-sourced pro/max subscriber as a candidate,
     including people whose term ends next month and who cannot be charged today.
     A preview that overstates who gets charged is worse than no preview: it
-    trains you to ignore it. Mirrors renewal_service.py's `.gte`/`.lte` on
-    [now, now + DUE_HORIZON] — if that changes, change this.
+    trains you to ignore it. Mirrors renewal_service.py's first-attempt
+    `.gte`/`.lte` on [now − RETRY_GRACE, now + DUE_HORIZON], reading the same
+    constants so the two cannot drift. Rows mid-ladder show ``fails`` > 0; the
+    sweep retries them on their own clock (renewal_service._retry_is_due).
     """
+    # Import late: renewal_service reads settings at import time in places.
+    from backend.app.services.renewal_service import DUE_HORIZON, RETRY_GRACE  # noqa: E402
+
     now = datetime.now(timezone.utc)
-    horizon = now + timedelta(hours=24)
     res = (
         supabase.table("user_subscriptions")
         .select("user_id, plan_id, source, expires_at, renewal_cancelled_at,"
@@ -63,8 +68,8 @@ def _preview(supabase) -> list[dict]:
         .in_("plan_id", ["pro", "max"])
         .eq("source", "payment")
         .is_("renewal_cancelled_at", "null")
-        .gte("expires_at", now.isoformat())
-        .lte("expires_at", horizon.isoformat())
+        .gte("expires_at", (now - RETRY_GRACE).isoformat())
+        .lte("expires_at", (now + DUE_HORIZON).isoformat())
         .execute()
     )
     return list(res.data or [])

@@ -59,8 +59,11 @@ sells and cancels exactly as it does today.
 
 Note there is NO ``status`` column on ``user_subscriptions`` (migration 091
 dropped it — it exists only on the ``user_subscriptions_live`` VIEW, derived at
-read time). Active-ness is derived here from ``expires_at``, exactly as
-``payment_service._fetch_subscription`` does.
+read time). Active-ness is derived here from ``expires_at`` — extended by the
+renewal grace (``renewal_grace_until``, migration ``196_renewal_grace.sql``)
+with exactly the expression ``get_user_quota_state`` uses (``_access_ends_at``).
+⚠ APPLY 196 BEFORE DEPLOYING: ``_fetch_subscription`` names the column, and a
+backend that ships first answers 42703 on the settings dialog — 120's trap.
 """
 from __future__ import annotations
 
@@ -149,6 +152,10 @@ def _parse_ts(value: Any) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _iso_or_none(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value is not None else None
+
+
 def _service_unavailable() -> LunaHTTPException:
     return LunaHTTPException(
         status_code=503,
@@ -165,7 +172,9 @@ def _service_unavailable() -> LunaHTTPException:
 # filter is the authorization, exactly as everywhere else in this backend.
 # ═══════════════════════════════════════════════════════════════════════════
 
-_SUBSCRIPTION_COLUMNS = "plan_id, source, started_at, expires_at, renewal_cancelled_at"
+_SUBSCRIPTION_COLUMNS = (
+    "plan_id, source, started_at, expires_at, renewal_cancelled_at, renewal_grace_until"
+)
 
 
 def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict]:
@@ -201,7 +210,11 @@ def _fetch_plan_name(supabase: SupabaseClient, plan_id: Optional[str]) -> Option
 
 
 def _write_renewal_flag(
-    supabase: SupabaseClient, user_id: str, when: Optional[str]
+    supabase: SupabaseClient,
+    user_id: str,
+    when: Optional[str],
+    *,
+    end_grace: bool = False,
 ) -> bool:
     """Set (or clear) ``renewal_cancelled_at`` and NOTHING ELSE.
 
@@ -211,11 +224,18 @@ def _write_renewal_flag(
     Neither column is ``plan_id``, so the trigger stays asleep — which is the
     entire point (see the module docstring, rule 1).
 
+    ``end_grace`` — a cancel DURING the renewal grace (196) ends the grace in the
+    same statement (``renewal_grace_until = when``): the opt-out and the lapse
+    are one write, so neither can land without the other.
+
     Returns True when a row was actually written.
     """
+    patch: dict[str, Any] = {"renewal_cancelled_at": when, "updated_at": _now_iso()}
+    if end_grace:
+        patch["renewal_grace_until"] = when
     res = (
         supabase.table("user_subscriptions")
-        .update({"renewal_cancelled_at": when, "updated_at": _now_iso()})
+        .update(patch)
         .eq("user_id", user_id)
         .execute()
     )
@@ -285,6 +305,37 @@ def _revoke_newest_survey(supabase: SupabaseClient, user_id: str) -> Optional[st
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _grace_extends_access(row: Optional[dict]) -> Optional[datetime]:
+    """``renewal_grace_until`` when it extends access past ``expires_at``, else None.
+
+    The SAME predicate ``get_user_quota_state`` applies (196): a payment-sourced
+    row whose grace ends LATER than its term. A grace on any other source (a code
+    or store grant that replaced the plan mid-ladder) is inert, and so is one
+    that ends before the term — "lapse now" on a declined LAST tick before
+    expiry must never cut into paid time.
+    """
+    if not row or row.get("source") != PAID_SOURCE:
+        return None
+    grace = _parse_ts(row.get("renewal_grace_until"))
+    expires_at = _parse_ts(row.get("expires_at"))
+    if grace is None or expires_at is None or grace <= expires_at:
+        return None
+    return grace
+
+
+def _access_ends_at(row: Optional[dict]) -> Optional[datetime]:
+    """When the user stops having this plan: the term's end, or the grace's."""
+    return _grace_extends_access(row) or _parse_ts((row or {}).get("expires_at"))
+
+
+def _in_renewal_grace(row: Optional[dict]) -> bool:
+    """The term has ended but a declined renewal is still being retried."""
+    grace = _grace_extends_access(row)
+    expires_at = _parse_ts((row or {}).get("expires_at"))
+    now = _now()
+    return bool(grace and expires_at and expires_at <= now < grace)
+
+
 def _term_is_running(row: Optional[dict]) -> bool:
     """Is this a plan with a future end date?
 
@@ -293,11 +344,15 @@ def _term_is_running(row: Optional[dict]) -> bool:
     the user in «تبقى باقتك فعّالة حتى …», and nothing that could renew. Those
     grants are never ``source='payment'`` anyway, so this only ever matters as
     a second wall.
+
+    The renewal grace counts as running (renewal_retry_grace.md §4): the user
+    still has Pro/Max, so the dialog must not show an ended plan, and a cancel
+    must be possible — it is how they stop the retries.
     """
     if not row or not row.get("plan_id"):
         return False                      # no row, or a locked account
-    expires_at = _parse_ts(row.get("expires_at"))
-    return expires_at is not None and expires_at > _now()
+    ends = _access_ends_at(row)
+    return ends is not None and ends > _now()
 
 
 def _is_cancellable(row: Optional[dict]) -> bool:
@@ -370,6 +425,10 @@ def _state_payload(
         "source": (row or {}).get("source"),
         "cancellable": _is_cancellable(row),
         "renewal_cancelled_at": (row or {}).get("renewal_cancelled_at"),
+        # 196 — ADDITIVE, older app builds ignore it. Set ONLY while it extends
+        # access past `expires_at` (`_grace_extends_access`), so a client reads
+        # "the plan runs to the later of the two" without re-deriving the rule.
+        "renewal_grace_until": _iso_or_none(_grace_extends_access(row)),
         # المشتركون الأوائل — the caller's OWN membership and nothing else. There
         # is no seat count, no seat total and no closing date on this payload (or
         # on any other): the remaining count never leaves the server (§1.10). The
@@ -444,8 +503,16 @@ async def cancel_renewal(
         )
 
     cancelled_at = _now_iso()
+    # CANCEL DURING THE RENEWAL GRACE LAPSES NOW (renewal_retry_grace.md §4).
+    # The paid term already ended at expires_at; the grace was access lent while
+    # the card was retried, and an opt-out means there is nothing left to retry.
+    # /terms §3 («تبقى باقتك فعّالة حتى نهاية المدة المدفوعة») holds: no paid
+    # time is cut. The dialog says so before the user confirms.
+    end_grace = _in_renewal_grace(row)
     try:
-        written = await run_db(_write_renewal_flag, supabase, user_id, cancelled_at)
+        written = await run_db(
+            _write_renewal_flag, supabase, user_id, cancelled_at, end_grace=end_grace
+        )
     except Exception as exc:  # noqa: BLE001 — includes 42703 if 120 is unapplied
         logger.exception("cancel: renewal flag write failed for user=%s: %s", user_id, exc)
         raise _service_unavailable()
@@ -503,22 +570,24 @@ async def cancel_renewal(
             "reason": reason,
             "has_comment": comment is not None,
             "expires_at": expires_at,
+            "renewal_grace_ended": end_grace,
             "early_adopter_seat_released": released,
         },
     )
 
     logger.info(
-        "renewal cancelled: user=%s plan=%s reason=%s expires=%s",
-        user_id, plan_id, reason, expires_at,
+        "renewal cancelled: user=%s plan=%s reason=%s expires=%s grace_ended=%s",
+        user_id, plan_id, reason, expires_at, end_grace,
     )
 
     plan_name_ar = await run_db(_fetch_plan_name, supabase, plan_id)
     # Re-READ rather than assumed: if the release failed above, the user still
     # holds the seat and the dialog must not claim otherwise.
     seat = await run_db(early_adopter_status, supabase, user_id)
-    return _state_payload(
-        {**row, "renewal_cancelled_at": cancelled_at}, plan_name_ar, seat
-    )
+    written_row = {**row, "renewal_cancelled_at": cancelled_at}
+    if end_grace:
+        written_row["renewal_grace_until"] = cancelled_at
+    return _state_payload(written_row, plan_name_ar, seat)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -657,27 +726,44 @@ def reset_renewal_ladder(supabase: SupabaseClient, user_id: str) -> bool:
     their NEW term as a due retry and charges the period after it ~30 days
     early. Found on prod 2026-10-30 (renewal_retry_grace.md §2).
 
+    ``renewal_grace_until`` (196) is cleared too: the new grant IS the access,
+    and a grace left standing would outlive a refund of that grant.
     ``renewal_attempt_at`` is left alone — it is history, and a successful
-    renewal keeps it too. Returns True when a non-zero count was reset.
+    renewal keeps it too. Returns True when anything was reset.
+
+    ``select("*")`` on purpose: this runs on every paid purchase, and naming
+    ``renewal_grace_until`` would make it 42703 — and so stop resetting the
+    count, the §2 fix — on a backend that lands before 196. ``*`` returns the
+    column when it exists and simply omits it when it does not.
     """
     try:
         res = (
             supabase.table("user_subscriptions")
-            .select("renewal_failed_count")
+            .select("*")
             .eq("user_id", user_id)
             .limit(1)
             .execute()
         )
         rows = getattr(res, "data", None) or []
-        if not rows or not int(rows[0].get("renewal_failed_count") or 0):
+        row = rows[0] if rows else {}
+        patch: dict[str, Any] = {}
+        if int(row.get("renewal_failed_count") or 0):
+            patch["renewal_failed_count"] = 0
+        if row.get("renewal_grace_until"):
+            patch["renewal_grace_until"] = None
+        if not patch:
             return False                       # the common case: nothing to do
+        patch["updated_at"] = _now_iso()
         (
             supabase.table("user_subscriptions")
-            .update({"renewal_failed_count": 0, "updated_at": _now_iso()})
+            .update(patch)
             .eq("user_id", user_id)
             .execute()
         )
-        logger.info("renewal ladder reset by a new purchase: user=%s", user_id)
+        logger.info(
+            "renewal ladder reset by a new purchase: user=%s (%s)",
+            user_id, sorted(k for k in patch if k != "updated_at"),
+        )
         return True
     except Exception as exc:  # noqa: BLE001
         logger.error(

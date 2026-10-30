@@ -258,17 +258,20 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
-    # 6b. APScheduler — daily subscription auto-renewal (pro/max).
-    #     `.claude/plans/subscription_auto_renewal.md` §7. THIS JOB MOVES REAL
-    #     MONEY, so it is registered ONLY when the master kill-switch is on:
-    #     with SUBSCRIPTION_AUTO_RENEWAL_ENABLED false the scheduler never learns
+    # 6b. APScheduler — subscription auto-renewal (pro/max), every 15 minutes.
+    #     `.claude/plans/subscription_auto_renewal.md` §7 +
+    #     `renewal_retry_grace.md` §4. THIS JOB MOVES REAL MONEY, so it is
+    #     registered ONLY when the master kill-switch is on: with
+    #     SUBSCRIPTION_AUTO_RENEWAL_ENABLED false the scheduler never learns
     #     about it, there is no tick, no query and no reachable path to a card.
     #     Do not flip the flag until Moyasar has confirmed tokenization + MIT in
-    #     writing (plan §4) and migration 132 is applied to prod.
+    #     writing (plan §4) and migrations 132 + 196 are applied to prod.
     #
-    #     03:30 UTC — 15 min after the upload reconciler, per the plan, so the
-    #     jobs do not fight for the same postgrest pool. It shares that slot with
-    #     the summary sweep; both are I/O-bound and neither is latency-sensitive.
+    #     Every 15 minutes because the job charges AT expiry and retries at
+    #     +12h / +24h from that attempt — a daily tick put the first attempt up
+    #     to a day early and slipped every retry by a day (prod 2026-10-28/29).
+    #     A tick with nothing due is two indexed selects, so the cost is nil; the
+    #     15-minute offset of the 03:xx jobs above is moot for a job this light.
     #
     #     Awaited directly rather than wrapped in asyncio.to_thread (unlike the
     #     PDF/purge jobs): the sweep is a coroutine — it makes async HTTP calls
@@ -280,13 +283,18 @@ async def lifespan(app: FastAPI):
                 from backend.app.services.renewal_service import run_due_renewals
 
                 stats = await run_due_renewals(app.state.supabase)
-                logger.info("Subscription renewal sweep complete: %s", stats)
+                # 96 ticks a day: an empty one is DEBUG, a busy one INFO.
+                logger.log(
+                    logging.INFO if stats.get("scanned") or stats.get("error")
+                    else logging.DEBUG,
+                    "Subscription renewal sweep complete: %s", stats,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.exception("Subscription renewal sweep failed: %s", e)
 
         scheduler.add_job(
             _run_subscription_renewals,
-            trigger=CronTrigger(hour=3, minute=30),  # daily at 03:30 UTC
+            trigger=CronTrigger(minute="*/15"),  # :00 :15 :30 :45, every hour, UTC
             id="subscription_renewals",
             replace_existing=True,
             # A tick that overruns must never overlap the next one: two
@@ -298,7 +306,8 @@ async def lifespan(app: FastAPI):
             misfire_grace_time=3600,
         )
         logger.warning(
-            "AUTO-RENEWAL IS ON — stored cards will be charged daily at 03:30 UTC"
+            "AUTO-RENEWAL IS ON — stored cards are charged at term expiry "
+            "(sweep every 15 min)"
         )
     else:
         logger.info(
@@ -417,7 +426,7 @@ async def lifespan(app: FastAPI):
         "Scheduler started — PDF cleanup 03:00, upload reconciler 03:15, "
         "summary sweep 03:30, account purge 03:45, analytics purge 04:00, X conversions retry 04:15 UTC%s, + one-shot "
         "upload-reconciler, blog-job & account-purge catch-up on boot",
-        ", subscription renewals 03:30" if settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED else "",
+        ", subscription renewals every 15 min" if settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED else "",
     )
 
     logger.info(

@@ -1,11 +1,14 @@
 """The auto-renewal job — charge stored cards for pro/max terms coming due.
 
-Implements `.claude/plans/subscription_auto_renewal.md` §7 (the job) and §8
-(dunning). Registered as a daily ``CronTrigger`` at 03:30 UTC from
-``backend.app.main``'s lifespan — **and only when
-``settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED`` is True.** With the flag down the
-job is never added to the scheduler at all, so there is no tick, no query, and
-no code path that could reach a card.
+Implements `.claude/plans/subscription_auto_renewal.md` §7 (the job) and
+`.claude/plans/renewal_retry_grace.md` (the ladder, which supersedes that plan's
+§8 dunning): charge AT expiry; on a soft decline keep Pro/Max running for 24h
+(the grace, migration 196) while retrying at +12h and +24h from the first
+attempt, then lapse to free; a hard decline gives up at once. Registered as a
+``CronTrigger`` every 15 minutes from ``backend.app.main``'s lifespan — **and
+only when ``settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED`` is True.** With the
+flag down the job is never added to the scheduler at all, so there is no tick,
+no query, and no code path that could reach a card.
 
 THIS MODULE MOVES REAL MONEY WITH NOBODY WATCHING. Everything below is written
 for that. The five rules, in the order they matter:
@@ -51,7 +54,11 @@ for that. The five rules, in the order they matter:
    ``expires_at + duration_days`` and keeps ``started_at`` — under a
    ``FOR UPDATE`` lock, with ``fulfilled_at`` as its own idempotency anchor.
    Re-deriving the term in Python would be a second copy of the money-critical
-   arithmetic, and the copies would drift.
+   arithmetic, and the copies would drift. The ONE bounded exception is a
+   success inside the renewal grace, where grant_plan cannot stack (its term is
+   no longer live): ``_keep_the_billing_date`` writes grant_plan's own stacking
+   value — old expiry + ``duration_days`` — and only by compare-and-set on the
+   row grant_plan just wrote.
 
 WHAT IS DELIBERATELY REUSED FROM ``payment_service`` ───────────────────────────
 The whole "money landed, record it and grant" half: ``_assert_matches`` (the
@@ -77,21 +84,28 @@ deliberately does not do that, and the reason is not style:
   re-checks user/plan/status — locks and cross-checks this module would
   otherwise have to reimplement.
 
-The one behavioural difference: on a dunning retry that lands AFTER the term
-lapsed, ``grant_plan`` opens a fresh window from ``now()`` rather than from the
-lapsed ``expires_at``. That is more generous than the plan's formula, never less
-— the trap the plan is guarding (§11.3) is shaving hours off every cycle, and
-this cannot do that.
+The one case grant_plan does not cover: a retry that lands INSIDE the grace
+finds the term already past its ``expires_at``, and ``grant_plan`` only stacks
+onto a live term — it opens a fresh window from ``now()``, which would slip the
+billing date by up to a day on every declined-once card. ``_keep_the_billing_date``
+moves the row back to ``period_start + duration_days`` in a separate write
+(renewal_retry_grace.md §3 option B2 — grant_plan itself is not edited). See
+that function for why the write is safe against the assignment trigger.
 
-DB dependency: migration ``132_subscription_auto_renewal.sql`` (⚠ written, NOT
-applied at the time of writing). Columns this module names, all from 132:
+DB dependency: migrations ``132_subscription_auto_renewal.sql`` and
+``196_renewal_grace.sql`` (⚠ APPLY 196 BEFORE DEPLOYING THIS: the selection
+queries and the bookkeeping write name ``renewal_grace_until``; ahead of it the
+sweep logs a 42703 every tick and charges nobody). Columns this module names:
 
-* ``payment_transactions``: ``initiated_by`` ('user'|'renewal', default 'user'),
-  ``renewal_attempt`` (int, default 0), ``period_start`` (timestamptz, NOT NULL
-  for a renewal by CHECK), ``payment_method_id`` (uuid, ON DELETE SET NULL);
-* ``uniq_payment_renewal_period`` — the guard in rule 1;
+* ``payment_transactions`` (132): ``initiated_by`` ('user'|'renewal', default
+  'user'), ``renewal_attempt`` (int, default 0), ``period_start`` (timestamptz,
+  NOT NULL for a renewal by CHECK), ``payment_method_id`` (uuid, ON DELETE SET
+  NULL);
+* ``uniq_payment_renewal_period`` (132) — the guard in rule 1;
 * ``user_subscriptions``: ``renewal_attempt_at`` (timestamptz),
-  ``renewal_failed_count`` (int, default 0);
+  ``renewal_failed_count`` (int, default 0) — 132; ``renewal_grace_until``
+  (timestamptz, NULL) — 196, written by this module and nothing else except the
+  cancel / re-purchase paths that END a grace;
 * ``plans.billing_cycle`` = 'recurring_30d' for pro and max.
 """
 from __future__ import annotations
@@ -115,23 +129,56 @@ from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
 
-# ── Selection window ─────────────────────────────────────────────────────────
-# A term is "due" from the moment it is inside 24 hours of expiry. The job runs
-# daily, so a 24h horizon means every term is seen exactly once before it lapses
-# — and seen while it is still LIVE, which is what makes grant_plan stack the
-# renewal onto the old expiry instead of opening a fresh window from now().
-DUE_HORIZON = timedelta(hours=24)
+# ── Selection window (renewal_retry_grace.md §0.1: charge AT expiry) ─────────
+# The job ticks every 15 minutes, so a 15-minute horizon puts the first attempt
+# on the last tick BEFORE the term lapses — at expiry, not up to a day early. In
+# the normal case that attempt still sees a LIVE term, which is what makes
+# grant_plan stack the renewal onto the old expiry; one that lands late (a
+# missed tick, a retry inside the grace) is put back by _keep_the_billing_date.
+DUE_HORIZON = timedelta(minutes=15)
 
-# ── Dunning ladder (plan §8): day 0, +1, +3, then lapse ─────────────────────
+# ── Dunning ladder (renewal_retry_grace.md §0.2): 0, +12h, +24h, then lapse ──
 # Expressed as the delay from the FIRST attempt. Attempt N is eligible once
-# LADDER_DAYS[N] − LADDER_DAYS[N−1] days have passed since the last attempt.
-LADDER_DAYS: tuple[int, ...] = (0, 1, 3)
-MAX_ATTEMPTS = len(LADDER_DAYS)
+# LADDER_HOURS[N] − LADDER_HOURS[N−1] hours have passed since the last attempt…
+LADDER_HOURS: tuple[int, ...] = (0, 12, 24)
+MAX_ATTEMPTS = len(LADDER_HOURS)
 
-# A retry is only offered while the lapsed term is recent. Past this, the
-# subscription has been on the free fallback for days and a surprise charge
-# would be worse than a lost renewal.
-RETRY_GRACE = timedelta(days=7)
+# …less this slack. `renewal_attempt_at` is stamped seconds AFTER the tick that
+# ran the attempt, so "12h since the last attempt" first becomes true seconds
+# after the tick 12h later — and without slack every rung slipped a whole tick.
+# (The daily job slipped a whole DAY that way: prod 2026-10-28/29.) Well under
+# the 15-minute tick, so a rung can never fire a tick early either.
+LADDER_SLACK = timedelta(minutes=10)
+
+# ── The grace (renewal_retry_grace.md §0.1, §3 — migration 196) ─────────────
+# A soft decline keeps Pro/Max running while the ladder retries: the first one
+# writes renewal_grace_until = GREATEST(expires_at, now) + GRACE_PERIOD — 24h
+# for the ladder plus 30 min for the last attempt to finish — and
+# get_user_quota_state reads the term as live until then. Anchored on now() as
+# well as expires_at so a first attempt that ran late still gets its whole
+# ladder inside the grace.
+GRACE_PERIOD = timedelta(hours=24, minutes=30)
+
+# No charge runs later than this after ACCESS ended: past expires_at for a first
+# attempt (a missed tick), past renewal_grace_until for a retry (a late tick).
+# Beyond it the user has been on the free plan long enough that a charge would
+# be a surprise, not a renewal — and a silent charge is a chargeback.
+RETRY_GRACE = timedelta(hours=2)
+
+# The retry query's coarse SQL bound on expires_at: the latest a grace can end
+# (a first attempt up to RETRY_GRACE late, then GRACE_PERIOD) plus RETRY_GRACE.
+# The exact gate is per row, in _retry_is_due.
+RETRY_LOOKBACK = RETRY_GRACE + GRACE_PERIOD + RETRY_GRACE
+
+# ── Hard declines (renewal_retry_grace.md §0.3) ──────────────────────────────
+# Bank response codes, read from the provider payload's
+# `source.response_code`. A retry cannot fix any of these, so the ladder gives
+# up at once: no retries, no grace, the final email. 12 invalid transaction ·
+# 14 invalid card number · 41 lost · 43 stolen · 54 expired card · 57 not
+# permitted to the cardholder · 62 restricted card. Everything else — 51
+# insufficient funds, 05 do not honour, an unknown code, or no code at all —
+# is SOFT and gets the whole ladder.
+HARD_DECLINE_CODES: frozenset[str] = frozenset({"12", "14", "41", "43", "54", "57", "62"})
 
 # Ticks are cheap; a runaway is not. Caps the blast radius of a bad query and
 # keeps one tick inside a sane wall-clock (each renewal is one provider call).
@@ -148,8 +195,18 @@ SLOT_RELEASING_STATUS = "failed"
 
 _SUBSCRIPTION_COLUMNS = (
     "user_id, plan_id, source, started_at, expires_at, renewal_cancelled_at, "
-    "renewal_attempt_at, renewal_failed_count"
+    "renewal_attempt_at, renewal_failed_count, renewal_grace_until"
 )
+
+# "Leave this column alone" for _write_renewal_bookkeeping — None means "clear".
+_KEEP: Any = object()
+
+# Skip / blocked lines are logged ONCE per (outcome, user, period) per process.
+# Every term is re-selected on each 15-minute tick of its window, so a blocked
+# or card-less renewal would otherwise log the same line ~10 times (and a daily
+# reader would have to dedupe it by hand). Later repeats go to DEBUG.
+_LOGGED_ONCE: set[tuple[str, str, str]] = set()
+_LOGGED_ONCE_CAP = 10_000
 
 
 def _now() -> datetime:
@@ -172,6 +229,33 @@ def _parse_ts(value: Any) -> Optional[datetime]:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _log_once(level: int, key: tuple[str, str, str], msg: str, *args: Any) -> None:
+    """``logger.log`` the first time ``key`` is seen in this process, DEBUG after."""
+    if key in _LOGGED_ONCE:
+        logger.debug(msg, *args)
+        return
+    if len(_LOGGED_ONCE) >= _LOGGED_ONCE_CAP:
+        _LOGGED_ONCE.clear()                 # a bound, not a cache policy
+    _LOGGED_ONCE.add(key)
+    logger.log(level, msg, *args)
+
+
+def _decline_code(fetched: dict) -> Optional[str]:
+    """The bank's response code from ``source.response_code``, or None.
+
+    Normalised to a string ("5" and 5 both read "05"), because the hard-decline
+    set is compared as text and a provider is free to send either type.
+    """
+    source = fetched.get("source") if isinstance(fetched.get("source"), dict) else {}
+    raw = source.get("response_code")
+    if raw is None:
+        return None
+    code = str(raw).strip()
+    if code.isdigit() and len(code) == 1:
+        code = code.zfill(2)
+    return code or None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. Selection — every condition in the plan's §7 is a hard gate
 # ═══════════════════════════════════════════════════════════════════════════
@@ -189,7 +273,11 @@ def _select_due_first_attempt(supabase: SupabaseClient, now: datetime) -> list[d
     * ``renewal_cancelled_at IS NULL`` — the opt-out the cancel UI has been
       writing since 120 becomes load-bearing HERE. This is the filter that makes
       «لن يُجدَّد اشتراكك» true;
-    * ``expires_at`` inside [now, now + 24h] — due, and still live;
+    * ``expires_at`` inside [now − RETRY_GRACE, now + 15 min] — due at the next
+      tick. The lower bound is not ``now``: a term whose last tick before expiry
+      was missed (a restart, a slow sweep) is still charged by the next one,
+      instead of lapsing with no attempt at all — but never more than
+      RETRY_GRACE after it lapsed;
     * ``renewal_failed_count = 0`` — a term already in the ladder is picked up by
       ``_select_due_retry`` instead, on its own clock.
     """
@@ -200,7 +288,7 @@ def _select_due_first_attempt(supabase: SupabaseClient, now: datetime) -> list[d
         .eq("source", "payment")
         .is_("renewal_cancelled_at", "null")
         .eq("renewal_failed_count", 0)
-        .gte("expires_at", _iso(now))
+        .gte("expires_at", _iso(now - RETRY_GRACE))
         .lte("expires_at", _iso(now + DUE_HORIZON))
         .limit(BATCH_CAP)
         .execute()
@@ -209,15 +297,17 @@ def _select_due_first_attempt(supabase: SupabaseClient, now: datetime) -> list[d
 
 
 def _select_due_retry(supabase: SupabaseClient, now: datetime) -> list[dict]:
-    """Terms mid-ladder whose next retry is due (plan §8).
+    """Terms mid-ladder whose next retry is due (renewal_retry_grace.md §4).
 
     The clock is ``renewal_attempt_at``; the gate is computed per row in
     ``_retry_is_due`` because the interval depends on how many attempts have
-    already failed (0→1 day, 1→2 more days = +3 from the start).
+    already failed (0→12h, 1→12 more = +24h from the start) and because the
+    grace that bounds it is per row.
 
-    ``expires_at >= now − RETRY_GRACE`` keeps this from resurrecting an ancient
-    lapsed term: the user has been back on the free plan for a week by then, and
-    a silent charge would be a chargeback, not a renewal.
+    ``expires_at >= now − RETRY_LOOKBACK`` is the coarse half of "never
+    resurrect a lapsed term" — the latest any grace can end, plus RETRY_GRACE.
+    The exact half (no retry more than RETRY_GRACE after the row's own grace
+    ended) is ``_retry_is_due``.
 
     ``expires_at <= now + DUE_HORIZON`` is the other bound: a retry is only ever
     for a term that is due or just lapsed. A term a month out means the user
@@ -233,7 +323,7 @@ def _select_due_retry(supabase: SupabaseClient, now: datetime) -> list[dict]:
         .is_("renewal_cancelled_at", "null")
         .gt("renewal_failed_count", 0)
         .lt("renewal_failed_count", MAX_ATTEMPTS)
-        .gte("expires_at", _iso(now - RETRY_GRACE))
+        .gte("expires_at", _iso(now - RETRY_LOOKBACK))
         .lte("expires_at", _iso(now + DUE_HORIZON))
         .limit(BATCH_CAP)
         .execute()
@@ -242,19 +332,39 @@ def _select_due_retry(supabase: SupabaseClient, now: datetime) -> list[dict]:
     return [row for row in rows if _retry_is_due(row, now)]
 
 
+def _grace_ends_at(row: dict) -> Optional[datetime]:
+    """When access ends for a term mid-ladder.
+
+    ``renewal_grace_until`` when the first decline wrote one; for a row whose
+    ladder began before 196 (or whose grace write was lost), where it WOULD
+    have been — so such a row still finishes its ladder and gets its final
+    email instead of stalling at failed_count 1.
+    """
+    grace = _parse_ts(row.get("renewal_grace_until"))
+    if grace is not None:
+        return grace
+    expires_at = _parse_ts(row.get("expires_at"))
+    return expires_at + GRACE_PERIOD if expires_at is not None else None
+
+
 def _retry_is_due(row: dict, now: datetime) -> bool:
     """Has the ladder's next rung come around for this subscription?"""
     failed = int(row.get("renewal_failed_count") or 0)
     if not (0 < failed < MAX_ATTEMPTS):
         return False
-    wait_days = LADDER_DAYS[failed] - LADDER_DAYS[failed - 1]
+    ends = _grace_ends_at(row)
+    if ends is not None and now > ends + RETRY_GRACE:
+        # Access ended a while ago (an outage ate the last rung). The user has
+        # been on the free plan since; charging them now would be a surprise.
+        return False
+    wait = timedelta(hours=LADDER_HOURS[failed] - LADDER_HOURS[failed - 1])
     last = _parse_ts(row.get("renewal_attempt_at"))
     if last is None:
         # Failed count with no timestamp: a partially-written state. Treat it as
         # due rather than stranding the subscription — the per-period guard
         # below still makes a double charge impossible.
         return True
-    return now - last >= timedelta(days=wait_days)
+    return now - last >= wait - LADDER_SLACK
 
 
 def _existing_renewal_rows(
@@ -308,8 +418,13 @@ def _write_renewal_bookkeeping(
     *,
     attempt_at: str,
     failed_count: int,
+    grace_until: Any = _KEEP,
 ) -> bool:
-    """Stamp ``renewal_attempt_at`` / ``renewal_failed_count``. NEVER ``plan_id``.
+    """Stamp the dunning state. NEVER ``plan_id``.
+
+    ``renewal_attempt_at`` / ``renewal_failed_count`` always;
+    ``renewal_grace_until`` only when given (an ISO string opens or ends a
+    grace, None clears it, ``_KEEP`` leaves it as it is — the middle rung).
 
     ⚠ ``trg_user_subscriptions_assignment`` is ``BEFORE UPDATE OF plan_id`` and
     re-derives ``expires_at`` from ``plans.duration_days``. An UPDATE whose
@@ -317,22 +432,131 @@ def _write_renewal_bookkeeping(
     "set expiry ALONE" trap that bit 120, and here it would rewrite the very
     term this job just paid to extend.
 
-    ``expires_at`` is likewise absent: ``grant_plan`` owns it. This function only
-    ever writes dunning state.
+    ``expires_at`` is likewise absent: ``grant_plan`` (and, for a success inside
+    the grace, ``_keep_the_billing_date``) owns it. This function only ever
+    writes dunning state.
     """
+    patch: dict[str, Any] = {
+        "renewal_attempt_at": attempt_at,
+        "renewal_failed_count": int(failed_count),
+        "updated_at": _iso(_now()),
+    }
+    if grace_until is not _KEEP:
+        patch["renewal_grace_until"] = grace_until
     res = (
         supabase.table("user_subscriptions")
-        .update(
-            {
-                "renewal_attempt_at": attempt_at,
-                "renewal_failed_count": int(failed_count),
-                "updated_at": _iso(_now()),
-            }
-        )
+        .update(patch)
         .eq("user_id", user_id)
         .execute()
     )
     return bool(getattr(res, "data", None) or [])
+
+
+def _restack_onto_period(
+    supabase: SupabaseClient,
+    user_id: str,
+    plan_id: str,
+    *,
+    granted_expires_at: str,
+    expires_at: str,
+    started_at: Optional[str],
+) -> bool:
+    """Write ``expires_at`` (+ ``started_at``) back to what stacking would give.
+
+    Compare-and-set on the expiry ``grant_plan`` just wrote AND on ``plan_id``:
+    if anything moved the row in between (an upgrade, a stacked purchase, a
+    refund), this matches no row and that newer state stands. Returns True
+    when the row was moved.
+
+    Neither column is ``plan_id``, so ``trg_user_subscriptions_assignment``
+    (BEFORE UPDATE OF plan_id) does not fire for this statement.
+    """
+    patch: dict[str, Any] = {"expires_at": expires_at, "updated_at": _iso(_now())}
+    if started_at:
+        patch["started_at"] = started_at
+    res = (
+        supabase.table("user_subscriptions")
+        .update(patch)
+        .eq("user_id", user_id)
+        .eq("plan_id", plan_id)
+        .eq("expires_at", granted_expires_at)
+        .execute()
+    )
+    return bool(getattr(res, "data", None) or [])
+
+
+async def _keep_the_billing_date(
+    supabase: SupabaseClient,
+    *,
+    subscription: dict,
+    plan: dict,
+    granted_expires_at: Optional[str],
+) -> Optional[str]:
+    """A success inside the grace keeps the billing date (renewal_retry_grace.md §3, B2).
+
+    ``grant_plan`` stacks only onto a term that is still live
+    (``expires_at > now()``). A renewal that lands after expiry — a retry in
+    the grace, or a first attempt on a late tick — opens a fresh window from
+    ``now()`` instead: the billing date slips by up to a day each time a card is
+    declined once, and the grace hours become free. This puts the row where a
+    stacked renewal would have left it — the period this charge bought starts
+    at the OLD expiry (its ``period_start``), and ``started_at`` is the one the
+    continuous subscription already had. On an on-time renewal grant_plan has
+    already done exactly that and this writes nothing.
+
+    WHY NOT EDIT ``grant_plan`` (option B1). 113's rule — the live money-path
+    RPC is not edited for a side concern — and 194 (store purchases) asserts it
+    untouched. A separate write is safe because of two facts read live on
+    2026-10-30 and asserted again by 196 §0 at apply time:
+
+    * ``trg_user_subscriptions_assignment`` is BEFORE UPDATE **OF plan_id**, and
+      the write below never names plan_id, so it does not fire;
+    * where it does fire — grant_plan's upsert names plan_id — it re-derives
+      ``expires_at`` only when ``plan_id IS DISTINCT FROM OLD.plan_id``. A
+      same-plan renewal is never re-stamped behind this function's back.
+
+    Never raises: the money is in and the plan IS granted; the worst a failure
+    here leaves is the more generous fresh window. Returns the expiry that now
+    stands.
+    """
+    user_id = str(subscription.get("user_id"))
+    plan_id = str(subscription.get("plan_id"))
+    old_expiry = _parse_ts(subscription.get("expires_at"))
+    granted = _parse_ts(granted_expires_at)
+    days = plan.get("duration_days")
+    if old_expiry is None or granted is None or not days:
+        return granted_expires_at
+    target = old_expiry + timedelta(days=int(days))
+    if granted <= target:
+        return granted_expires_at          # stacked already — the on-time case
+    try:
+        moved = await run_db(
+            _restack_onto_period,
+            supabase,
+            user_id,
+            plan_id,
+            granted_expires_at=str(granted_expires_at),
+            expires_at=_iso(target),
+            started_at=subscription.get("started_at"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "renewal granted from now() instead of the old expiry for user=%s "
+            "(%s instead of %s) and the restack failed — the customer keeps the "
+            "longer term: %s", user_id, granted_expires_at, _iso(target), exc,
+        )
+        return granted_expires_at
+    if not moved:
+        logger.warning(
+            "renewal restack matched no row for user=%s — the subscription moved "
+            "after the grant; keeping %s", user_id, granted_expires_at,
+        )
+        return granted_expires_at
+    logger.info(
+        "renewal inside the grace restacked onto the old expiry: user=%s %s → %s",
+        user_id, granted_expires_at, _iso(target),
+    )
+    return _iso(target)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -386,18 +610,22 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         return "skipped_no_expiry"
     if attempt >= MAX_ATTEMPTS:
         return "skipped_ladder_done"
+    # The period key. It is the term boundary being renewed, and it is stable
+    # across the whole ladder: expires_at only moves on SUCCESS (the grace is a
+    # separate column for exactly this reason — renewal_retry_grace.md §6), so
+    # attempts 0/1/2 all carry the same period_start and the unique index can
+    # tell a retry from a duplicate.
+    period_start = _iso(expires_at)
+
     if not (get_settings().MOYASAR_SECRET_KEY or "").strip():
         # Checked BEFORE the ledger row is opened, deliberately: an unconfigured
         # provider is OUR fault, and it must not burn a rung of the customer's
         # dunning ladder or leave an unresolvable 'initiated' row behind.
-        logger.error("renewal skipped: MOYASAR_SECRET_KEY is unset")
+        _log_once(
+            logging.ERROR, ("unconfigured", user_id, period_start),
+            "renewal skipped: MOYASAR_SECRET_KEY is unset",
+        )
         return "skipped_unconfigured"
-
-    # The period key. It is the term boundary being renewed, and it is stable
-    # across the whole ladder: expires_at only moves on SUCCESS, so attempts
-    # 0/1/2 all carry the same period_start and the unique index can tell a
-    # retry from a duplicate.
-    period_start = _iso(expires_at)
 
     # ── the EFFECTIVE price is the price (plan trap 2) ─────────────────────
     plans = await run_db(ps._fetch_plans, supabase, [plan_id])
@@ -405,7 +633,10 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
     if not pm.plan_renews(plan):
         # Either the plan is not pro/max, or `plans.billing_cycle` does not say
         # 'recurring_30d'. Trap 6: the column is finally READ, and it is a gate.
-        logger.info("renewal skipped: plan=%s does not renew (billing_cycle)", plan_id)
+        _log_once(
+            logging.INFO, ("not_recurring", user_id, period_start),
+            "renewal skipped: plan=%s does not renew (billing_cycle)", plan_id,
+        )
         return "skipped_plan_not_recurring"
     # `plans.price_sar` is the LIST price and this job charges what THIS user's
     # RUNNING TERM costs — context 'current', which is the live-seat branch only.
@@ -428,9 +659,11 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
     # at all when 138 is missing.
     #
     # `at=expires_at` (migration 182): the seat is tested at the START of the
-    # period being bought, not at now(). This job runs up to 24h before that
-    # boundary, so testing at now() billed the period beginning on day 90 at the
-    # promo rate — a fourth promo charge for every seat holder.
+    # period being bought, not at now(). The first attempt runs just before that
+    # boundary (up to 24h before it until 196) and a retry runs after it, so
+    # testing at now() would price the period by when the tick happened — the
+    # 24h case billed the period beginning on day 90 at the promo rate, a fourth
+    # promo charge for every seat holder.
     price = await run_db(
         ps._effective_price,
         supabase,
@@ -441,13 +674,17 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         at=expires_at,
     )
     if price < ps.MIN_CHARGE_SAR:
-        logger.error("renewal skipped: plan=%s price %s is below the minimum", plan_id, price)
+        _log_once(
+            logging.ERROR, ("bad_price", user_id, period_start),
+            "renewal skipped: plan=%s price %s is below the minimum", plan_id, price,
+        )
         return "skipped_bad_price"
 
     # ── an active, CONSENTED card, or nothing happens ──────────────────────
     method = await run_db(pm.get_chargeable_method, supabase, user_id)
     if not method:
-        logger.info(
+        _log_once(
+            logging.INFO, ("no_method", user_id, period_start),
             "renewal skipped: user=%s has no chargeable stored card (this term "
             "will lapse into the free fallback, exactly as it does today)", user_id,
         )
@@ -463,7 +700,8 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
     if blocking:
         unresolved = [r for r in blocking if str(r.get("status")) == "initiated"]
         if unresolved:
-            logger.error(
+            _log_once(
+                logging.ERROR, ("blocked", user_id, period_start),
                 "renewal BLOCKED: user=%s plan=%s period=%s has an unresolved "
                 "'initiated' renewal row (%s). A charge whose outcome we never "
                 "saw must never be retried blind — resolve it (check Moyasar, or "
@@ -472,7 +710,8 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
                 [r.get("payment_id") for r in unresolved],
             )
             return "ambiguous"
-        logger.info(
+        _log_once(
+            logging.INFO, ("settled", user_id, period_start),
             "renewal skipped: user=%s plan=%s period=%s is already settled (%s)",
             user_id, plan_id, period_start,
             sorted({str(r.get("status")) for r in blocking}),
@@ -637,12 +876,24 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
             return "ambiguous"
 
         result = await ps._mark_paid_and_grant(supabase, row, fetched)
+        new_expiry = result.get("expires_at")
+        if result.get("granted"):
+            new_expiry = await _keep_the_billing_date(
+                supabase,
+                subscription=subscription,
+                plan=plan,
+                granted_expires_at=new_expiry,
+            )
+        # failed_count 0 and the grace cleared: _mark_paid_and_grant's
+        # reset_renewal_ladder already did both for every paid grant; this
+        # write is the renewal job's own record of the attempt.
         await run_db(
             _write_renewal_bookkeeping,
             supabase,
             user_id,
             attempt_at=_iso(_now()),
             failed_count=0,
+            grace_until=None,
         )
         await run_db(
             write_audit_log,
@@ -657,14 +908,14 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
                 "amount_sar": ps._money(price),
                 "period_start": period_start,
                 "renewal_attempt": attempt,
-                "expires_at": result.get("expires_at"),
+                "expires_at": new_expiry,
                 "provider_ref": fetched.get("id"),
             },
         )
         logger.info(
             "renewal charged: user=%s plan=%s amount=%s period=%s attempt=%d "
             "new_expiry=%s",
-            user_id, plan_id, price, period_start, attempt, result.get("expires_at"),
+            user_id, plan_id, price, period_start, attempt, new_expiry,
         )
         return "renewed" if result.get("granted") else "ambiguous"
 
@@ -752,7 +1003,7 @@ async def _hold_renewal_for_review(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4. Dunning (plan §8)
+# 4. Dunning (renewal_retry_grace.md §0, §4)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -768,18 +1019,35 @@ async def _handle_decline(
 ) -> str:
     """A declined card: advance the ladder, tell the customer, or let it lapse.
 
-    Deliberately NOT a new access mechanism. When the ladder is exhausted this
-    function does nothing to the subscription beyond its bookkeeping columns:
-    the term runs out on its own ``expires_at`` and the EXISTING expired→free
-    fallback takes over, which is precisely what would have happened without
-    this feature. Access during the ladder is a side effect of the same thing —
-    the term is still live for a day or three — which is the behaviour the plan's
-    §12 Q4 recommends.
+    Access during the ladder is the GRACE (196), and this is the only function
+    that opens one:
+
+    * a SOFT decline on the first attempt opens it —
+      ``renewal_grace_until = GREATEST(expires_at, now) + GRACE_PERIOD``;
+    * a soft decline on the middle rung leaves it as it is;
+    * a HARD decline (any attempt — ``HARD_DECLINE_CODES``) or a soft decline on
+      the last rung ends the ladder: ``renewal_failed_count = MAX_ATTEMPTS`` and
+      ``renewal_grace_until = now()`` — lapse now, final email. This never cuts
+      into PAID time: get_user_quota_state reads the grace only when it is
+      LATER than ``expires_at``, so a term declined on its last tick before
+      expiry still runs to its own end and then takes the EXISTING expired→free
+      fallback, exactly as without this feature.
     """
     user_id = str(subscription.get("user_id"))
     plan_id = str(subscription.get("plan_id"))
-    failed_count = attempt + 1
+    code = _decline_code(fetched)
+    hard = code in HARD_DECLINE_CODES
+    failed_count = MAX_ATTEMPTS if hard else attempt + 1
     final = failed_count >= MAX_ATTEMPTS
+
+    now = _now()
+    expires_at = _parse_ts(subscription.get("expires_at"))
+    if final:
+        grace_until: Any = _iso(now)
+    elif attempt == 0:
+        grace_until = _iso(max(expires_at or now, now) + GRACE_PERIOD)
+    else:
+        grace_until = _KEEP
 
     source = fetched.get("source") if isinstance(fetched.get("source"), dict) else {}
     provider_message = source.get("message") or fetched.get("status")
@@ -788,8 +1056,9 @@ async def _handle_decline(
         _write_renewal_bookkeeping,
         supabase,
         user_id,
-        attempt_at=_iso(_now()),
+        attempt_at=_iso(now),
         failed_count=failed_count,
+        grace_until=grace_until,
     )
 
     await run_db(
@@ -806,24 +1075,31 @@ async def _handle_decline(
             "renewal_attempt": attempt,
             "failed_count": failed_count,
             "final": final,
+            "decline_code": code,
+            "hard_decline": hard,
+            "grace_until": None if grace_until is _KEEP else grace_until,
             "provider_message": str(provider_message)[:200] if provider_message else None,
         },
     )
 
     logger.warning(
-        "renewal declined: user=%s plan=%s attempt=%d/%d final=%s message=%s",
-        user_id, plan_id, attempt + 1, MAX_ATTEMPTS, final, provider_message,
+        "renewal declined: user=%s plan=%s attempt=%d/%d code=%s hard=%s final=%s "
+        "message=%s",
+        user_id, plan_id, attempt + 1, MAX_ATTEMPTS, code, hard, final,
+        provider_message,
     )
 
-    # Email on the FIRST failure and on the LAST one. The middle rung is silent
-    # on purpose — three emails in four days about the same card reads as
-    # dunning spam and trains people to ignore the one that matters.
+    # Email on the FIRST failure and on the LAST one (a hard decline is both).
+    # The middle rung is silent on purpose — three emails in a day about the
+    # same card reads as dunning spam and trains people to ignore the one that
+    # matters. The first email shows the grace's end as the date access runs to;
+    # the final one shows no date, because access ends now.
     if attempt == 0 or final:
         await send_renewal_failed_notice(
             supabase,
             payment_row=row,
             plan_name_ar=plan.get("name_ar") or plan_id,
-            expires_at=subscription.get("expires_at"),
+            expires_at=None if final else grace_until,
             final=final,
         )
 
@@ -836,7 +1112,7 @@ async def _handle_decline(
 
 
 async def run_due_renewals(supabase: SupabaseClient) -> dict[str, int]:
-    """Charge every pro/max term due inside 24h, plus every due dunning retry.
+    """Charge every pro/max term due by the next tick, plus every due retry.
 
     Never raises: a scheduler tick must not be able to crash the app, and one
     bad subscription must never stop the sweep (the account-purge sweep's
@@ -860,17 +1136,18 @@ async def run_due_renewals(supabase: SupabaseClient) -> dict[str, int]:
         due = await run_db(_select_due_first_attempt, supabase, now)
         retries = await run_db(_select_due_retry, supabase, now)
     except Exception as exc:  # noqa: BLE001
-        # Includes 42703 if this backend is running ahead of migration 132.
+        # Includes 42703 if this backend is running ahead of migration 132/196.
         logger.exception("renewal sweep: selection query failed: %s", exc)
         return {**stats, "error": 1}
 
     # Retries first: they are already late, and BATCH_CAP should be spent on
     # somebody whose subscription is mid-lapse before somebody whose term still
-    # has hours on it.
+    # has minutes on it.
     candidates = (retries + due)[:BATCH_CAP]
     stats["scanned"] = len(candidates)
     if not candidates:
-        logger.info("renewal sweep: nothing due")
+        # DEBUG: the job ticks 96 times a day and almost every tick is empty.
+        logger.debug("renewal sweep: nothing due")
         return stats
 
     for subscription in candidates:
@@ -887,4 +1164,7 @@ async def run_due_renewals(supabase: SupabaseClient) -> dict[str, int]:
     return stats
 
 
-__all__ = ["run_due_renewals", "LADDER_DAYS", "MAX_ATTEMPTS", "DUE_HORIZON"]
+__all__ = [
+    "run_due_renewals", "LADDER_HOURS", "MAX_ATTEMPTS", "DUE_HORIZON",
+    "GRACE_PERIOD", "HARD_DECLINE_CODES",
+]

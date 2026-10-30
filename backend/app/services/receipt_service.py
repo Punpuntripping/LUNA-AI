@@ -334,10 +334,14 @@ def render_renewal_failed_notice(
     NOT a receipt: no money moved, so there is no receipt number and no amount
     "paid" — the amount appears only as what the renewal WOULD have cost.
 
-    Two shapes, one template. The first-failure copy says we will try again; the
-    final one says we will not, and that the subscription ends. Both point at
-    the same place — إعدادات الحساب, where the stored card lives — because a
-    dunning email whose link goes nowhere is theatre (plan §8).
+    Two shapes, one template. The first-failure copy says we will try again
+    within 24 hours and that the plan keeps running meanwhile (the renewal
+    grace, renewal_retry_grace.md §0); ``expires_at`` is then the GRACE's end —
+    the date access really runs to — never the term's, which has already passed
+    or is minutes away. The final one says we will not try again and that the
+    plan ends now; it carries no date (pass None). Both point at the same place
+    — إعدادات الحساب, where the stored card lives — because a dunning email
+    whose link goes nowhere is theatre (plan §8).
     """
     settings = get_settings()
     # ⚠ There is no deep link to the account-settings dialog today: it is a
@@ -349,12 +353,16 @@ def render_renewal_failed_notice(
     manage_url = f"{settings.PUBLIC_WEB_URL}/chat"
 
     if final:
+        # Not «أكثر من مرة»: a hard decline (a lost / stolen / expired card…)
+        # ends the ladder on the FIRST attempt. And not «سينتهي … في نهاية المدة
+        # المدفوعة»: by the last rung that period ended a day ago — access ends
+        # with this email.
         subject = "انتهى اشتراكك في ريحان — تعذّر تجديد الدفع"
         headline = "تعذّر تجديد اشتراكك"
         body = (
-            "حاولنا تجديد اشتراكك أكثر من مرة ولم يتم قبول عملية الدفع من البنك، "
-            "لذلك لن نحاول مرة أخرى. سينتهي اشتراكك في نهاية المدة المدفوعة "
-            "وسيعود حسابك إلى الباقة المجانية — بياناتك ومحادثاتك تبقى كما هي."
+            "حاولنا تجديد اشتراكك ولم يتم قبول عملية الدفع من البنك، "
+            "لذلك لن نحاول مرة أخرى. انتهى اشتراكك وعاد حسابك إلى الباقة "
+            "المجانية — بياناتك ومحادثاتك تبقى كما هي."
         )
         cta = "فتح ريحان"
     else:
@@ -362,9 +370,8 @@ def render_renewal_failed_notice(
         headline = "تعذّر تجديد اشتراكك"
         body = (
             "حاولنا تجديد اشتراكك ولم يتم قبول عملية الدفع من البنك. "
-            "سنحاول تلقائياً مرة أخرى خلال الأيام القادمة، ويستمر اشتراكك "
-            "حتى نهاية المدة المدفوعة. لتفادي انقطاع الخدمة يمكنك تحديث "
-            "بطاقتك الآن."
+            "سنحاول تلقائياً مرة أخرى خلال 24 ساعة، ويبقى اشتراكك فعّالاً "
+            "خلال هذه المدة. لتفادي انقطاع الخدمة يمكنك تحديث بطاقتك الآن."
         )
         cta = "فتح ريحان"
 

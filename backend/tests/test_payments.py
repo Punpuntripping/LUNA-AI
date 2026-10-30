@@ -1652,6 +1652,8 @@ def test_subscription_state_of_a_user_with_no_row():
     assert state == {"plan_id": None, "plan_name_ar": None, "expires_at": None,
                      "source": None, "cancellable": False,
                      "renewal_cancelled_at": None,
+                     # 196 — set only while a renewal grace extends access.
+                     "renewal_grace_until": None,
                      # 138 — always present, and "not a member" is what every
                      # user reads while the campaign is disabled. No count here,
                      # by design (early_adopters.md §1.10).
@@ -1948,6 +1950,32 @@ def test_paid_fulfilment_resets_the_renewal_ladder(keys, monkeypatch):
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is True
     assert current_sub(db)["renewal_failed_count"] == 0
+
+
+def test_a_checkout_inside_the_renewal_grace_ends_the_grace():
+    """196: a user mid-ladder who buys at checkout gets a NEW term; the grace
+    (access lent while the old card was retried) must not outlive it — a refund
+    of the new grant would otherwise leave Pro running on the grace."""
+    db = FakeSupabase(paid_sub(days_left=20))
+    current_sub(db)["renewal_failed_count"] = 1
+    current_sub(db)["renewal_grace_until"] = _iso(_now() + timedelta(hours=20))
+
+    assert ss.reset_renewal_ladder(db, USER) is True
+    assert current_sub(db)["renewal_failed_count"] == 0
+    assert current_sub(db)["renewal_grace_until"] is None
+
+
+def test_the_ladder_reset_works_before_196_is_applied():
+    """Runs on every paid purchase: it must not name a column a pre-196 DB lacks
+    (it reads `*`), so the §2 count reset survives either deploy order."""
+    db = FakeSupabase(paid_sub(days_left=20))
+    current_sub(db)["renewal_failed_count"] = 1
+    current_sub(db).pop("renewal_grace_until", None)
+
+    assert ss.reset_renewal_ladder(db, USER) is True
+    assert current_sub(db)["renewal_failed_count"] == 0
+    # the update merged into the row: naming the column would have re-added it
+    assert "renewal_grace_until" not in current_sub(db)
 
 
 def test_resetting_a_clean_ladder_writes_nothing():
