@@ -1,7 +1,17 @@
 # Deep search gate — free = 1 per 30 days, low-points block for free + basic
 
-Status: PLANNED 2026-10-30 · Owner decisions locked 2026-10-30 · Migration `197_deep_search_gate.sql`
-(NOT written yet; 195 = workspace client revoke, 196 = `renewal_retry_grace.md`)
+Status: BUILT on a branch 2026-10-30 — NOT applied / NOT deployed · Owner decisions locked 2026-10-30 ·
+Migration `197_deep_search_gate.sql` written (195 = workspace client revoke, 196 = `renewal_retry_grace.md`).
+Arabic copy is PROPOSED (backend `shared/quota` `DEEP_SEARCH_GATED_*`, web `QuotaUpgradeDialog`
+`DEEP_SEARCH_GATE_COPY`, product_docs text in 197 §4).
+
+Build deviations (2026-10-30): the count RPC returns `(runs int, run_starts timestamptz[])`, not a bare
+int — `resets_at` needs the (runs − cap + 1)-th oldest start — and resolves the `usage_reset_at` floor
+itself (`get_user_quota_state` does not return it and must not be widened). The catalog read became
+`select *` so a backend ahead of 197 runs ungated instead of failing the parallel cap. Catalog / count
+read failures fail OPEN. The SSE payload also carries `message_ar`; order is `deep_search_gated` →
+reply `token` → `done`. Tests live in tracked `backend/tests/test_deep_search_gate.py` (agents/tests
+is gitignored).
 
 ## 0. Locked decisions (owner, 2026-10-30)
 
