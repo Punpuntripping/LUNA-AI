@@ -89,6 +89,15 @@ from agents.deep_search_v4.aggregator.preprocessor import (
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from agents.deep_search_v4.ura.schema import CaseURAResult
 from shared.seo.judgment_naming import judgment_subject
+# The WI preview lock — the SAME decision and cut the backend applies to the
+# web / app (shared/, so agents/ never imports backend/ for it).
+from shared.workspace.preview_lock import (
+    LockPolicy,
+    cited_numbers,
+    hidden_refs_line_ar,
+    is_locked,
+    preview_cut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +228,9 @@ class HasWorkspaceContext(Protocol):
     Any concrete deps object (``RouterDeps`` / ``PlannerDeps`` /
     ``WriterPlannerDeps``) satisfies this — they all carry these three.
     Kept loose (``object``) to avoid hard imports of the supabase client here.
+
+    Optional, read with ``getattr``: ``wi_lock_policy`` (RouterDeps only) — the
+    WI preview lock for this router turn; absent / None = full content.
     """
 
     supabase: object
@@ -288,16 +300,29 @@ def _select_in(supabase, table: str, columns: str, col: str, ids: list[str]) -> 
     return out
 
 
-def _fetch_item(supabase, item_id: str, user_id: str) -> dict | None:
+def _fetch_item(
+    supabase, item_id: str, user_id: str, *, with_lock_columns: bool = False,
+) -> dict | None:
     """Fetch ``{title, content_md}`` for one WI in the user's scope.
 
     The service-role client bypasses RLS, so ``.eq("user_id", user_id)`` is
     the load-bearing scope filter (mirrors read_workspace_item).
+
+    ``with_lock_columns`` adds what the WI preview lock decides on (kind,
+    created_by, created_at, metadata, created_while_paid — migration 198) and
+    ``wi_seq`` for the marker. Only a router turn of a free user with the flag
+    on asks for them, so every other read keeps its two-column select.
     """
+    columns = (
+        "title, content_md, wi_seq, kind, created_by, created_at, metadata, "
+        "created_while_paid"
+        if with_lock_columns
+        else "title, content_md"
+    )
     try:
         resp = (
             supabase.table(_ITEMS_TABLE)
-            .select("title, content_md")
+            .select(columns)
             .eq("item_id", item_id)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -684,25 +709,124 @@ def resolve_used_sources(
     return sorted(lines, key=lambda x: x.n)
 
 
+# --------------------------------------------------------------------------- #
+# WI preview lock — the router's view of a locked item (wi_preview_lock.md §6).
+# --------------------------------------------------------------------------- #
+#
+# The router of a FREE user sees exactly the preview the user sees (the shared
+# ``preview_cut`` — byte-identical to the backend's), its sources cut to the
+# ones that preview cites plus a count, and two system markers telling it the
+# lock is DELIBERATE: the owner's requirement is that the agent never reads a
+# cut body as a fetch error and apologises for "a technical problem". The
+# policy rides ``RouterDeps.wi_lock_policy`` only — planner / writer deps have
+# no such field, so their unfolds stay full (their output is a new WI, itself
+# locked). Per-user lock state lives HERE, in the tool result, never in the
+# cached system prompt or this tool's docstring. No URL in either marker
+# (store rules: the router's words reach the iOS app).
+_LOCK_HEADER = (
+    "〔[نظام] PLAN LOCK — DELIBERATE, NOT AN ERROR. {wi} is intentionally "
+    "preview-locked on this user's free plan. You see the first {pct}% "
+    "({shown} of {total} characters), exactly what the user sees. The rest "
+    "exists and is intact; it is withheld on purpose.〕"
+)
+_LOCK_FOOTER = (
+    "〔[نظام] END OF VISIBLE PART — {hidden_pct}% of {wi} is locked for the "
+    "free plan. Answer only from the text above; never guess, reconstruct or "
+    "summarise the hidden part. If asked for it, say plainly that the full "
+    "text is on the paid plans and offer upgrading, e.g. «بقية هذا المستند "
+    "متاحة في الباقات المدفوعة — يمكنك الترقية لعرضه كاملاً». Never apologise "
+    "for a technical problem. Do not unfold {wi} again, do not dispatch a "
+    "search or draft to regenerate it, and do not ask the user to paste it.〕"
+)
+
+
+@dataclass(frozen=True)
+class UnfoldParts:
+    """An unfold, split so masking never touches the system markers.
+
+    ``body`` is the LLM-bound content (item text + manifest) that the turn's
+    codec encodes; ``lock_header`` / ``lock_footer`` are empty unless the item
+    is preview-locked for this router turn.
+    """
+
+    body: str
+    lock_header: str = ""
+    lock_footer: str = ""
+
+    def wrap(self, body: str) -> str:
+        if not self.lock_header:
+            return body
+        return f"{self.lock_header}\n\n{body}\n\n{self.lock_footer}"
+
+    def joined(self) -> str:
+        return self.wrap(self.body)
+
+
+def unfold_parts(
+    supabase, item_id: str, user_id: str, *,
+    snippet_max_chars: int = _SNIPPET_MAX_CHARS,
+    lock_policy: LockPolicy | None = None,
+    wi_label: str = "",
+) -> UnfoldParts | None:
+    """The unfold of one item, preview-locked when ``lock_policy`` says so.
+
+    ``None`` when the item is missing / out of the user's scope. With no
+    policy (planner, writer, a paid user, the flag off) this is the plain
+    ``content_md`` + used-only manifest, byte for byte as before.
+    """
+    item = _fetch_item(
+        supabase, item_id, user_id, with_lock_columns=lock_policy is not None,
+    )
+    if item is None:
+        return None
+    content_md = item.get("content_md") or ""
+    lines = resolve_used_sources(supabase, item_id, snippet_max_chars=snippet_max_chars)
+    if lock_policy is None or not is_locked(item, lock_policy):
+        return UnfoldParts(render_unfold_md(content_md, lines))
+
+    cut = preview_cut(content_md)
+    visible = cited_numbers(cut.visible)
+    kept = [ln for ln in lines if ln.n in visible]
+    body = render_unfold_md(cut.visible, kept)
+    hidden_line = hidden_refs_line_ar(len(lines) - len(kept))
+    if hidden_line:
+        if kept:
+            body = f"{body}\n{hidden_line}"
+        else:
+            manifest = f"{_MANIFEST_HEADER}\n{hidden_line}"
+            body = f"{body}\n\n---\n{manifest}" if body else manifest
+    seq = item.get("wi_seq")
+    wi = f"WI-{seq}" if seq is not None else (wi_label or "this item")
+    return UnfoldParts(
+        body=body,
+        lock_header=_LOCK_HEADER.format(
+            wi=wi, pct=cut.pct, shown=cut.shown_chars, total=cut.total_chars,
+        ),
+        lock_footer=_LOCK_FOOTER.format(wi=wi, hidden_pct=100 - cut.pct),
+    )
+
+
 def unfold_item(
     supabase, item_id: str, user_id: str, *,
     snippet_max_chars: int = _SNIPPET_MAX_CHARS,
+    lock_policy: LockPolicy | None = None,
 ) -> str:
     """Full deterministic unfold: ``content_md`` + used-only citation manifest.
 
     Returns the rendered markdown string, or ``""`` when the item is missing /
     out of the user's scope (same silent-skip contract as the old
-    ``read_workspace_item`` — the LLM moves on without retrying).
+    ``read_workspace_item`` — the LLM moves on without retrying). With a
+    ``lock_policy`` a locked item comes back as its preview between the
+    deliberate-lock markers (:func:`unfold_parts`).
 
     Blocking: every read here goes through the SYNC supabase client, so an async
     caller must run this in a worker thread (the tool below does).
     """
-    item = _fetch_item(supabase, item_id, user_id)
-    if item is None:
-        return ""
-    content_md = item.get("content_md") or ""
-    lines = resolve_used_sources(supabase, item_id, snippet_max_chars=snippet_max_chars)
-    return render_unfold_md(content_md, lines)
+    parts = unfold_parts(
+        supabase, item_id, user_id,
+        snippet_max_chars=snippet_max_chars, lock_policy=lock_policy,
+    )
+    return parts.joined() if parts is not None else ""
 
 
 def _encode_unfold_output(supabase, user_id: str, content: str) -> str:
@@ -734,6 +858,55 @@ def _encode_unfold_output(supabase, user_id: str, content: str) -> str:
 # --------------------------------------------------------------------------- #
 # Pydantic AI tool.
 # --------------------------------------------------------------------------- #
+
+
+async def unfold_for_deps(deps: HasWorkspaceContext, wi: str) -> str:
+    """The ``unfold_workspace_item`` tool body, for any agent's deps.
+
+    Kept outside the registered closure so the deps-driven behaviour is
+    testable on its own: RouterDeps may carry ``wi_lock_policy`` (WI preview
+    lock); planner / writer deps never do, so their unfolds stay full.
+    """
+    item_id = _resolve_wi_alias(wi, getattr(deps, "wi_alias_map", {}) or {})
+    if not item_id:
+        logger.info("unfold_workspace_item: alias %r not resolvable", wi)
+        return ""
+    try:
+        # WI preview lock: only RouterDeps carries this field (None when the
+        # flag is off or the user is paid); planner / writer deps have none,
+        # so getattr keeps their unfolds full.
+        lock_policy = getattr(deps, "wi_lock_policy", None)
+        # Sync supabase client (the whole agents/ layer uses it) — the four
+        # batched joins below would block the event loop, and this tool is
+        # called in parallel across several WIs, so it runs off-thread.
+        parts = await asyncio.to_thread(
+            unfold_parts, deps.supabase, item_id, deps.user_id,
+            lock_policy=lock_policy, wi_label=wi,
+        )
+        if parts is None:
+            return ""
+        # وضع السرية: the rendered content_md + used-source manifest is
+        # LLM-bound context (router / planner_decider / writer_planner). Mask
+        # identifiers/emails before returning so the LLM never sees raw PII;
+        # the stored content_md stays real. This also masks OCR'd attachment
+        # content that flows through here. New fakes are persisted IMMEDIATELY
+        # (a fresh-process resume reloads the codec from DB). Byte-identical
+        # passthrough when masking is disabled / no turn codec is active.
+        # The lock markers are wrapped AFTER encoding — system text, no PII.
+        content = parts.wrap(_encode_unfold_output(
+            deps.supabase, getattr(deps, "user_id", ""), parts.body
+        ))
+        logger.info(
+            "unfold_workspace_item: unfolded %s (alias %s) — %d chars%s",
+            item_id, wi, len(content),
+            " (preview-locked)" if parts.lock_header else "",
+        )
+        return content
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "unfold_workspace_item error for %s (alias %s): %s", item_id, wi, exc,
+        )
+        return ""
 
 
 def register_unfold_workspace_item(agent: Agent) -> None:
@@ -787,42 +960,15 @@ def register_unfold_workspace_item(agent: Agent) -> None:
             wi: The ``WI-{n}`` alias of the workspace item to unfold. A raw
                 UUID is also accepted but always prefer the alias form.
         """
-        item_id = _resolve_wi_alias(wi, getattr(ctx.deps, "wi_alias_map", {}) or {})
-        if not item_id:
-            logger.info("unfold_workspace_item: alias %r not resolvable", wi)
-            return ""
-        try:
-            # Sync supabase client (the whole agents/ layer uses it) — the four
-            # batched joins below would block the event loop, and this tool is
-            # called in parallel across several WIs, so it runs off-thread.
-            content = await asyncio.to_thread(
-                unfold_item, ctx.deps.supabase, item_id, ctx.deps.user_id,
-            )
-            # وضع السرية: the rendered content_md + used-source manifest is
-            # LLM-bound context (router / planner_decider / writer_planner). Mask
-            # identifiers/emails before returning so the LLM never sees raw PII;
-            # the stored content_md stays real. This also masks OCR'd attachment
-            # content that flows through here. New fakes are persisted IMMEDIATELY
-            # (a fresh-process resume reloads the codec from DB). Byte-identical
-            # passthrough when masking is disabled / no turn codec is active.
-            content = _encode_unfold_output(
-                ctx.deps.supabase, getattr(ctx.deps, "user_id", ""), content
-            )
-            logger.info(
-                "unfold_workspace_item: unfolded %s (alias %s) — %d chars",
-                item_id, wi, len(content),
-            )
-            return content
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "unfold_workspace_item error for %s (alias %s): %s", item_id, wi, exc,
-            )
-            return ""
+        return await unfold_for_deps(ctx.deps, wi)
 
 
 __all__ = [
     "register_unfold_workspace_item",
     "unfold_item",
+    "unfold_parts",
+    "unfold_for_deps",
+    "UnfoldParts",
     "resolve_used_sources",
     "render_unfold_md",
     "SourceLine",

@@ -92,6 +92,9 @@ from shared.library.chunk_images import (
     place_images,
 )
 from shared.library.courts import COURT_ORDER, COURT_VARIANTS, slug_for_court
+# The exposure budget lives in shared/ since the WI preview lock spends it from
+# agents/ too (wi_preview_lock.md §4). Re-exported here under the same names.
+from shared.library.gate_budget import GateBudget, free_budget
 from shared.library.entities import ENTITY_ORDER
 from shared.library.entities import slug_for_name as slug_for_provider
 from shared.library.sectors import SECTOR_SLUGS, slug_for_sector
@@ -1218,18 +1221,9 @@ def project_images(
 # then SPENT across its sections in reading order. Callers must not re-derive it.
 
 
-@dataclass(frozen=True)
-class GateBudget:
-    """A wing's exposure dial. ``ratio`` is the policy; the bounds keep it sane.
-
-    ``floor`` exists for SEO — thin content ranks badly, and an over-tight gate
-    costs the traffic these pages are published for. ``ceiling`` exists for the
-    opposite reason: a 45k-char نظام must not leak 7k just because it is long.
-    """
-
-    ratio: float
-    floor: int
-    ceiling: int
+# ``GateBudget`` + ``free_budget`` are defined in ``shared/library/gate_budget.py``
+# (imported at the top) — moved so the workspace preview lock can spend the same
+# budget from agents/ without importing backend/.
 
 
 # «gated» has to MEAN something. A document that cannot clear both of these after
@@ -1237,14 +1231,6 @@ class GateBudget:
 # `gate_decision` either cuts it deeper or marks it honestly open.
 MIN_WITHHELD_RATIO = 0.5
 MIN_WITHHELD_CHARS = 800
-
-
-def free_budget(total_chars: int, budget: GateBudget) -> int:
-    """The document-wide free allowance in characters. Pure, no DB."""
-    return min(
-        max(round(budget.ratio * max(0, int(total_chars))), budget.floor),
-        budget.ceiling,
-    )
 
 
 def gate_decision(

@@ -5,6 +5,7 @@ Uses Pydantic Settings for type-safe configuration.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional
 
@@ -425,6 +426,41 @@ class Settings(BaseSettings):
             for t in (self.RESPONDER_UNIFIED_FAMILIES or "").split(",")
             if t.strip()
         )
+
+    # ── WI preview lock — .claude/plans/wi_preview_lock.md ──────────────────
+    # Free users see ~40% of each NEW agent workspace item (deep-search report,
+    # writer draft) behind an Arabic upgrade wall; the router's
+    # unfold_workspace_item gets the same preview. Decided at READ time
+    # (shared/workspace/preview_lock.py). OFF by default: with False every
+    # surface returns exactly what it returned before the feature existed.
+    #
+    # WI_PREVIEW_LOCK_FROM — only items created at/after this instant can lock;
+    # set it to the moment the flag is turned on (ISO 8601, e.g.
+    # 2026-11-05T09:00:00Z; a naive value is read as UTC). Unset while the flag
+    # is on = nothing locks (fail OPEN on misconfiguration: an unset date must
+    # never lock every item a free user already has). Migration 198
+    # (created_while_paid) must be applied before the flag goes on.
+    #
+    # Env var name == field name (no validation_alias). Settings is
+    # lru_cache'd, so a change needs the redeploy Railway does on every
+    # variable edit anyway — luna-backend only (agents run in that process).
+    WI_PREVIEW_LOCK_ENABLED: bool = False
+    WI_PREVIEW_LOCK_FROM: Optional[datetime] = None
+
+    @field_validator("WI_PREVIEW_LOCK_FROM", mode="before")
+    @classmethod
+    def validate_wi_preview_lock_from(cls, v):
+        """'' → None (an emptied Railway variable); a naive datetime → UTC."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
+    @field_validator("WI_PREVIEW_LOCK_FROM")
+    @classmethod
+    def validate_wi_preview_lock_from_tz(cls, v):
+        if v is not None and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =

@@ -26,11 +26,12 @@ from typing import Optional
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
-from backend.app.services import upload_session_service
+from backend.app.services import upload_session_service, wi_preview_service
 from backend.app.services.case_service import get_user_id
 from backend.app.services.demo_service import is_demo_conversation, is_demo_item
 from shared.config import get_settings
 from shared.storage.client import build_storage_path, upload_file
+from shared.workspace.preview_lock import LockPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +349,7 @@ def update_workspace_item(
     *,
     content_md: Optional[str] = None,
     title: Optional[str] = None,
+    lock_policy: Optional[LockPolicy] = None,
 ) -> dict:
     """Update item content/title. Permission keyed on ``kind``.
 
@@ -356,11 +358,22 @@ def update_workspace_item(
             ``attachment``, ``convo_context``, ``references``).
         409 if ``kind == 'agent_writing'`` and the agent currently holds the
             lock (``locked_by_agent_until > now()``).
+        402 if the body is being changed on an item the caller only sees as a
+            preview (``lock_policy`` — wi_preview_lock.md §1.3). The client
+            holds ~40% of the text: saving it would overwrite the hidden 60%,
+            so ANY ``content_md`` is refused, unchanged or not. A title-only
+            edit still goes through.
     """
     user_id = get_user_id(supabase, auth_id)
 
     existing = get_workspace_item(supabase, auth_id, item_id)
     _assert_writable(existing)
+    if content_md is not None and wi_preview_service.is_row_locked(existing, lock_policy):
+        raise LunaHTTPException(
+            status_code=402,
+            code=ErrorCode.WI_PREVIEW_LOCKED,
+            detail=wi_preview_service.MSG_WI_PREVIEW_EDIT_LOCKED,
+        )
 
     update_data: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
     if content_md is not None:

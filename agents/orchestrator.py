@@ -2672,8 +2672,17 @@ async def _route(
     from agents.router.context import load_router_context
     from agents.router.router import run_router
     from agents.utils.welcome import mark_welcomed, resolve_welcome
+    from shared.workspace.preview_lock import resolve_lock_policy
 
-    ctx = load_router_context(supabase, user_id, conversation_id, case_id)
+    # WI preview lock (wi_preview_lock.md §6): paid/free resolved ONCE per turn,
+    # here, and handed to the router only (RouterDeps + its context fallback).
+    # None — no lookup at all — while WI_PREVIEW_LOCK_ENABLED is off. The
+    # specialists dispatched below never see it: they keep full content.
+    wi_lock_policy = await resolve_lock_policy(supabase, user_id)
+
+    ctx = load_router_context(
+        supabase, user_id, conversation_id, case_id, wi_lock_policy=wi_lock_policy,
+    )
 
     # رسائل الترحيب — resolved ONCE here and handed to whichever agent ends up
     # writing this turn's reply (router / planner_responder / writer_planner),
@@ -2706,6 +2715,7 @@ async def _route(
         message_history=ctx.message_history,
         workspace_item_summaries=ctx.workspace_item_summaries,
         compaction_summary_md=ctx.compaction_summary_md,
+        wi_lock_policy=wi_lock_policy,
     )
 
     # Drain any save_memo side effects FIRST so the pinned-memo chip appears

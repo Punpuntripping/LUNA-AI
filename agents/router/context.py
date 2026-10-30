@@ -31,6 +31,7 @@ from supabase import Client as SupabaseClient
 from agents.utils.history import messages_to_history
 from pydantic_ai.messages import ModelMessage
 from shared.identity import resolve_call_name
+from shared.workspace.preview_lock import LockPolicy, is_locked, preview_cut
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +273,10 @@ def _load_user_call_name(
 
 
 def _load_workspace_item_summaries(
-    supabase: SupabaseClient, conversation_id: str, user_id: str
+    supabase: SupabaseClient,
+    conversation_id: str,
+    user_id: str,
+    wi_lock_policy: LockPolicy | None = None,
 ) -> tuple[list[dict], str | None]:
     """Return (summaries, compaction_summary_md).
 
@@ -286,14 +290,23 @@ def _load_workspace_item_summaries(
     summaries loaded here are rendered verbatim into the router's dynamic
     instructions, so a row belonging to another user reaching this list is a
     prompt-injection surface — not merely a data leak.
+
+    WI preview lock (wi_preview_lock.md §6): with a ``wi_lock_policy`` the
+    no-summary fallback of a LOCKED item is cut from its preview, never from
+    the full body. The ``summary`` itself is kept in full — the owner accepted
+    that residual leak (§9.5) for better follow-up answers.
     """
+    columns = (
+        "item_id, wi_seq, kind, title, summary, content_md, created_at, "
+        "doc_type:metadata->>doc_type"
+    )
+    if wi_lock_policy is not None:
+        # What the lock decides on; selected only when it can bite.
+        columns += ", created_by, created_while_paid, metadata"
     try:
         resp = (
             supabase.table("workspace_items")
-            .select(
-                "item_id, wi_seq, kind, title, summary, content_md, created_at, "
-                "doc_type:metadata->>doc_type"
-            )
+            .select(columns)
             .eq("conversation_id", conversation_id)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -333,13 +346,21 @@ def _load_workspace_item_summaries(
             # set by the attachment summarizer. A closed label, so not masked.
             "doc_type": row.get("doc_type") or "",
             # Carried only so the fallback pass below can read it; dropped
-            # again before the dict leaves this function.
-            "_content_md": row.get("content_md") or "",
+            # again before the dict leaves this function. A preview-locked
+            # item carries its preview, so the fallback cannot show more of
+            # it than the user sees.
+            "_content_md": (
+                preview_cut(row.get("content_md")).visible
+                if is_locked(row, wi_lock_policy)
+                else row.get("content_md") or ""
+            ),
+            "_preview_locked": is_locked(row, wi_lock_policy),
         })
 
     _apply_summary_fallback(summaries)
     for s in summaries:
         s.pop("_content_md", None)
+        s.pop("_preview_locked", None)
     return summaries, compaction_summary_md
 
 
@@ -364,7 +385,9 @@ def _apply_summary_fallback(summaries: list[dict]) -> None:
         if not body or budget <= 0:
             continue
         allowance = min(_SUMMARY_FALLBACK_ITEM_CHARS, budget)
-        truncated = len(body) > allowance
+        # A preview-locked item's body is already only its visible part, so it
+        # is never "the whole text" whatever its length.
+        truncated = len(body) > allowance or bool(item.get("_preview_locked"))
         if truncated:
             body = body[:allowance].rstrip()
         budget -= len(body)
@@ -493,11 +516,13 @@ def load_router_context(
     user_id: str,
     conversation_id: str,
     case_id: str | None,
+    wi_lock_policy: LockPolicy | None = None,
 ) -> RouterContext:
     """Eagerly load everything the router needs for one turn.
 
     Pure data assembly — no LLM calls. Safe to call from the orchestrator
-    just before ``run_router``.
+    just before ``run_router``. ``wi_lock_policy`` (resolved in ``_route``)
+    only changes the no-summary fallback of preview-locked items.
     """
     case_metadata: dict | None = None
     case_memory_md: str | None = None
@@ -508,7 +533,7 @@ def load_router_context(
     user_call_name = _load_user_call_name(supabase, user_id)
 
     workspace_item_summaries, compaction_summary_md = _load_workspace_item_summaries(
-        supabase, conversation_id, user_id
+        supabase, conversation_id, user_id, wi_lock_policy
     )
 
     msg_rows = _load_filtered_messages(supabase, conversation_id)

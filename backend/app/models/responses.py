@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal, Optional
 
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializerFunctionWrapHandler, model_serializer
 
 
 # ── Shared ────────────────────────────────────────────
@@ -307,6 +307,23 @@ class MemoryListResponse(BaseModel):
 # ── Workspace items (post-026) ───────────────────────────
 
 
+class WorkspaceItemPreview(BaseModel):
+    """The WI preview lock on one item (``.claude/plans/wi_preview_lock.md`` §4).
+
+    Present only on a LOCKED item — a free user's agent report / draft created
+    after launch. ``content_md`` is then the visible part (~40% of the body,
+    cut at a block / sentence boundary) followed by one fixed Arabic line for
+    clients that predate this field (``LEGACY_WALL_SUFFIX``, which new clients
+    strip). ``shown_chars`` / ``total_chars`` count characters of the visible
+    part (without that line) and of the whole stored body;
+    ``hidden_ref_count`` = used citations that only the hidden part cites.
+    """
+    locked: bool = True
+    shown_chars: int
+    total_chars: int
+    hidden_ref_count: int = 0
+
+
 class WorkspaceItemResponse(BaseModel):
     """Single workspace item.
 
@@ -337,6 +354,20 @@ class WorkspaceItemResponse(BaseModel):
     metadata: dict = {}
     created_at: str
     updated_at: str
+    # WI preview lock — set only on a locked item. See WorkspaceItemPreview.
+    preview: Optional[WorkspaceItemPreview] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_preview(self, handler: SerializerFunctionWrapHandler):
+        # (No return annotation on purpose: with one, the OpenAPI serialization
+        # schema of this model collapses to a bare object.)
+        # An open item serializes WITHOUT the key, so every response is
+        # byte-identical to before the lock existed (always, while
+        # WI_PREVIEW_LOCK_ENABLED is off). Clients read a missing key as open.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("preview") is None:
+            data.pop("preview", None)
+        return data
 
 
 class WorkspaceItemListResponse(BaseModel):

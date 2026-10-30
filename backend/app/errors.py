@@ -97,6 +97,10 @@ class ErrorCode(str, Enum):
     LIBRARY_ANONYMOUS = "LIBRARY_ANONYMOUS"            # no account → 402, never 401
     LIBRARY_UNRESOLVABLE = "LIBRARY_UNRESOLVABLE"      # ref_id/item could not be resolved
 
+    # WI preview lock (wi_preview_lock.md) — 402: a free user's preview-locked
+    # workspace item cannot have its body edited, or be shared / saved as a blog.
+    WI_PREVIEW_LOCKED = "WI_PREVIEW_LOCKED"
+
     # Validation
     VALIDATION_ERROR = "VALIDATION_ERROR"
     NO_UPDATE_DATA = "NO_UPDATE_DATA"

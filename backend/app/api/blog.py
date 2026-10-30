@@ -79,6 +79,7 @@ from backend.app.services import (
     library_service,
     public_blog_service,
     search_service,
+    wi_preview_service,
     workspace_service,
 )
 from backend.app.services.case_service import get_user_id
@@ -480,6 +481,13 @@ async def share_artifact(
     )
     # 400 (Arabic) if this isn't a written artifact.
     blog_service.assert_publishable(item)
+
+    # WI preview lock (wi_preview_lock.md §1.2 / §9.4): a free user's
+    # preview-locked item must not become a PUBLIC page carrying the full body
+    # the app withholds from them. «مشاركة» and «حفظ كمدونة» both land here.
+    await wi_preview_service.refuse_if_locked(
+        supabase, item, detail=wi_preview_service.MSG_WI_PREVIEW_SHARE_LOCKED
+    )
 
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
 

@@ -113,6 +113,21 @@ limiter); `purge_user_data` not clearing `library_items`/`library_unlocks` (LOW 
 should be purged early and the ledger's retention deliberately decided); `Cache-Control`
 absent on hub *error* responses (LOW — no per-user bytes in those bodies today).
 
+## D-WIP. A PREVIEW-LOCKED workspace item's citation list IS gated — overrides §1.3 for locked WIs only (owner decision 2026-10-30)
+
+⚠ §1.3 puts *citation lists (the mesh)* in the **never gated** class, and
+`GET /workspace/{id}/references` was built on that. **For one case only it no longer
+holds:** a workspace item that the WI preview lock (`.claude/plans/wi_preview_lock.md`,
+§9.3) shows a free user as a ~40% preview. Such an item lists **only the sources its
+VISIBLE part cites**, plus a count of the rest («وN مصادر أخرى في الجزء المقفل»). The
+references endpoint answers `{references, hidden_count}`; `GET
+/workspace/{id}/references/{n}/source` answers 404 for an `n` only the hidden part cites
+(before any resolve or charge); the router's `unfold_workspace_item` source list follows
+the same rule. Every other surface — library pages, blogs, unlocked / paid / pre-launch
+items, user-created items — keeps §1.3 exactly as before. Code:
+`backend/app/services/wi_preview_service.py::filter_references`,
+`backend/app/api/workspace.py` (list + reveal), `shared/workspace/preview_lock.py`.
+
 ## D-OS. «المصادر الرسمية» is GATED — reverses §1.2 and §1.3 (user decision 2026-07-28)
 
 ⚠ **This overrides the plan in three places.** §1.2 says "The **official source URL is

@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Path, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Path, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
@@ -41,10 +41,16 @@ from backend.app.models.responses import (
     SuccessResponse,
     UploadInitResponse,
     WorkspaceItemListResponse,
+    WorkspaceItemPreview,
     WorkspaceItemResponse,
 )
 from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
-from backend.app.services import library_service, message_service, workspace_service
+from backend.app.services import (
+    library_service,
+    message_service,
+    wi_preview_service,
+    workspace_service,
+)
 from backend.app.services.case_service import get_user_id
 from backend.app.services.demo_service import is_demo_item
 from backend.app.services.reference_resolver import ResolvedRef, resolve_ref
@@ -57,6 +63,7 @@ from shared.auth.jwt import AuthUser
 from shared.config import get_settings
 from shared.db.run import run_db
 from shared.storage.client import get_signed_url
+from shared.workspace.preview_lock import LEGACY_WALL_SUFFIX
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
@@ -105,8 +112,19 @@ class UpdateFeedbackRequest(BaseModel):
 # ============================================
 
 
-def _to_response(data: dict) -> WorkspaceItemResponse:
-    """Translate a workspace_items row into the response model."""
+def _to_response(
+    data: dict, preview: Optional[wi_preview_service.WiPreview] = None
+) -> WorkspaceItemResponse:
+    """Translate a workspace_items row into the response model.
+
+    THE choke point of the WI preview lock (wi_preview_lock.md §5): with a
+    ``preview`` (from ``wi_preview_service.previews_for``) the item leaves the
+    backend as its visible part + the fixed legacy line, with the writer
+    metadata that could carry the hidden body stripped. Without one it is
+    byte-identical to before. The callers that pass none — the create routes
+    below (notes, references, attachments) and blog.py / library_items.py —
+    only ever return user-created items, which never lock (``is_lockable``).
+    """
     item_id = data.get("item_id") or data.get("artifact_id") or ""
     # Migration 052 alias. Coerced defensively: pre-052 rows and case-only items
     # carry NULL, and a bad value must not 500 the whole list — the badge simply
@@ -116,6 +134,18 @@ def _to_response(data: dict) -> WorkspaceItemResponse:
         wi_seq = int(raw_wi_seq) if raw_wi_seq is not None else None
     except (TypeError, ValueError):
         wi_seq = None
+    content_md = data.get("content_md")
+    metadata = data.get("metadata") or {}
+    preview_block: Optional[WorkspaceItemPreview] = None
+    if preview is not None:
+        content_md = preview.cut.visible + LEGACY_WALL_SUFFIX
+        metadata = wi_preview_service.locked_metadata(metadata, preview)
+        preview_block = WorkspaceItemPreview(
+            locked=True,
+            shown_chars=preview.cut.shown_chars,
+            total_chars=preview.cut.total_chars,
+            hidden_ref_count=preview.hidden_ref_count,
+        )
     return WorkspaceItemResponse(
         item_id=item_id,
         user_id=data["user_id"],
@@ -127,14 +157,35 @@ def _to_response(data: dict) -> WorkspaceItemResponse:
         kind=data.get("kind", "agent_search"),
         created_by=data.get("created_by", "agent"),
         title=data.get("title", ""),
-        content_md=data.get("content_md"),
+        content_md=content_md,
         storage_path=data.get("storage_path"),
         document_id=data.get("document_id"),
         is_visible=bool(data.get("is_visible", True)),
         feedback=data.get("feedback"),
-        metadata=data.get("metadata") or {},
+        metadata=metadata,
         created_at=data["created_at"],
         updated_at=data["updated_at"],
+        preview=preview_block,
+    )
+
+
+async def _respond_one(supabase: SupabaseClient, data: dict) -> WorkspaceItemResponse:
+    """``_to_response`` with the lock applied — every single-item route."""
+    return _to_response(data, await wi_preview_service.preview_for(supabase, data))
+
+
+async def _respond_list(
+    request: Request, supabase: SupabaseClient, items: list[dict], total: int
+) -> WorkspaceItemListResponse:
+    """The two list routes: lock applied, ``wi_preview_served`` noted."""
+    previews = await wi_preview_service.previews_for(supabase, items)
+    wi_preview_service.note_served(
+        supabase, getattr(request.app.state, "redis", None), items, previews,
+        platform=request.headers.get("x-app-platform"),
+    )
+    return WorkspaceItemListResponse(
+        items=[_to_response(i, previews.get(str(i.get("item_id") or ""))) for i in items],
+        total=total,
     )
 
 
@@ -149,22 +200,20 @@ def _to_response(data: dict) -> WorkspaceItemResponse:
 )
 async def list_conversation_workspace(
     conversation_id: str,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """List workspace items for a conversation."""
+    """List workspace items for a conversation (preview lock applied)."""
     validate_uuid(conversation_id, "معرف المحادثة")
     items, total = await run_db(
         workspace_service.list_workspace_items_by_conversation,
         supabase, current_user.auth_id, conversation_id,
         limit=limit, offset=offset,
     )
-    return WorkspaceItemListResponse(
-        items=[_to_response(i) for i in items],
-        total=total,
-    )
+    return await _respond_list(request, supabase, items, total)
 
 
 @router.get(
@@ -173,22 +222,20 @@ async def list_conversation_workspace(
 )
 async def list_case_workspace(
     case_id: str,
+    request: Request,
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """List workspace items for a case."""
+    """List workspace items for a case (preview lock applied)."""
     validate_uuid(case_id, "معرف القضية")
     items, total = await run_db(
         workspace_service.list_workspace_items_by_case,
         supabase, current_user.auth_id, case_id,
         limit=limit, offset=offset,
     )
-    return WorkspaceItemListResponse(
-        items=[_to_response(i) for i in items],
-        total=total,
-    )
+    return await _respond_list(request, supabase, items, total)
 
 
 # ============================================
@@ -202,16 +249,22 @@ async def list_case_workspace(
 )
 async def get_workspace_item(
     item_id: str,
+    request: Request,
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Get a single workspace item."""
+    """Get a single workspace item (preview lock applied)."""
     validate_uuid(item_id, "معرف العنصر")
     data = await run_db(
         workspace_service.get_workspace_item,
         supabase, current_user.auth_id, item_id,
     )
-    return _to_response(data)
+    previews = await wi_preview_service.previews_for(supabase, [data])
+    wi_preview_service.note_served(
+        supabase, getattr(request.app.state, "redis", None), [data], previews,
+        platform=request.headers.get("x-app-platform"),
+    )
+    return _to_response(data, previews.get(str(data.get("item_id") or "")))
 
 
 @router.get(
@@ -240,15 +293,26 @@ async def list_workspace_item_references(
     are in the never-gated class (§1.3), so this endpoint stays free — only the
     body moved. Each entry gains ``has_source`` so the panel knows whether a
     «عرض المصدر» affordance exists without probing for it.
+
+    WI PREVIEW LOCK (wi_preview_lock.md §9.3 — deliberately overrides §1.3 for
+    locked items only): a preview-locked item lists only the sources its
+    VISIBLE part cites, and ``hidden_count`` says how many more the hidden part
+    cites («وN مصادر أخرى في الجزء المقفل»). The key is present only then.
     """
     validate_uuid(item_id, "معرف العنصر")
     # Ownership check via the existing service. Raises 404 if the item is
     # not visible to this user — same envelope as get_workspace_item.
-    await run_db(workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id)
+    item = await run_db(
+        workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id
+    )
     references = await fetch_item_references_payload(
         supabase, item_id, used_only=bool(used) if used is not None else False,
     )
-    return {"references": references}
+    preview = await wi_preview_service.preview_for(supabase, item)
+    if preview is None:
+        return {"references": references}
+    kept, hidden = wi_preview_service.filter_references(references, preview)
+    return {"references": kept, "hidden_count": hidden}
 
 
 # --- the metered reveal (§6.2 step 2) --------------------------------------
@@ -424,7 +488,7 @@ async def get_reference_source(
     validate_uuid(item_id, "معرف العنصر")
 
     # 1. OWNERSHIP — before anything else. 404 (Arabic) for someone else's item.
-    await run_db(
+    item = await run_db(
         workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id
     )
 
@@ -435,6 +499,19 @@ async def get_reference_source(
             status_code=404,
             code=ErrorCode.ARTIFACT_NOT_FOUND,
             detail="المرجع غير موجود",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+
+    # 2b. WI preview lock (§9.3): a citation only the HIDDEN part of a locked
+    # item makes does not exist as far as this reader is concerned — the list
+    # above never shows it, so walking n = 1..N must not reveal it either. A
+    # 404 like an unknown n: the panel already renders that, and no charge.
+    preview = await wi_preview_service.preview_for(supabase, item)
+    if preview is not None and n not in preview.visible_ns:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail=wi_preview_service.MSG_WI_PREVIEW_REF_LOCKED,
             headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
         )
 
@@ -570,8 +647,17 @@ async def update_workspace_item(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Update workspace item title/content. Permission keyed on ``kind``."""
+    """Update workspace item title/content. Permission keyed on ``kind``.
+
+    A body edit on a preview-locked item is a 402 (wi_preview_lock.md §1.3):
+    the policy is resolved only when ``content_md`` is sent.
+    """
     validate_uuid(item_id, "معرف العنصر")
+    lock_policy = (
+        await wi_preview_service.policy_for_caller(supabase, current_user.auth_id)
+        if body.content_md is not None
+        else None
+    )
     data = await run_db(
         workspace_service.update_workspace_item,
         supabase,
@@ -579,8 +665,9 @@ async def update_workspace_item(
         item_id,
         content_md=body.content_md,
         title=body.title,
+        lock_policy=lock_policy,
     )
-    return _to_response(data)
+    return await _respond_one(supabase, data)
 
 
 @router.delete(
@@ -620,7 +707,7 @@ async def update_workspace_visibility(
         item_id,
         is_visible=body.is_visible,
     )
-    return _to_response(data)
+    return await _respond_one(supabase, data)
 
 
 @router.patch(
@@ -644,7 +731,7 @@ async def update_workspace_feedback(
         item_id,
         feedback=body.feedback,
     )
-    return _to_response(data)
+    return await _respond_one(supabase, data)
 
 
 # ============================================

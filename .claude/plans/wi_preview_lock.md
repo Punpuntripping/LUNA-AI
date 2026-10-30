@@ -1,7 +1,10 @@
 # WI preview lock — free users see ~40% of each new agent WI behind an upgrade wall
 
-Status: PLANNED 2026-10-30 · Owner decisions locked 2026-10-30 · Migration `198_wi_preview_lock.sql`
-(NOT written; 195 = client revoke APPLIED, 196 = renewal grace, 197 = deep search gate)
+Status: BUILT 2026-10-30 on a branch, NOT deployed · Owner decisions locked 2026-10-30 ·
+Migration `198_wi_preview_lock.sql` WRITTEN, NOT applied (+ `198b_wi_preview_lock_docs.sql` — apply only
+at the flag flip) · flag `WI_PREVIEW_LOCK_ENABLED` default false (195 = client revoke APPLIED,
+196 = renewal grace, 197 = deep search gate). Code map: `shared/workspace/preview_lock.py` (decision +
+cut), `backend/app/services/wi_preview_service.py`, `agents/tool_repository/unfold_workspace_item.py`.
 
 ## 0. Locked decisions (owner, 2026-10-30)
 

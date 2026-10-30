@@ -78,6 +78,9 @@ export type ErrorCode =
   | "LIBRARY_FROZEN"
   | "LIBRARY_ANONYMOUS"
   | "LIBRARY_UNRESOLVABLE"
+  // WI preview lock (HTTP 402) — a preview-locked item's body cannot be
+  // edited, shared or saved as a blog (wi_preview_lock.md)
+  | "WI_PREVIEW_LOCKED"
   // Validation
   | "VALIDATION_ERROR"
   | "NO_UPDATE_DATA"

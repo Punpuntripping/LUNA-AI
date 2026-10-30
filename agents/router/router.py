@@ -48,6 +48,7 @@ from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.tracking import track_stage
 from agents.utils.welcome import WelcomeState, render_welcome_instruction
 from shared.observability import get_logfire
+from shared.workspace.preview_lock import LockPolicy
 
 
 # ── Alias resolution (migration 052 / agent communication protocol) ───────────
@@ -166,6 +167,13 @@ class RouterDeps:
     # force-attach the memo to the dispatch).
     pending_sse_events: list[dict] = field(default_factory=list)
     force_attach_item_ids: list[str] = field(default_factory=list)
+    # WI preview lock (.claude/plans/wi_preview_lock.md §6) — THE only place
+    # the lock policy lives on the agent side. Resolved once per turn in
+    # ``orchestrator._route`` (None when the flag is off or the user is paid);
+    # ``unfold_workspace_item`` reads it with getattr, so planner / writer deps,
+    # which have no such field, keep full content. Per-user state stays here
+    # and in the tool result — never in the cached system prompt.
+    wi_lock_policy: "LockPolicy | None" = None
 
 
 @dataclass
@@ -360,13 +368,14 @@ When the user **explicitly shares a substantive request or a long template** tha
 - Workspace-item summaries are injected into your context with short aliases (WI-1, WI-2, ...). Each item carries: the alias, the kind, the title, the summary.
 - Choose only the items most relevant to the current request, and cite them by their aliases («WI-3»، «WI-7») in `attached_wis`.
 - The strict maximum: {MAX_ATTACHED_ITEMS} items per dispatch. If you find more, choose the most important.
-- If the summaries are not enough, call `unfold_workspace_item` with the alias (e.g. «WI-3») to get the full content along with the list of sources cited by name (it can be called on several items in parallel).
+- If the summaries are not enough, call `unfold_workspace_item` with the alias (e.g. «WI-3») to get the item's content along with the list of sources cited by name (it can be called on several items in parallel).
 - If no suitable item exists, leave `attached_wis` an empty list.
 - **Never write UUID identifiers** — use only the WI-N aliases present in the context, and do not invent new aliases.
 
 ## Rules for handling prior items (workspace items):
 - A question about **what the item itself says** — its findings, its conclusion, what we wrote in it → use `unfold_workspace_item("WI-N")` and answer directly via ChatResponse.
   * But a request to **open one of the SOURCES the item cites** — a ruling, a نظام, a مادة, a خدمة — is not that. That is `simple_search`. See the source rule below.
+- **Preview-locked items (a plan rule, never an error).** An `unfold_workspace_item` result may open with `〔[نظام] PLAN LOCK — DELIBERATE, NOT AN ERROR …〕` and end with `〔[نظام] END OF VISIBLE PART …〕`. Such an item is shown only in part on the user's free plan, on purpose: the text between the two markers is exactly what the user sees, and the rest is intact but withheld. It is not a failed read, a truncation bug or missing data — never apologise for a technical problem and never call it an error. Answer only from the text between the markers, never guess, reconstruct or summarise the hidden part, and follow the closing marker's instructions. Never write either marker yourself.
 - A **specific surgical** edit request (replacing a word, deleting a clause, correcting a name/number) → call the tool `edit_artifact(target_wi="WI-N", task=...)`
 - A **structural or expansive** edit request, or one that needs new information → route DispatchAgent with `target_wi="WI-N"`
 - When the user refers to **which ITEM** they mean and it is unclear → list the available items (by alias and title) and ask. **This applies to ITEMS ONLY.** Do not use it to disambiguate between the *sources cited inside* an item — the specialist sees those sources with their own handles and asks the user itself when two of them genuinely match. Handing the user a «أي واحد تقصد؟» list of citations is doing the specialist's job badly.
@@ -721,6 +730,7 @@ async def run_router(
     compaction_summary_md: str | None = None,
     user_call_name: str | None = None,
     welcome: WelcomeState | None = None,
+    wi_lock_policy: LockPolicy | None = None,
 ) -> RouterRunResult:
     """Run the router agent to classify user intent and respond or dispatch.
 
@@ -752,6 +762,9 @@ async def run_router(
         welcome: The turn's welcome state (``agents/utils/welcome.py``), or
             None when this turn opens with no greeting — which is every turn
             except the first of a conversation.
+        wi_lock_policy: The WI preview lock for this user and turn, resolved
+            once in ``_route`` (``shared.workspace.preview_lock``); None when
+            nothing locks. Lands on ``RouterDeps`` and nowhere else.
 
     Returns:
         A ``RouterRunResult`` wrapping the structured output (ChatResponse if
@@ -783,6 +796,7 @@ async def run_router(
         compaction_summary_md=compaction_summary_md,
         wi_alias_map=alias_map,
         user_message=question,
+        wi_lock_policy=wi_lock_policy,
     )
 
     # PII note: user_id intentionally NOT on this span. The monitor recovers
@@ -799,6 +813,7 @@ async def run_router(
         history_turns=len(message_history),
         workspace_item_count=len(deps.workspace_item_summaries),
         has_compaction_summary=bool(compaction_summary_md),
+        wi_preview_lock=wi_lock_policy is not None,
     ) as span:
         try:
             result = await router_agent.run(

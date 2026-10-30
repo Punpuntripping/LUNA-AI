@@ -20,6 +20,7 @@ export * from "./blogs";
 export * from "./preferences";
 export * from "./push";
 export * from "./announcements";
+export * from "./wi-preview";
 
 // Pure helpers (mobile Phase 2 — see README "What lives here").
 export * from "./citations";

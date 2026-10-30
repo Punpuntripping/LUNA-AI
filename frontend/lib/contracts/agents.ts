@@ -77,6 +77,26 @@ export interface WorkspaceItem {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  /**
+   * WI preview lock (.claude/plans/wi_preview_lock.md) — ADDED, optional. Sent
+   * ONLY on a locked item (a free user's agent report / draft created after
+   * launch); absent everywhere else, and always while the server flag is off.
+   * When present, `content_md` is the visible part followed by
+   * `WI_PREVIEW_LEGACY_SUFFIX` — read the body through
+   * `wiPreviewVisibleContent()` (./wi-preview), never raw.
+   */
+  preview?: WorkspaceItemPreview | null;
+}
+
+/** `WorkspaceItem.preview` — mirror of backend `WorkspaceItemPreview`. */
+export interface WorkspaceItemPreview {
+  locked: boolean;
+  /** Characters of the visible part (without the legacy line). */
+  shown_chars: number;
+  /** Characters of the whole stored body. */
+  total_chars: number;
+  /** Used citations that only the hidden part cites. */
+  hidden_ref_count: number;
 }
 
 export interface WorkspaceItemListResponse {

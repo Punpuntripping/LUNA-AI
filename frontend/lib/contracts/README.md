@@ -63,6 +63,7 @@ Tests may use Node APIs (`node:test`, `TextDecoder`); the modules may not.
 | `push.ts` | `AppPushTokenRequest`, `AppPushTokenDeleteRequest` (`/push/app-token`), `TurnReadyPushData` (`data.conversation_id` of the «إجابتك جاهزة» push) — types only, added | — (native only; web push stays in `@/lib/push`) |
 | `reference-labels.ts`, `references-copy.ts` | `referenceLabel`, `referenceCopyLabel`, `referenceLibraryExitLabel`, `officialUrl`, `appendReferencesForCopy`, … (moved) | `@/components/workspace/ReferencePanel` (re-export) |
 | `library-refusal.ts` | `parseRefusal`, `refusalCardCopy(input, ctas)` — CTAs are a parameter (the app must never point at web pricing) | `@/lib/library/full-content`, `@/lib/library/gate-copy` (re-export / wrap) |
+| `wi-preview.ts` | WI preview lock (`.claude/plans/wi_preview_lock.md`): `WI_PREVIEW_COPY` (THE wall copy, both apps), `WI_PREVIEW_LEGACY_SUFFIX`, `isWiPreviewLocked`, `wiPreviewVisibleContent`, `wiPreviewShownPct`, `wiPreviewHiddenRefsLine`, `WorkspaceItemReferencesResponse` (added) — plus `WorkspaceItem.preview` / `WorkspaceItemPreview` in `agents.ts` | — (new) |
 
 Moved files are re-exported from their old web paths so no web consumer changed.
 A new backend

@@ -141,8 +141,24 @@ GATE_KINDS = frozenset(
         "blog_cta",          # BlogConversionCta
         "search_modal",      # SearchCtaModal
         "judgment_summary",  # JudgmentSummary
+        "wi_preview",        # WiPreviewWall — a free user's preview-locked workspace item (wi_preview_lock.md §8)
     }
 )
+
+# Events the SERVER writes, never a client. Deliberately NOT in EVENT_NAMES:
+# the beacon endpoint must keep dropping them, or any browser could inflate the
+# count. Built by :func:`build_server_event_row`.
+SERVER_EVENT_NAMES = frozenset(
+    {
+        # The cross-platform "a free user met the wall" (the app has no
+        # analytics client): one row per preview-locked item, on its first
+        # serve. props: item_id, kind, subtype, platform web|ios|android,
+        # shown_chars, total_chars. wi_preview_service.note_served.
+        "wi_preview_served",
+    }
+)
+# analytics_events.session_key is NOT NULL; a server event has no tab.
+SERVER_SESSION_KEY = "server"
 
 # Batch + field bounds. A beacon is unauthenticated and fire-and-forget, so
 # every bound is enforced server-side.
@@ -527,6 +543,35 @@ def build_event_rows(
     return rows
 
 
+def build_server_event_row(
+    name: str, *, user_id: Optional[str], props: Any
+) -> dict:
+    """One `analytics_events` row for a SERVER-side event (:data:`SERVER_EVENT_NAMES`).
+
+    Same uniform key set as :func:`build_event_rows` (PGRST102) and the same
+    `sanitize_props`. `user_type` is 'authed' — only signed-in requests emit
+    these. Raises ValueError on an unknown name: a server typo is a bug, not
+    client noise to drop quietly.
+    """
+    if name not in SERVER_EVENT_NAMES:
+        raise ValueError(f"unknown server analytics event: {name!r}")
+    return {
+        "session_key": SERVER_SESSION_KEY,
+        "user_id": user_id,
+        "user_type": USER_TYPE_AUTHED,
+        "event_name": name,
+        "path": None,
+        "device_type": None,
+        "browser": None,
+        "os": None,
+        "referrer_host": None,
+        "utm_source": None,
+        "utm_medium": None,
+        "utm_campaign": None,
+        "props": sanitize_props(props),
+    }
+
+
 # ============================================
 # PERSISTENCE (sync — call through run_db)
 # ============================================
@@ -641,9 +686,12 @@ __all__ = [
     "MAX_SESSION_KEY_CHARS",
     "PUBLIC_EVENT_NAMES",
     "RETENTION_DAYS",
+    "SERVER_EVENT_NAMES",
+    "SERVER_SESSION_KEY",
     "USER_TYPE_ANON",
     "USER_TYPE_AUTHED",
     "build_event_rows",
+    "build_server_event_row",
     "classify_client",
     "insert_events",
     "lookup_user_id",
