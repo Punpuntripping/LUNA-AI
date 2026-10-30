@@ -136,9 +136,24 @@ test("unknown event names are dropped by toTypedSSEEvent", () => {
   assert.equal(toTypedSSEEvent({ event: "message", data: "{}", id: "" }), null);
 });
 
-test("SSE_EVENT_NAMES: 22 unique names", () => {
-  assert.equal(SSE_EVENT_NAMES.length, 22);
-  assert.equal(new Set(SSE_EVENT_NAMES).size, 22);
+test("SSE_EVENT_NAMES: 23 unique names", () => {
+  assert.equal(SSE_EVENT_NAMES.length, 23);
+  assert.equal(new Set(SSE_EVENT_NAMES).size, 23);
+});
+
+test("deep_search_gated is a known event with its payload typed", () => {
+  const payload = {
+    reason: "free_limit",
+    plan_id: "free",
+    upgrade_options: ["basic", "pro", "max"],
+    resets_at: "2026-11-19T09:00:00+00:00",
+    message_ar: "استخدمت البحث المعمّق المتاح في باقتك لهذه الفترة.",
+  };
+  const out = collect([frame("deep_search_gated", payload)]);
+  assert.equal(out.length, 1);
+  const typed = toTypedSSEEvent(out[0]);
+  assert.ok(typed && typed.event === "deep_search_gated");
+  assert.deepEqual(typed.data, payload);
 });
 
 test("a long line fed in many small chunks is parsed once, correctly", () => {

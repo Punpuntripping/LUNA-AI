@@ -8,7 +8,10 @@ import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
 import { formatReset } from "@/lib/quota-reset";
-import type { SSEQuotaExceeded } from "@/types";
+import type { SSEDeepSearchGated, SSEQuotaExceeded } from "@/types";
+
+/** The two refusals that carry a countdown and an upgrade ladder. */
+type OfferInfo = SSEQuotaExceeded | SSEDeepSearchGated;
 
 /**
  * Whether this block has anything to sell — i.e. whether the SERVER found a
@@ -30,7 +33,7 @@ import type { SSEQuotaExceeded } from "@/types";
  *                  that cannot help — the same "fail toward the quiet option"
  *                  choice this component made when `plan_id` was new.
  */
-function shouldOfferUpgrade(info: SSEQuotaExceeded | null): boolean {
+function shouldOfferUpgrade(info: OfferInfo | null): boolean {
   return (info?.upgrade_options?.length ?? 0) > 0;
 }
 
@@ -43,7 +46,7 @@ function shouldOfferUpgrade(info: SSEQuotaExceeded | null): boolean {
  * opens the moment they ask for it. `plan_id` is EFFECTIVE, so an expired
  * subscription that fell back to `free` correctly gets the paywall again.
  */
-function shouldAutoOpen(info: SSEQuotaExceeded | null): boolean {
+function shouldAutoOpen(info: OfferInfo | null): boolean {
   return shouldOfferUpgrade(info) && info?.plan_id === "free";
 }
 
@@ -53,8 +56,8 @@ interface QuotaBannerProps {
 }
 
 /**
- * Refusal banner for the conversation's last blocked send. Three shapes
- * (parallel_conversations plan §2):
+ * Refusal banner for the conversation's last blocked send. Four shapes
+ * (parallel_conversations plan §2, deep_search_plan_gate plan §4):
  *
  * - `quota_exceeded` (limit) — the user ran a window down: reset countdown +
  *   the upgrade ladder, exactly as before.
@@ -63,48 +66,53 @@ interface QuotaBannerProps {
  *   flight. `detail` only — no countdown, no upgrade pitch.
  * - `parallel_limit` — the plan's cap on conversations answering at once. Its
  *   `detail`, plus a link to the pricing page when «القصوى» would lift the cap.
+ * - `deep_search_gated` — the plan gate refused to start a deep search. The
+ *   turn was answered (the refusal is the reply in the thread); this is the
+ *   same countdown + ladder treatment as a spent window.
  */
 export function QuotaBanner({ conversationId }: QuotaBannerProps) {
   const notice = useChatStore(
     (s) => s.noticeByConversation[conversationId] ?? null,
   );
   const setNotice = useChatStore((s) => s.setNotice);
-  // The "you've hit your limit" refusal — the only shape with a countdown and
-  // an upgrade ladder. Null for the parallel shapes.
+  // The "you've hit your limit" refusal. Null for the parallel shapes.
   const quotaInfo =
     notice?.kind === "quota" && notice.info.reason !== "parallel_reserve"
       ? notice.info
       : null;
+  const gateInfo = notice?.kind === "deep_search_gated" ? notice.info : null;
+  // The shapes with a countdown and an upgrade ladder.
+  const offerInfo: OfferInfo | null = quotaInfo ?? gateInfo;
   const [now, setNow] = useState<number>(() => Date.now());
   const [dialogOpen, setDialogOpen] = useState(false);
 
   // Re-stamp on every new block, then tick. The banner mounts with the chat
-  // and only *renders* once `quotaInfo` arrives, so the lazy initialiser above
+  // and only *renders* once `offerInfo` arrives, so the lazy initialiser above
   // holds page-load time — minutes or hours stale by the time a block fires.
   // Same defect as `UsageLimitsDialog`: it inflates the countdown past the
   // window length instead of shrinking it, so it reads as a backend bug.
   useEffect(() => {
-    if (!quotaInfo) return;
+    if (!offerInfo) return;
     setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(id);
-  }, [quotaInfo]);
+  }, [offerInfo]);
 
   // Auto-open on each NEW block, but never re-open the one the user just
-  // closed. `quotaInfo` is a fresh object per SSE event, so identity is the
+  // closed. `offerInfo` is a fresh object per SSE event, so identity is the
   // signal: same object → the user dismissed it, leave it shut; new object →
   // they hit the wall again, show the plans.
-  const shownFor = useRef<SSEQuotaExceeded | null>(null);
+  const shownFor = useRef<OfferInfo | null>(null);
   useEffect(() => {
-    if (!quotaInfo || !shouldAutoOpen(quotaInfo)) return;
-    if (shownFor.current === quotaInfo) return;
-    shownFor.current = quotaInfo;
+    if (!offerInfo || !shouldAutoOpen(offerInfo)) return;
+    if (shownFor.current === offerInfo) return;
+    shownFor.current = offerInfo;
     setDialogOpen(true);
-  }, [quotaInfo]);
+  }, [offerInfo]);
 
   const resetText = useMemo(
-    () => (quotaInfo?.resets_at ? formatReset(quotaInfo.resets_at, now) : ""),
-    [quotaInfo, now],
+    () => (offerInfo?.resets_at ? formatReset(offerInfo.resets_at, now) : ""),
+    [offerInfo, now],
   );
 
   const handleDismiss = useCallback(
@@ -115,13 +123,15 @@ export function QuotaBanner({ conversationId }: QuotaBannerProps) {
 
   if (!notice) return null;
 
-  const offersUpgrade = quotaInfo !== null && shouldOfferUpgrade(quotaInfo);
+  const offersUpgrade = offerInfo !== null && shouldOfferUpgrade(offerInfo);
   const message =
     notice.kind === "parallel_limit"
       ? notice.info.detail
-      : quotaInfo
-        ? quotaInfo.message_ar
-        : (notice.info.detail ?? notice.info.message_ar);
+      : notice.kind === "deep_search_gated"
+        ? notice.info.message_ar
+        : quotaInfo
+          ? quotaInfo.message_ar
+          : (notice.info.detail ?? notice.info.message_ar);
   // Stop does NOT free a slot (the run keeps going in the background), so the
   // only route past the cap besides waiting is a plan with a higher one.
   const offersMaxLink =
@@ -160,7 +170,7 @@ export function QuotaBanner({ conversationId }: QuotaBannerProps) {
               عرض باقة «القصوى»
             </Link>
           )}
-          {offersUpgrade && quotaInfo && (
+          {offersUpgrade && offerInfo && (
             <Button
               variant="outline"
               size="sm"
@@ -168,7 +178,7 @@ export function QuotaBanner({ conversationId }: QuotaBannerProps) {
               onClick={handleReopen}
               data-testid="quota-upgrade-open"
             >
-              {quotaInfo.plan_id === "free" ? "عرض الباقات" : "ترقية الباقة"}
+              {offerInfo.plan_id === "free" ? "عرض الباقات" : "ترقية الباقة"}
             </Button>
           )}
           <Button
@@ -188,6 +198,13 @@ export function QuotaBanner({ conversationId }: QuotaBannerProps) {
           open={dialogOpen}
           onOpenChange={setDialogOpen}
           info={quotaInfo}
+        />
+      )}
+      {offersUpgrade && gateInfo && (
+        <QuotaUpgradeDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          deepSearchGate={gateInfo}
         />
       )}
     </>

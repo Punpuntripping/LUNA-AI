@@ -37,6 +37,7 @@ import type {
   SSEDuplicate,
   SSEQuotaExceeded,
   SSEParallelLimit,
+  SSEDeepSearchGated,
   SSEAgentProgress,
   SSEStatus,
   SSEAgentRunStarted,
@@ -609,6 +610,21 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().finishStreaming(conversationId);
               useChatStore.getState().setNotice(conversationId, {
                 kind: "parallel_limit",
+                info: payload,
+              });
+              break;
+            }
+            case "deep_search_gated": {
+              // The plan gate refused to START a deep search (migration 197).
+              // NOT a refused send: the turn is saved and the Arabic refusal
+              // streams in as ordinary tokens, then `done` — so the optimistic
+              // message, the stream and the composer are all left alone. Only
+              // the upgrade offer rides here (QuotaBanner renders it).
+              // `message_start` already ran `startStreaming`, which clears
+              // notices, so this one survives until the next send.
+              const payload = data as SSEDeepSearchGated;
+              useChatStore.getState().setNotice(conversationId, {
+                kind: "deep_search_gated",
                 info: payload,
               });
               break;

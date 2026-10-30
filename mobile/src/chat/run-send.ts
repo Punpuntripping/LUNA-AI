@@ -377,6 +377,13 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       case "parallel_limit":
         ctx.outcome = refuse(ctx, "parallel_limit", { kind: "parallel_limit", info: ev.data });
         return true;
+      case "deep_search_gated":
+        // The plan gate refused to START a deep search (web use-chat parity).
+        // NOT a refusal of the send: the turn is saved, the Arabic refusal
+        // streams in as tokens and `done` follows — keep reading. Only the
+        // banner is set (`begin` already cleared this conversation's last one).
+        store.setNotice(conv, { kind: "deep_search_gated", info: ev.data });
+        return false;
       case "error": {
         const message = arabicOr(ev.data.detail, MSG_RUN_FAILED);
         ctx.outcome = fail(ctx, message);

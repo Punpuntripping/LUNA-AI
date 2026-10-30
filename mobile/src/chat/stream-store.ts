@@ -1,7 +1,13 @@
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 
-import type { AgentFamily, SSEAgentProgress, SSEParallelLimit, SSEQuotaExceeded } from "@contracts";
+import type {
+  AgentFamily,
+  SSEAgentProgress,
+  SSEDeepSearchGated,
+  SSEParallelLimit,
+  SSEQuotaExceeded,
+} from "@contracts";
 
 import {
   applyProgress,
@@ -53,10 +59,14 @@ export interface ParkedRun {
   progress: DeepSearchProgressState | null;
 }
 
+/** `deep_search_gated` (web parity, migration 197) is the only kind set on a
+ *  turn that was ANSWERED — the plan gate's refusal is the saved reply; the
+ *  banner just repeats why. The rest are refused sends. */
 export type ChatNotice =
   | { kind: "quota"; info: SSEQuotaExceeded }
   | { kind: "parallel_limit"; info: SSEParallelLimit }
-  | { kind: "duplicate"; detail: string };
+  | { kind: "duplicate"; detail: string }
+  | { kind: "deep_search_gated"; info: SSEDeepSearchGated };
 
 export type AutoOpenKind = "agent_search" | "agent_writing";
 

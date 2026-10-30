@@ -34,7 +34,22 @@ import {
   INTRO_OFFER_COPY,
   INTRO_OFFER_PLAN_ID,
 } from "@/components/promo/intro-offer-content";
-import type { SSEQuotaExceeded } from "@/types";
+import type { SSEDeepSearchGated, SSEQuotaExceeded } from "@/types";
+
+/**
+ * The deep-search plan gate's variant (migration 197) — the ONE place its web
+ * copy lives; the body line is the server's `message_ar`.
+ * ⚠ PROPOSED copy, not owner-approved yet. Latin digits only.
+ */
+const DEEP_SEARCH_GATE_COPY = {
+  title: {
+    free_limit: "استخدمت البحث المعمّق المتاح في باقتك",
+    low_points: "رصيدك لا يكفي لبحث معمّق جديد",
+  },
+  /** Before «{resetText} — أو رقِّ باقتك الآن.» on the count refusal (the points
+   *  refusal keeps the dialog's «تعود نقاطك»). */
+  countBack: "يتجدّد بحثك المعمّق",
+} as const;
 
 interface QuotaUpgradeDialogProps {
   open: boolean;
@@ -50,8 +65,16 @@ interface QuotaUpgradeDialogProps {
    */
   info?: SSEQuotaExceeded;
   /**
-   * The user's plan, for the block-less surfaces. Only read when `info` is
-   * absent; the ladder is then derived from the catalog by price.
+   * The deep-search plan gate's refusal, when THAT opened the dialog (never
+   * together with `info`). A real server block like `info` — ladder, countdown
+   * and plan come from it — just not a spent window, so it is its own prop
+   * rather than a synthetic `SSEQuotaExceeded`.
+   */
+  deepSearchGate?: SSEDeepSearchGated;
+  /**
+   * The user's plan, for the block-less surfaces. Only read when neither
+   * `info` nor `deepSearchGate` is set; the ladder is then derived from the
+   * catalog by price.
    */
   currentPlanId?: string | null;
 }
@@ -85,6 +108,7 @@ export function QuotaUpgradeDialog({
   open,
   onOpenChange,
   info,
+  deepSearchGate: gate,
   currentPlanId,
 }: QuotaUpgradeDialogProps) {
   const [now, setNow] = useState<number>(() => Date.now());
@@ -119,14 +143,16 @@ export function QuotaUpgradeDialog({
     if (open) void useIntroOfferStore.getState().refresh();
   }, [open]);
 
-  const ladder = info?.upgrade_options;
+  // A server block opened this dialog: a spent window, or the deep-search gate.
+  const blocked = Boolean(info || gate);
+  const ladder = info?.upgrade_options ?? gate?.upgrade_options;
 
   const plans = useMemo<PricingPlan[]>(() => {
     // No block → Settings. Derived by LIST price (the plan rank), since there
     // is no blocking window to ask the server about. Promo prices are batch
     // data that can change with no deploy, so they never rank the ladder — see
     // `pricingPlansAbove`.
-    if (!info) return pricingPlansAbove(currentPlanId);
+    if (!blocked) return pricingPlansAbove(currentPlanId);
     // Deploy skew: a backend from before the ladder shipped sends no field at
     // all. Fall back to the whole catalog — i.e. exactly the pre-ladder free
     // paywall — rather than to an empty dialog. An EMPTY array is different:
@@ -140,7 +166,7 @@ export function QuotaUpgradeDialog({
       if (plan) resolved.push(plan);
     }
     return resolved;
-  }, [info, ladder, currentPlanId]);
+  }, [blocked, ladder, currentPlanId]);
 
   // A zero limit is not an exhausted window — it is a feature the free plan
   // never included (OCR is `ocr_pages_monthly = 0` on `free`). Saying «انتهى
@@ -148,25 +174,25 @@ export function QuotaUpgradeDialog({
   // reset instant to count down to either.
   const notIncluded = info ? info.limit <= 0 : false;
 
-  const resetText =
-    info && !notIncluded && info.resets_at
-      ? formatReset(info.resets_at, now)
-      : "";
+  const resetsAt = info && !notIncluded ? info.resets_at : gate?.resets_at;
+  const resetText = resetsAt ? formatReset(resetsAt, now) : "";
 
   // EFFECTIVE plan on the block path (an expired `pro` reports `"free"`).
-  const planId = info ? info.plan_id : currentPlanId;
+  const planId = info ? info.plan_id : gate ? gate.plan_id : currentPlanId;
   const onPaidPlan = Boolean(planId) && planId !== "free";
   const planNameAr = planId ? findPricingPlan(planId)?.nameAr : undefined;
 
-  const title = notIncluded
-    ? "هذه الميزة غير متاحة في الباقة المجانية"
-    : !info
-      ? "ترقية الباقة"
-      : onPaidPlan
-        ? planNameAr
-          ? `انتهت نقاط باقتك — ${planNameAr}`
-          : "انتهت نقاط باقتك"
-        : "انتهى حدّ الاستخدام المجاني";
+  const title = gate
+    ? DEEP_SEARCH_GATE_COPY.title[gate.reason]
+    : notIncluded
+      ? "هذه الميزة غير متاحة في الباقة المجانية"
+      : !info
+        ? "ترقية الباقة"
+        : onPaidPlan
+          ? planNameAr
+            ? `انتهت نقاط باقتك — ${planNameAr}`
+            : "انتهت نقاط باقتك"
+          : "انتهى حدّ الاستخدام المجاني";
 
   // The one true thing worth saying out loud, and the reason this dialog beats
   // waiting: an upgrade takes effect at once.
@@ -194,7 +220,7 @@ export function QuotaUpgradeDialog({
   // Settings path shows the same card but is not the wall being measured.
   const offerTrackedRef = useRef(false);
   useEffect(() => {
-    if (!open || !offerOnCard || !info) {
+    if (!open || !offerOnCard || !blocked) {
       if (!open) offerTrackedRef.current = false;
       return;
     }
@@ -204,7 +230,7 @@ export function QuotaUpgradeDialog({
       trigger: "quota",
       group: introOffer.profession_group,
     });
-  }, [open, offerOnCard, info, introOffer]);
+  }, [open, offerOnCard, blocked, introOffer]);
 
   // The «ابتداءً من …» summary earns its place only when the full ladder is on
   // offer; one or two cards are read directly, and quoting the catalog's
@@ -258,7 +284,9 @@ export function QuotaUpgradeDialog({
           <DialogDescription className="text-right leading-relaxed">
             {info
               ? info.message_ar
-              : "اختر باقة أعلى للحصول على نقاط استخدام أكثر."}
+              : gate
+                ? gate.message_ar
+                : "اختر باقة أعلى للحصول على نقاط استخدام أكثر."}
           </DialogDescription>
         </DialogHeader>
 
@@ -266,7 +294,10 @@ export function QuotaUpgradeDialog({
             so is what makes the upgrade line credible. */}
         {resetText && (
           <p className="text-sm leading-relaxed text-foreground">
-            تعود نقاطك {resetText} — أو رقِّ باقتك الآن.
+            {gate?.reason === "free_limit"
+              ? DEEP_SEARCH_GATE_COPY.countBack
+              : "تعود نقاطك"}{" "}
+            {resetText} — أو رقِّ باقتك الآن.
           </p>
         )}
 

@@ -294,6 +294,7 @@ export type {
   SSEDuplicate,
   SSEQuotaExceeded,
   SSEParallelLimit,
+  SSEDeepSearchGated,
 } from "@/lib/contracts";
 
 /** One progress bar in the Settings → حدود الاستخدام dialog.

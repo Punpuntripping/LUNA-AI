@@ -259,6 +259,45 @@ describe("send — refusals restore the composer", () => {
   });
 });
 
+describe("send — deep_search_gated (plan gate, migration 197)", () => {
+  test("the turn is ANSWERED: refusal text saved as the reply, user row kept, banner set", async () => {
+    const h = harness();
+    const { promise, committed } = await startSend(h, "قارن بين نظامي العمل والخدمة المدنية");
+    const info = {
+      reason: "free_limit" as const,
+      plan_id: "free",
+      upgrade_options: ["basic", "pro", "max"],
+      resets_at: "2026-11-19T09:00:00+00:00",
+      message_ar: "استخدمت البحث المعمّق المتاح في باقتك لهذه الفترة.",
+    };
+    const s = h.streams[0];
+    s.push(frame("message_start", START));
+    s.push(frame("deep_search_gated", info));
+    s.push(frame("token", { text: "يحتاج هذا الطلب إلى بحث معمّق." }));
+    s.push(frame("done", DONE));
+    const result = await promise;
+
+    // Not a refusal: the send committed and the answer is the refusal text.
+    assert.deepEqual(result, { status: "done", assistantMessageId: "a1" });
+    assert.equal(committed(), 1);
+    const [answer, user] = h.cache.rows(C1);
+    assert.equal(answer.message_id, "a1");
+    assert.equal(answer.content, "يحتاج هذا الطلب إلى بحث معمّق.");
+    assert.equal(user.message_id, "u1");
+    assert.deepEqual(h.store.getState().notices[C1], { kind: "deep_search_gated", info });
+  });
+
+  test("the next send clears the banner", async () => {
+    const h = harness();
+    h.store.setNotice(C1, {
+      kind: "deep_search_gated",
+      info: { reason: "low_points", plan_id: "basic", upgrade_options: [], resets_at: null, message_ar: "رصيدك المتبقي لا يكفي لبدء بحث معمّق جديد." },
+    });
+    await startSend(h);
+    assert.equal(h.store.getState().notices[C1], undefined);
+  });
+});
+
 describe("send — errors", () => {
   test("error before message_start → failed row + banner", async () => {
     const h = harness();

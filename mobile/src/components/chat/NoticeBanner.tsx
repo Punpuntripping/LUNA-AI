@@ -12,6 +12,8 @@ import { useTheme } from "@/theme/ThemeProvider";
 
 const ARABIC = /[؀-ۿ]/;
 const FALLBACK = "تعذّر إرسال رسالتك الآن — حاول مجدداً بعد قليل";
+// Only if the server's `message_ar` is missing. ⚠ PROPOSED copy (migration 197).
+const DEEP_SEARCH_GATED_FALLBACK = "البحث المعمّق غير متاح في باقتك الآن.";
 
 function arabic(value: string | null | undefined): string | null {
   const v = value?.trim();
@@ -31,6 +33,9 @@ export function noticeText(notice: ChatNotice): string {
       return arabic(notice.info.detail) ?? FALLBACK;
     case "duplicate":
       return arabic(notice.detail) ?? FALLBACK;
+    case "deep_search_gated":
+      // The send went through — FALLBACK's «تعذّر إرسال رسالتك» would be false.
+      return arabic(notice.info.message_ar) ?? DEEP_SEARCH_GATED_FALLBACK;
   }
 }
 

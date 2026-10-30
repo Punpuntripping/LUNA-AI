@@ -9,6 +9,7 @@ import type {
   PendingLibraryItem,
   PendingTemplate,
   SSEAgentProgress,
+  SSEDeepSearchGated,
   SSEParallelLimit,
   SSEQuotaExceeded,
   TemplateUsed,
@@ -264,12 +265,15 @@ export interface StreamState {
 }
 
 /**
- * Per-conversation refusal banner (``QuotaBanner``): either the quota gate
- * (``quota_exceeded``) or the per-plan parallel-runs cap (``parallel_limit``).
+ * Per-conversation refusal banner (``QuotaBanner``): the quota gate
+ * (``quota_exceeded``), the per-plan parallel-runs cap (``parallel_limit``), or
+ * the deep-search plan gate (``deep_search_gated`` — the turn itself was saved;
+ * the banner only carries the upgrade offer).
  */
 export type ChatNotice =
   | { kind: "quota"; info: SSEQuotaExceeded }
-  | { kind: "parallel_limit"; info: SSEParallelLimit };
+  | { kind: "parallel_limit"; info: SSEParallelLimit }
+  | { kind: "deep_search_gated"; info: SSEDeepSearchGated };
 
 interface ChatState {
   /**

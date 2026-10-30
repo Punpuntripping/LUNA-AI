@@ -51,7 +51,7 @@ Tests may use Node APIs (`node:test`, `TextDecoder`); the modules may not.
 | `conversations.ts` | `ConversationSummary`, `ConversationDetail`, list/create shapes (moved) | `@/types` (re-export) |
 | `messages.ts` | `Message`, `MessageMetadata`, `NextStep`, `TemplateUsed`, `MessageListResponse` (incl. `run_active`), `SendMessagePayload` (moved) | `@/types` (re-export) |
 | `references.ts` | `Reference`, `SourceView`, `ReferenceSourceResponse`, unlock/balance shapes (moved) | `@/types` (re-export) |
-| `sse.ts` | every SSE payload (moved) + `SSEError`, `SSEHeartbeat`, `SSEAgentSelected`, `SSEEventMap`, `SSEEventName`, `SSE_EVENT_NAMES` (22), `isSSEEventName` | `@/types` (re-export) |
+| `sse.ts` | every SSE payload (moved) + `SSEError`, `SSEHeartbeat`, `SSEAgentSelected`, `SSEDeepSearchGated` (added — deep-search plan gate, migration 197), `SSEEventMap`, `SSEEventName`, `SSE_EVENT_NAMES` (23), `isSSEEventName` | `@/types` (re-export) |
 | `sse-parser.ts` | `createSSEParser` (feed/end), `parseSSEData` (never throws), `toTypedSSEEvent` | — (native only) |
 | `utf8.ts` | `createUtf8Decoder` — streaming UTF-8 fallback (WHATWG-exact) | — (native only) |
 | `markdown/plain-text.ts`, `markdown/images.ts`, `markdown/streaming.ts` | `markdownToPlainText` (النسخ لناجز), `stripMarkdownImages`, `splitStreamingContent` (moved) | `@/lib/markdown/*` (re-export) |

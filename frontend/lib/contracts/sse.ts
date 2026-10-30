@@ -106,6 +106,32 @@ export interface SSEParallelLimit {
   upgrade_plan: "max" | null;
 }
 
+/**
+ * SSE `deep_search_gated` — the plan gate refused to START a deep search
+ * (migration 197, `.claude/plans/deep_search_plan_gate.md`): free = 1 per 30
+ * days + a 2-point floor, basic = a 1-point floor. Unlike `quota_exceeded`
+ * the turn IS saved: the Arabic refusal streams as ordinary `token`s and is the
+ * persisted assistant message. Arrives after `message_start`, before the
+ * tokens. The client keeps the optimistic user message (never drop it here) and
+ * may offer the upgrade. Older app builds drop the unknown name and still show
+ * the reply.
+ */
+export interface SSEDeepSearchGated {
+  /** `free_limit` = this window's deep searches are used · `low_points` = too
+   *  few points left to start one. */
+  reason: "free_limit" | "low_points";
+  /** EFFECTIVE plan (an expired basic reports `"free"`). */
+  plan_id: string | null;
+  /** Same contract as `SSEQuotaExceeded.upgrade_options`: plans that would clear
+   *  THIS refusal, cheapest first; empty = nothing to sell. */
+  upgrade_options: string[];
+  /** ISO-8601 UTC — when a new deep search could start without upgrading;
+   *  `null` when unknown. */
+  resets_at: string | null;
+  /** Arabic banner line, shown verbatim. */
+  message_ar: string;
+}
+
 export interface SSEDone {
   message_id: string;
   usage: {
@@ -309,6 +335,7 @@ export interface SSEEventMap {
   duplicate: SSEDuplicate;
   quota_exceeded: SSEQuotaExceeded;
   parallel_limit: SSEParallelLimit;
+  deep_search_gated: SSEDeepSearchGated;
   done: SSEDone;
   error: SSEError;
   heartbeat: SSEHeartbeat;
@@ -330,13 +357,14 @@ export interface SSEEventMap {
 
 export type SSEEventName = keyof SSEEventMap;
 
-/** Runtime list of {@link SSEEventName} (22 names) — for name guards. */
+/** Runtime list of {@link SSEEventName} (23 names) — for name guards. */
 export const SSE_EVENT_NAMES = [
   "message_start",
   "token",
   "duplicate",
   "quota_exceeded",
   "parallel_limit",
+  "deep_search_gated",
   "done",
   "error",
   "heartbeat",
