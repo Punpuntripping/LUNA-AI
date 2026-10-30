@@ -115,6 +115,14 @@ agents/deep_search_v4/case_search/tests/*
 # and that a read receipt can only be written for a message the caller can see.
 # It runs in CI, so it must be in the clone.
 !backend/tests/test_announcements.py
+# Renewal ladder (196), deep-search plan gate (197) and WI preview lock (198) —
+# durable for the same reason as the library suites: they pin money and
+# entitlement invariants that are silent at runtime (a retry charged a month
+# early, a free user's second deep search, a locked body leaking through a
+# list / PATCH / share route). All three run in CI.
+!backend/tests/test_subscription_renewal.py
+!backend/tests/test_deep_search_gate.py
+!backend/tests/test_wi_preview_lock.py
 # المشتركون الأوائل — the early-adopter promo suite is durable for the same
 # reason: it pins that a seat holder is precisely someone charged the promo
 # price, that cancelling forfeits it and a refund does not, and that a renewal
