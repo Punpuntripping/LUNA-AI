@@ -32,6 +32,7 @@ Registration::
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Protocol, runtime_checkable
@@ -101,6 +102,51 @@ def _resolve_wi_alias(alias: str, alias_map: dict[int, str]) -> str | None:
     return None
 
 
+# ── WI preview lock (.claude/plans/wi_preview_lock.md §1.3) ───────────────────
+# The editor reads AND rewrites the whole stored body, so on a preview-locked
+# item it would quote the hidden part back in its change summary and could move
+# it into the visible preview («انقل الخلاصة إلى البداية»). Same rule as a body
+# PATCH from the workspace (402): a locked item is not edited. Only RouterDeps
+# carries ``wi_lock_policy`` (None when the flag is off or the user is paid), so
+# every other caller is untouched. Per-user state lives in this tool RESULT,
+# never in the docstring (prompt caching).
+
+_LOCK_COLUMNS = "kind, created_by, created_at, metadata, created_while_paid"
+
+_LOCKED_EDIT = (
+    "〔[نظام] PLAN LOCK — DELIBERATE, NOT AN ERROR. {wi} is preview-locked on "
+    "this user's free plan, so it cannot be edited — the same rule as editing it "
+    "in the workspace. Nothing was changed. Tell the user plainly that editing "
+    "the full document is on the paid plans and offer upgrading, e.g. «تعديل هذا "
+    "المستند متاح في الباقات المدفوعة — يمكنك الترقية لتعديله كاملاً». Never "
+    "apologise for a technical problem.〕"
+)
+
+
+def _is_preview_locked(supabase, item_id: str, user_id: str, policy) -> bool:
+    """The shared lock decision for one item. Fails CLOSED (True) when the row
+    cannot be read — the same reading as the paid lookup's "treat as free"."""
+    from shared.workspace.preview_lock import is_locked
+
+    try:
+        resp = (
+            supabase.table("workspace_items")
+            .select(_LOCK_COLUMNS)
+            .eq("item_id", item_id)
+            .eq("user_id", user_id)
+            .is_("deleted_at", "null")
+            .maybe_single()
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("edit_artifact: lock lookup failed for %s (refused): %s", item_id, exc)
+        return True
+    row = getattr(resp, "data", None) if resp else None
+    if not row:
+        return False          # missing / not this user's — the editor says so itself
+    return is_locked(row, policy)
+
+
 # ── Pydantic AI tool ──────────────────────────────────────────────────────────
 
 
@@ -150,6 +196,17 @@ def register_edit_artifact(agent: Agent) -> None:
                 f"العنصر {target_wi} غير موجود في هذه المحادثة. "
                 f"استخدم رمزاً من الملخصات (WI-1, WI-2, ...) وأعد استدعاء الأداة."
             )
+
+        lock_policy = getattr(ctx.deps, "wi_lock_policy", None)
+        if lock_policy is not None and await asyncio.to_thread(
+            _is_preview_locked,
+            ctx.deps.supabase,
+            item_id,
+            str(getattr(ctx.deps, "user_id", "") or ""),
+            lock_policy,
+        ):
+            logger.info("edit_artifact: %s is preview-locked — edit refused", target_wi)
+            return _LOCKED_EDIT.format(wi=target_wi)
 
         # Lazy import: keeps this module import-light (the editor package pulls
         # the model registry + tracking) and lets tests monkeypatch
