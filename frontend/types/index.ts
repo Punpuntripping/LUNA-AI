@@ -1343,6 +1343,13 @@ export interface SubscriptionState {
   /** Set = the user has opted out of renewal; null = renewal is on. */
   renewal_cancelled_at: string | null;
   /**
+   * The renewal grace (migration 196, renewal_retry_grace.md): a declined
+   * renewal keeps the plan running past `expires_at` while the card is retried.
+   * The server sends it ONLY while it extends access, so the plan runs to the
+   * later of the two. ABSENT on an older backend — read as null.
+   */
+  renewal_grace_until?: string | null;
+  /**
    * المشتركون الأوائل standing. ABSENT on an older backend — treat a missing
    * block as "not a member" (see `EarlyAdopterState`). The cancel flow reads
    * this to warn a seat holder that cancelling forfeits the price permanently,

@@ -433,11 +433,28 @@ export function AccountSettingsDialog({
   // Visibility (plan §4): a paid term still running, or one already cancelled
   // but not yet ended. `cancellable` already implies a running term, so the
   // second clause only matters if the server ever narrows that flag.
-  const termEndsAt = formatTermDate(subscription?.expires_at);
+  //
+  // The renewal grace counts as running (renewal_retry_grace.md §5): after a
+  // declined renewal the plan keeps going past `expires_at` while the card is
+  // retried, and the server sends `renewal_grace_until` only while it extends
+  // access — so the plan runs to it, and every «حتى …» below names it.
+  const graceUntil = subscription?.renewal_grace_until ?? null;
+  const accessEndsIso = graceUntil ?? subscription?.expires_at ?? null;
+  const termEndsAt = formatTermDate(accessEndsIso);
   const isCancelled = Boolean(subscription?.renewal_cancelled_at);
-  const termStillRunning = subscription?.expires_at
-    ? Date.parse(subscription.expires_at) > Date.now()
+  const termStillRunning = accessEndsIso
+    ? Date.parse(accessEndsIso) > Date.now()
     : false;
+  // Mid-retry: the paid term is over and only the grace is left. Cancelling
+  // here ends the plan AT ONCE (there is nothing left to retry, and no paid
+  // time to keep — /terms §3), so the cancel dialog must not promise «تبقى
+  // باقتك فعّالة حتى …» or an undo.
+  const inRenewalGrace = Boolean(
+    graceUntil &&
+      termStillRunning &&
+      subscription?.expires_at &&
+      Date.parse(subscription.expires_at) <= Date.now(),
+  );
   const showSubscription = Boolean(
     subscription && (subscription.cancellable || (isCancelled && termStillRunning)),
   );
@@ -985,11 +1002,21 @@ export function AccountSettingsDialog({
               {/* asChild + div: the body holds inputs, and a <p> may not
                   contain them (same reason PaymentHistoryDialog does it). */}
               <div className="flex flex-col gap-3 text-start">
-                <span className="text-sm text-muted-foreground">
-                  تبقى باقتك فعّالة
-                  {termEndsAt ? ` حتى ${termEndsAt}` : ""} ثم تنتقل إلى الباقة
-                  المجانية. يمكنك التراجع في أي وقت قبل ذلك.
-                </span>
+                {inRenewalGrace ? (
+                  <span
+                    className="text-sm text-muted-foreground"
+                    data-testid="cancel-renewal-grace-note"
+                  >
+                    لم يتم تجديد اشتراكك بعد. عند الإلغاء نتوقف عن محاولة الدفع
+                    وتنتقل إلى الباقة المجانية فوراً.
+                  </span>
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    تبقى باقتك فعّالة
+                    {termEndsAt ? ` حتى ${termEndsAt}` : ""} ثم تنتقل إلى الباقة
+                    المجانية. يمكنك التراجع في أي وقت قبل ذلك.
+                  </span>
+                )}
 
                 {/* المشتركون الأوائل — early_adopters.md §6.2, and under the
                     price tiers pricing_campaigns_v2 §1.4-6. Stated BEFORE the
@@ -1016,10 +1043,13 @@ export function AccountSettingsDialog({
                   >
                     إذا اكتمل الإلغاء تفقد مقعدك في العرض وما تبقّى من أشهره،
                     ولا يُتاح لك هذا العرض مرة أخرى. يمكنك لاحقاً الاشتراك بأي
-                    عرض لم تستخدمه ما دام متاحاً. ويمكنك التراجع عن الإلغاء
-                    {termEndsAt
-                      ? ` قبل انتهاء اشتراكك في ${termEndsAt}.`
-                      : " قبل انتهاء اشتراكك."}
+                    عرض لم تستخدمه ما دام متاحاً.
+                    {/* No undo inside the renewal grace: the cancel ends the
+                        plan at once (see inRenewalGrace). */}
+                    {!inRenewalGrace &&
+                      (termEndsAt
+                        ? ` ويمكنك التراجع عن الإلغاء قبل انتهاء اشتراكك في ${termEndsAt}.`
+                        : " ويمكنك التراجع عن الإلغاء قبل انتهاء اشتراكك.")}
                     {/* The rule this sentence states lives in full on
                         /promo-terms. Linked HERE and not only at the point of
                         sale because this is the moment the rule actually costs
@@ -1056,11 +1086,11 @@ export function AccountSettingsDialog({
                     أنت من{" "}
                     <strong className="font-semibold">المشتركين الأوائل</strong>
                     . إذا اكتمل الإلغاء فسيعود سعر باقتك إلى السعر المعتاد، ولن
-                    يمكن استعادة سعر المشتركين الأوائل لاحقاً. يمكنك التراجع عن
-                    الإلغاء
-                    {termEndsAt
-                      ? ` قبل انتهاء اشتراكك في ${termEndsAt}.`
-                      : " قبل انتهاء اشتراكك."}
+                    يمكن استعادة سعر المشتركين الأوائل لاحقاً.
+                    {!inRenewalGrace &&
+                      (termEndsAt
+                        ? ` يمكنك التراجع عن الإلغاء قبل انتهاء اشتراكك في ${termEndsAt}.`
+                        : " يمكنك التراجع عن الإلغاء قبل انتهاء اشتراكك.")}
                     {/* The forfeiture rule this sentence states lives in full on
                         /promo-terms. Linked HERE and not only at the point of
                         sale because this is the moment the rule actually costs
