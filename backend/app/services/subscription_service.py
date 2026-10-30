@@ -645,6 +645,50 @@ def clear_renewal_cancellation(supabase: SupabaseClient, user_id: str) -> bool:
         return False
 
 
+def reset_renewal_ladder(supabase: SupabaseClient, user_id: str) -> bool:
+    """A new paid grant restarts the dunning ladder — 132's promise, kept here.
+
+    SYNC, called through ``run_db`` from ``payment_service`` right after
+    ``clear_renewal_cancellation``, for the same two reasons: not inside
+    ``grant_plan`` (113's rule), and it never raises.
+
+    Without it, a user who re-buys at checkout while a declined renewal is still
+    mid-ladder keeps ``renewal_failed_count > 0``; the renewal job then reads
+    their NEW term as a due retry and charges the period after it ~30 days
+    early. Found on prod 2026-10-30 (renewal_retry_grace.md §2).
+
+    ``renewal_attempt_at`` is left alone — it is history, and a successful
+    renewal keeps it too. Returns True when a non-zero count was reset.
+    """
+    try:
+        res = (
+            supabase.table("user_subscriptions")
+            .select("renewal_failed_count")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        if not rows or not int(rows[0].get("renewal_failed_count") or 0):
+            return False                       # the common case: nothing to do
+        (
+            supabase.table("user_subscriptions")
+            .update({"renewal_failed_count": 0, "updated_at": _now_iso()})
+            .eq("user_id", user_id)
+            .execute()
+        )
+        logger.info("renewal ladder reset by a new purchase: user=%s", user_id)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "could not reset renewal_failed_count for user=%s after a paid grant "
+            "(the plan IS granted; the renewal job's expires_at bound still stops "
+            "an early charge): %s",
+            user_id, exc,
+        )
+        return False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 7. المشتركون الأوائل — the seat (migration 138)
 #

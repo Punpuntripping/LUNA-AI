@@ -2761,6 +2761,12 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
     await run_db(
         subscription_service.clear_renewal_cancellation, supabase, row["user_id"]
     )
+    # …and a new paid grant restarts the dunning ladder, or a declined renewal
+    # still mid-ladder reads the NEW term as a due retry and charges the period
+    # after it a month early. Same placement rules, same never-raises contract.
+    await run_db(
+        subscription_service.reset_renewal_ladder, supabase, row["user_id"]
+    )
 
     # ── المشتركون الأوائل: claim the seat (early_adopters.md §1.1, §4) ─────
     # BESIDE grant_plan, never inside it — 113/119/120's rule, the same one the

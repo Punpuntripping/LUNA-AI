@@ -218,6 +218,12 @@ def _select_due_retry(supabase: SupabaseClient, now: datetime) -> list[dict]:
     ``expires_at >= now − RETRY_GRACE`` keeps this from resurrecting an ancient
     lapsed term: the user has been back on the free plan for a week by then, and
     a silent charge would be a chargeback, not a renewal.
+
+    ``expires_at <= now + DUE_HORIZON`` is the other bound: a retry is only ever
+    for a term that is due or just lapsed. A term a month out means the user
+    bought again at checkout mid-ladder — charging it would bill the NEXT period
+    ~30 days early (prod 2026-10-30). The checkout also resets the count; this
+    holds even if that write failed.
     """
     res = (
         supabase.table("user_subscriptions")
@@ -228,6 +234,7 @@ def _select_due_retry(supabase: SupabaseClient, now: datetime) -> list[dict]:
         .gt("renewal_failed_count", 0)
         .lt("renewal_failed_count", MAX_ATTEMPTS)
         .gte("expires_at", _iso(now - RETRY_GRACE))
+        .lte("expires_at", _iso(now + DUE_HORIZON))
         .limit(BATCH_CAP)
         .execute()
     )

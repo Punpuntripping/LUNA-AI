@@ -1820,6 +1820,17 @@ def test_an_ancient_lapsed_term_is_not_resurrected(flag_on, charges, no_smtp):
     assert charges == []
 
 
+def test_a_rebuy_mid_ladder_is_not_charged_a_month_early(flag_on, charges, no_smtp):
+    """Prod 2026-10-30: a declined renewal left failed_count=1; the user bought
+    again at checkout (new term ~30 days out) and the next sweep read that NEW
+    term as a due retry — billing the period after it a month early."""
+    db = FakeSupabase(sub("pro", hours_left=24 * 30, failed_count=1,
+                          attempt_at=_iso(_now() - timedelta(days=2))))
+    store_method(db)
+    assert sweep(db)["scanned"] == 0
+    assert charges == []
+
+
 def test_a_decline_emails_the_customer(flag_on, charges, monkeypatch):
     """§8: a declined card must not silently end a subscription the user
     believes is running."""

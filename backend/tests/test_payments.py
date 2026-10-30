@@ -1932,6 +1932,41 @@ def test_clearing_the_flag_never_raises_into_the_money_path(monkeypatch):
     assert ss.clear_renewal_cancellation(db, USER) is False
 
 
+# ── re-purchase restarts the dunning ladder ──────────────────────────────────
+
+
+def test_paid_fulfilment_resets_the_renewal_ladder(keys, monkeypatch):
+    """Prod 2026-10-30: a declined renewal left renewal_failed_count=1, and a
+    re-buy at checkout kept it — so the renewal job read the NEW term as a due
+    retry. A paid grant must restart the ladder."""
+    db = FakeSupabase(paid_sub(days_left=20))
+    current_sub(db)["renewal_failed_count"] = 1
+
+    pid = checkout(db, "pro")["payment_id"]          # same plan → no credit
+    patch_fetch(monkeypatch, moyasar_payment(pid))
+
+    result = run(ps.verify_payment(db, USER, MOYASAR_ID))
+    assert result["granted"] is True
+    assert current_sub(db)["renewal_failed_count"] == 0
+
+
+def test_resetting_a_clean_ladder_writes_nothing():
+    db = FakeSupabase(paid_sub())
+    current_sub(db)["renewal_failed_count"] = 0
+    assert ss.reset_renewal_ladder(db, USER) is False
+    assert not [w for w in db.writes if w == ("user_subscriptions", "update")]
+
+
+def test_resetting_the_ladder_never_raises_into_the_money_path(monkeypatch):
+    db = FakeSupabase(paid_sub())
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db, "table", _boom)
+    assert ss.reset_renewal_ladder(db, USER) is False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # عرض الشهر الأول — profession intro offer (profession_intro_offer.md §3)
 #
