@@ -10,6 +10,9 @@
 -- in-process for up to 600 s (agents/tool_repository/rayhan_docs.py), so a
 -- running backend serves the new text within ten minutes.
 -- To UNDO at a flag-off: the reverse replace is in the ROLLBACK block below.
+-- ⚠ REQUIRES 197 (deep-search gate) APPLIED FIRST: the pricing / usage_limits
+-- anchors and md5s are those rows AFTER 197 rewrote their free-plan line (the
+-- other three rows 197 does not touch). Refuses below without 197's columns.
 --
 -- WHAT CHANGES — additions only, appended right after the sentence each one
 -- qualifies; no live sentence is removed or rewritten. Every old sentence
@@ -51,6 +54,15 @@
 
 BEGIN;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns c
+                    WHERE c.table_schema = 'public' AND c.table_name = 'plans'
+                      AND c.column_name = 'deep_search_min_points') THEN
+        RAISE EXCEPTION '198b: apply 197 (deep-search gate) first — the pricing / usage_limits anchors are its text. Nothing changed.';
+    END IF;
+END $$;
+
 CREATE TEMP TABLE m198b_edits (
     ord      int  NOT NULL,
     doc_key  text NOT NULL,
@@ -60,18 +72,18 @@ CREATE TEMP TABLE m198b_edits (
 ) ON COMMIT DROP;
 
 INSERT INTO m198b_edits (ord, doc_key, live_md5, old_text, add_text) VALUES
--- ── pricing (length 3077) ──
-(1, 'pricing', 'e123ce52660612e653f2f9ba5c030c0b',
- '**المجانية** — للتجربة، بحدّ يكفي لبحث معمّق واحد في الجلسة ومثله في الأسبوع.',
+-- ── pricing (length 3085 — the row AFTER 197's free-line replace) ──
+(1, 'pricing', '1b98aee381e678d2ad2170ed5b9ca36c',
+ '**المجانية** — للتجربة: بحث معمّق واحد كل 30 يوماً، ضمن رصيد نقاط محدود للفترة نفسها.',
  ' وفي المجانية تظهر تقارير الباحث ومسودات الكاتب التي تُنشأ عليها معاينةً: الجزء الأول من نصّها مع المراجع المذكورة فيه، والبقية — مع مشاركتها وتصديرها — في الباقات المدفوعة. هذا قفل مقصود في الباقة المجانية لا خلل، وما أُنشئ أثناء اشتراك مدفوع يبقى كاملاً.'),
-(2, 'pricing', 'e123ce52660612e653f2f9ba5c030c0b',
+(2, 'pricing', '1b98aee381e678d2ad2170ed5b9ca36c',
  'قراءة محادثاتك السابقة ومساحة عملك، وتصفّح المدونة والمكتبة القانونية العامة، وحفظ العناصر وتصديرها ومشاركتها، وإنشاء القضايا والقوالب وتنظيمها.',
  ' (والمخرَج المعروض معاينةً في الباقة المجانية لا يُشارَك ولا يُصدَّر.)'),
--- ── usage_limits (length 1960) ──
-(3, 'usage_limits', 'f40afbc0922b6d64d798bd29b16bbee5',
- 'الباقة المجانية خارج الجدول: نافذة واحدة بـ5 نقاط كل 30 يوماً — بحث معمّق واحد تقريباً، لتجربة ريحان قبل الاشتراك.',
+-- ── usage_limits (length 2109 — the row AFTER 197's free-line replace) ──
+(3, 'usage_limits', '35927949783f8e16f9daf242f86421e4',
+ 'الباقة المجانية خارج الجدول: نافذة واحدة بـ5 نقاط كل 30 يوماً، وفيها بحث معمّق واحد كل 30 يوماً يبدأ متى بقيت في رصيدك نقطتان على الأقل — لتجربة ريحان قبل الاشتراك.',
  ' وتظهر فيها تقارير الباحث ومسودات الكاتب التي تُنشأ عليها معاينةً: الجزء الأول من نصّها، والبقية في الباقات المدفوعة.'),
-(4, 'usage_limits', 'f40afbc0922b6d64d798bd29b16bbee5',
+(4, 'usage_limits', '35927949783f8e16f9daf242f86421e4',
  'قراءة محادثاتك السابقة ومساحة عملك ومكتبتك، وتصفّح المدونة والمكتبة القانونية العامة، وحفظ العناصر وتصديرها ومشاركتها، وإنشاء القضايا والقوالب وتنظيمها.',
  ' (والمخرَج المعروض معاينةً في الباقة المجانية لا يُشارَك ولا يُصدَّر.)'),
 -- ── workspace (length 4705) ──

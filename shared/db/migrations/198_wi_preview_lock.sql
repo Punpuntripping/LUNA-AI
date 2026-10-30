@@ -64,7 +64,8 @@
 -- runtime cost is one user_subscriptions lookup by its UNIQUE key per
 -- workspace_items INSERT.
 --
--- DEPLOY ORDER (§11): 198 → backend + agents (flag OFF) → web + mobile OTA →
+-- DEPLOY ORDER (§11): 196 (renewal grace — §0 refuses without its column) →
+-- 198 → backend + agents (flag OFF) → web + mobile OTA →
 -- 198b (product_docs) → flag ON with WI_PREVIEW_LOCK_FROM = that moment.
 --
 -- IDEMPOTENT: ADD COLUMN IF NOT EXISTS, CREATE OR REPLACE FUNCTION,
@@ -110,6 +111,11 @@ BEGIN
             ('user_subscriptions', 'user_id'),
             ('user_subscriptions', 'plan_id'),
             ('user_subscriptions', 'expires_at'),
+            -- 196 (renewal grace) must be applied first: the stamp reads its
+            -- column, and a plpgsql reference to a missing column would fail
+            -- every workspace_items INSERT at run time, not here.
+            ('user_subscriptions', 'source'),
+            ('user_subscriptions', 'renewal_grace_until'),
             ('plans',              'plan_id'),
             ('workspace_items',    'user_id'),
             ('workspace_items',    'created_at')
@@ -162,15 +168,21 @@ AS $function$
 BEGIN
     -- get_user_quota_state's effective plan, inlined: NULL plan → not paid;
     -- expired → 'free' → not paid; the JOIN keeps the RPC's catalog lookup.
-    -- Reads plan_id + expires_at only, never `source`: a store-billed plan
-    -- (194) is paid exactly like a web one.
+    -- A store-billed plan (194) is paid exactly like a web one. "Expired" is
+    -- 196's ACCESS end: a payment-sourced term inside its renewal grace
+    -- (renewal_grace_until later than expires_at, not yet passed) is still
+    -- paid — the same CASE get_user_quota_state applies.
     NEW.created_while_paid := EXISTS (
         SELECT 1
           FROM public.user_subscriptions s
           JOIN public.plans p ON p.plan_id = s.plan_id
          WHERE s.user_id = NEW.user_id
            AND s.plan_id <> 'free'
-           AND (s.expires_at IS NULL OR s.expires_at > now())
+           AND (s.expires_at IS NULL
+                OR s.expires_at > now()
+                OR (s.source = 'payment'
+                    AND s.renewal_grace_until > s.expires_at
+                    AND s.renewal_grace_until > now()))
     );
     RETURN NEW;
 END;
@@ -256,6 +268,8 @@ END $$;
 --   A  free (signup default)                       → false
 --   B  paid pro, not expired                       → true
 --   C  the same plan, expired                      → false
+--   G  expired, inside the renewal grace (196)     → true
+--   H  expired, the renewal grace already over     → false
 --   D  store-billed pro (source 'apple', 194)      → true
 --   E  plan-less (locked account)                  → false
 --   F  free, INSERT claims created_while_paid=true → false (overwritten)
@@ -297,6 +311,8 @@ BEGIN
                 ('A free',          false, false),
                 ('B paid pro',      true,  false),
                 ('C expired pro',   false, false),
+                ('G in grace',      true,  false),
+                ('H grace over',    false, false),
                 ('D store pro',     true,  false),
                 ('E plan-less',     false, false),
                 ('F spoofed insert', false, true)
@@ -319,9 +335,18 @@ BEGIN
                 WHEN 'C' THEN
                     UPDATE public.user_subscriptions s
                        SET expires_at = now() - interval '1 day' WHERE s.user_id = v_uid;
+                WHEN 'G' THEN
+                    UPDATE public.user_subscriptions s
+                       SET renewal_grace_until = now() + interval '23 hours'
+                     WHERE s.user_id = v_uid;
+                WHEN 'H' THEN
+                    UPDATE public.user_subscriptions s
+                       SET renewal_grace_until = now() - interval '1 minute'
+                     WHERE s.user_id = v_uid;
                 WHEN 'D' THEN
                     UPDATE public.user_subscriptions s
-                       SET source = 'apple', expires_at = now() + interval '30 days'
+                       SET source = 'apple', expires_at = now() + interval '30 days',
+                           renewal_grace_until = NULL
                      WHERE s.user_id = v_uid;
                 WHEN 'E' THEN
                     UPDATE public.user_subscriptions s
@@ -352,7 +377,7 @@ BEGIN
 
         RAISE EXCEPTION USING ERRCODE = 'LU198', MESSAGE = '198 self-test sentinel — rolling back';
     EXCEPTION WHEN SQLSTATE 'LU198' THEN
-        RAISE NOTICE '198: behavioural self-tests A–F passed (stamp = quota RPC); every test write rolled back';
+        RAISE NOTICE '198: behavioural self-tests A–H passed (stamp = quota RPC); every test write rolled back';
     END;
 
     IF (SELECT count(*) FROM public.users) <> v_users
