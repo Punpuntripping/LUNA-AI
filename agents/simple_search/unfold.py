@@ -55,7 +55,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from agents.deep_search_v4.reg_compliance_search.unfold_reranker import (
     format_chunk,
@@ -84,6 +84,8 @@ from agents.simple_search.models import (
     UnfoldResult,
     UnfoldSection,
 )
+from agents.tool_repository.regulation_versions import opened_section
+from shared.library.supersession import riyadh_today
 
 logger = logging.getLogger(__name__)
 
@@ -912,7 +914,11 @@ def _reg_display_name(reg_row: dict[str, Any]) -> str:
 
 
 def render_chunk(
-    chunk_row: dict[str, Any], framing: str = "", *, regulation_name: str = ""
+    chunk_row: dict[str, Any],
+    framing: str = "",
+    *,
+    regulation_name: str = "",
+    version_section: Sequence[str] = (),
 ) -> UnfoldResult:
     """Render ONE ``chunks_v2`` row: the reranker's framing + the REAL body (§4 L1).
 
@@ -920,6 +926,9 @@ def render_chunk(
     ``unfold_chunk_precise`` dict — regulation name, scope, and the three-chunk
     context window. It is reused verbatim (§7.2) and then the thing it
     deliberately omits is appended.
+
+    ``version_section`` is ``regulation_versions.opened_section``, empty for any
+    regulation outside a supersession pair.
 
     > The single biggest gap in the existing helpers: ``CHUNK_SELECT``
     > (``unfold_reranker.py:79-82``) omits ``content`` on purpose — deep_search's
@@ -944,6 +953,7 @@ def render_chunk(
         if regulation_name:
             lines.append(f"**النظام:** {regulation_name}")
     lines.append("")
+    lines += version_section
     lines.append("**النص الكامل للمقطع:**")
     lines.append("")
     lines.append(kept if kept else "(لا يوجد نص لهذا المقطع)")
@@ -969,6 +979,8 @@ def render_regulation_doc(
     reg_row: dict[str, Any],
     chunk_rows: list[dict[str, Any]],
     decision: LadderDecision,
+    *,
+    version_section: Sequence[str] = (),
 ) -> UnfoldResult:
     """Render a whole regulation as a document (§4 L2), under the §5 ladder.
 
@@ -999,6 +1011,8 @@ def render_regulation_doc(
         lines.append(f"**الرابط:** {landing}")
     if lines[-1] != "":
         lines.append("")
+    # Ahead of the summary: it says how to read everything below it.
+    lines += version_section
 
     sections: list[UnfoldSection] = []
     notes: list[str] = [decision.reason]
@@ -1103,6 +1117,7 @@ def render_article(
     regulation_name: str = "",
     regulation_url: str = "",
     from_owns_fallback: bool = False,
+    version_section: Sequence[str] = (),
 ) -> UnfoldResult:
     """Render ONE ``articles_v2`` row as the full article body (§4 L3).
 
@@ -1126,6 +1141,7 @@ def render_article(
     lines: list[str] = [header, ""]
     if regulation_url:
         lines += [f"**الرابط:** {regulation_url}", ""]
+    lines += version_section
     if from_owns_fallback:
         # §4 L3: articles_v2 SUPERSEDED the chunks_v2.owns map; we reinstate owns
         # as a SECOND layer, not a replacement. The chunk carries a RUN of مواد,
@@ -1904,16 +1920,27 @@ async def unfold_chunk(supabase, resolved: ResolvedObject) -> UnfoldResult:
     if not chunk:
         return _not_found("chunk", "المقطع النظامي", "chunk_row_not_found")
 
+    version_section = await asyncio.to_thread(
+        opened_section, supabase, chunk.get("regulation_id"), riyadh_today()
+    )
+
     # Reuse (§7.2): the PRECISE unfold + formatter give the regulation name,
     # scope and the three-chunk context window. Both are sync and hit the DB.
     framing = ""
     try:
         unfolded = await asyncio.to_thread(unfold_chunk_precise, supabase, chunk)
+        if version_section:
+            # The status_class line says «لم يعد سارياً» for an old row even while
+            # it applies. The version section states the real status; both would
+            # contradict each other.
+            unfolded["regulation_status"] = ""
         framing = format_chunk(unfolded, resolved.title or "C1")
     except Exception as exc:  # noqa: BLE001 — framing is decoration, body is not
         logger.warning("simple_search unfold: chunk framing failed: %s", exc)
 
-    return render_chunk(chunk, framing, regulation_name=resolved.subtitle)
+    return render_chunk(
+        chunk, framing, regulation_name=resolved.subtitle, version_section=version_section
+    )
 
 
 async def unfold_regulation_doc(supabase, resolved: ResolvedObject) -> UnfoldResult:
@@ -1936,6 +1963,9 @@ async def unfold_regulation_doc(supabase, resolved: ResolvedObject) -> UnfoldRes
     if not reg_row:
         return _not_found("regulation_doc", "النظام", "regulation_row_not_found")
 
+    version_section = await asyncio.to_thread(
+        opened_section, supabase, reg_id, riyadh_today()
+    )
     meta = await asyncio.to_thread(
         _fetch_chunks_for_regulation, supabase, reg_id, CHUNK_METADATA_SELECT
     )
@@ -1946,7 +1976,9 @@ async def unfold_regulation_doc(supabase, resolved: ResolvedObject) -> UnfoldRes
             body_content_chars=0, appendix_content_chars=0,
             body_summary_chars=0, appendix_summary_chars=0,
         )
-        result = render_regulation_doc(reg_row, [], decision)
+        result = render_regulation_doc(
+            reg_row, [], decision, version_section=version_section
+        )
         result.notes.append("regulation_has_no_chunks")
         return result
 
@@ -1968,7 +2000,9 @@ async def unfold_regulation_doc(supabase, resolved: ResolvedObject) -> UnfoldRes
                 body_summary_chars=0,
                 appendix_summary_chars=0,
             )
-            return render_regulation_doc(reg_row, rows, decision)
+            return render_regulation_doc(
+                reg_row, rows, decision, version_section=version_section
+            )
         # Fetched but over the ceiling — the summaries path below re-uses the
         # rows we already hold (SIMPLE_CHUNK_SELECT carries `summary` too), so
         # the overshoot costs no extra round trip.
@@ -1979,7 +2013,9 @@ async def unfold_regulation_doc(supabase, resolved: ResolvedObject) -> UnfoldRes
             body_summary_chars=summary_body,
             appendix_summary_chars=summary_apx,
         )
-        return render_regulation_doc(reg_row, rows, decision)
+        return render_regulation_doc(
+            reg_row, rows, decision, version_section=version_section
+        )
 
     # Too large to materialise. Summaries only — and the content figures stay as
     # the estimate, which is sound here: the guard means est > 137,500, and the
@@ -1999,7 +2035,9 @@ async def unfold_regulation_doc(supabase, resolved: ResolvedObject) -> UnfoldRes
         appendix_summary_chars=summary_apx,
         content_estimated=True,
     )
-    return render_regulation_doc(reg_row, rows, decision)
+    return render_regulation_doc(
+        reg_row, rows, decision, version_section=version_section
+    )
 
 
 async def unfold_article(supabase, resolved: ResolvedObject) -> UnfoldResult:
@@ -2043,11 +2081,15 @@ async def unfold_article(supabase, resolved: ResolvedObject) -> UnfoldResult:
     reg_row = await asyncio.to_thread(
         _fetch_row, supabase, "regulations_v2", "id", str(reg_id or ""), REGULATION_SELECT
     )
+    version_section = await asyncio.to_thread(
+        opened_section, supabase, reg_id, riyadh_today()
+    )
     return render_article(
         article,
         regulation_name=_reg_display_name(reg_row) or resolved.subtitle,
         regulation_url=(reg_row.get("landing_url") or "").strip(),
         from_owns_fallback=fallback,
+        version_section=version_section,
     )
 
 

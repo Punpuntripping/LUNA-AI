@@ -52,9 +52,13 @@ from shared.library.chunk_images import (
     render_for_agent,
 )
 
-# Repeal vocabulary -- shared with the reranker's candidate blocks so a
-# repealed law is never described two different ways inside one turn.
-from shared.library.reg_status import status_line
+# Repeal and transition vocabulary -- shared with the reranker's candidate blocks
+# so a repealed law is never described two different ways inside one turn.
+from shared.library.supersession import (
+    aggregator_status,
+    load_supersessions,
+    riyadh_today,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -568,6 +572,11 @@ async def _enrich_regulations(
     regulation_ids = [c.get("regulation_id") for c in chunks.values()]
     regs = await asyncio.to_thread(_fetch_regulations, supabase, regulation_ids)
 
+    # 2b. Supersession pairs. Cached for 5 minutes and fail-open, so this is not
+    #     a per-chunk query, and an empty map means today's status line.
+    supersessions = await asyncio.to_thread(load_supersessions, supabase)
+    today = riyadh_today()
+
     # 3. cross_references_v2 WHERE source_type='reg_chunk' AND source_id IN (..).
     cross_refs = await asyncio.to_thread(_fetch_cross_refs, supabase, chunk_ids)
 
@@ -692,8 +701,12 @@ async def _enrich_regulations(
         # repealed -- including the ``reg == {}`` case, where the chunk could
         # not be fetched at all (such a result carries no content and is
         # dropped by the empty-content filter below). A DB miss must never
-        # surface as a claim about a law's validity, in either direction.
-        res.reg_status = status_line(reg.get("status_class"), reg.get("status_raw"))
+        # surface as a claim about a law's validity, in either direction:
+        # with no row there is no id, so no pair and no transition either.
+        standing = aggregator_status(supersessions, reg, today)
+        res.reg_status = standing.status
+        res.reg_version = standing.version
+        res.reg_transitions = list(standing.transitions)
 
         # Build deduped cross-refs for this chunk (dedup by target_id).
         rows = cross_refs.get(chunk_id, []) if chunk_id else []

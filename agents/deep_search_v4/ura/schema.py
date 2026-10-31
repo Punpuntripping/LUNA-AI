@@ -29,6 +29,8 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
+from shared.library.supersession import Transition
+
 Domain = Literal["regulations", "compliance", "circulars", "cases"]
 
 
@@ -201,6 +203,11 @@ class AggregatorItem(BaseModel):
     # snippet (the same trap already documented for circulars in
     # ``build_snippet``).
     reg_status: str = ""
+    # A regulation in a live transition: which side of the pair this is (``old``
+    # / ``new``, rendered as ``<version>``) and what the turn's ``<transitions>``
+    # block is built from. ""/[] for every other regulation, so nothing renders.
+    reg_version: str = ""
+    reg_transitions: list[Transition] = Field(default_factory=list)
     chunk_content: str = ""
     cross_refs: list[CrossRef] = Field(default_factory=list)
     corpus: str = ""  # "appendix" -> (ملحق) tag; "" for the main statutory body
@@ -319,7 +326,19 @@ class RegURAResult(URAResultBase):
     # ``for_aggregator()``: a repealed text presented as current law is the
     # single worst failure this pipeline can produce, and that is worth the
     # prompt-surface change (and the one-time cache miss) it costs.
+    #
+    # A row in a live transition gets "" here whatever its status_class says:
+    # the static repeal rule would otherwise fire on law that can still apply.
+    # ``reg_transitions`` says what it means instead, and ``reg_version`` which
+    # side of the pair it is. See ``supersession.aggregator_status``.
     reg_status: str = ""
+    reg_version: str = ""
+    # Live only, and ``exclude`` is load-bearing: every result of a pair carries
+    # the whole note (~8 KB), and ``ura.model_dump()`` is what fills
+    # ``retrieval_artifacts.ura_json``. Stored, 27 results would take 213 KiB of
+    # ``generation_context``'s 256 KiB budget and survive the trim ladder, which
+    # cuts statute text first. The note stays on the regulation row.
+    reg_transitions: list[Transition] = Field(default_factory=list, exclude=True)
     chunk_content: str = ""
     chunk_context: str = ""        # stored only
     cross_refs: list[CrossRef] = Field(default_factory=list)
@@ -416,6 +435,8 @@ class RegURAResult(URAResultBase):
             reg_title=self.reg_title,
             reg_scope=self.reg_scope,
             reg_status=self.reg_status,
+            reg_version=self.reg_version,
+            reg_transitions=list(self.reg_transitions),
             # The figure's WORDS where the corpus wrote a filename (§4.1).
             # ``chunk_agent_content`` is "" on the 96.7% of chunks that carry no
             # figure, so this is ``chunk_content`` byte-for-byte on all of them.

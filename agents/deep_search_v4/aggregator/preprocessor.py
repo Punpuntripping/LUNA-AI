@@ -39,6 +39,13 @@ from agents.deep_search_v4.ura.schema import (
     ReferenceView,
     URAResultBase,
 )
+from shared.library.supersession import (
+    UPCOMING,
+    VERSION_NEW,
+    VERSION_OLD,
+    Transition,
+    version_title,
+)
 from shared.seo.judgment_naming import hijri_year, judgment_subject
 
 from .models import AggregatorInput, Reference
@@ -49,6 +56,7 @@ __all__ = [
     "preprocess_references",
     "attach_source_views",
     "collect_ordered_ura_results",
+    "collect_transitions",
     "build_snippet",
     "render_aggregator_content",
     "render_cross_ref",
@@ -678,6 +686,47 @@ def collect_ordered_ura_results(ura) -> list[URAResultBase]:
     ordered.extend(ura.high_results or [])
     ordered.extend(ura.medium_results or [])
     return ordered
+
+
+def collect_transitions(ura) -> list[Transition]:
+    """Every supersession transition on this turn's results, in citation order.
+
+    Empty for a turn with no replaced law. Read off the URA directly, so it
+    holds even when the references don't line up 1:1 with the results.
+    """
+    if ura is None:
+        return []
+    return [
+        transition
+        for result in collect_ordered_ura_results(ura)
+        for transition in getattr(result, "reg_transitions", ())
+    ]
+
+
+def notes_with_both_versions(ura, statute_body: str = "") -> set[str]:
+    """The transition notes whose law reached the aggregator in both versions.
+
+    A version counts from a reference, or from an article fetched by number under
+    its version label. Keyed by note because a law and its لائحة share one, so old
+    law text beside a new لائحة is the same risk. ``upcoming`` is left out: the old
+    law is simply the law until then. A pair with no note counts on its own, or
+    unrelated laws would add up.
+    """
+    if ura is None:
+        return set()
+    sides: dict[tuple[str, str], set[str]] = {}
+    for result in collect_ordered_ura_results(ura):
+        for transition in getattr(result, "reg_transitions", ()):
+            if transition.phase == UPCOMING:
+                continue
+            note = transition.note
+            found = sides.setdefault((note, "" if note else transition.old_title), set())
+            found.add(getattr(result, "reg_version", ""))
+            if version_title(transition.old_title, VERSION_OLD) in statute_body:
+                found.add(VERSION_OLD)
+            if any(version_title(t, VERSION_NEW) in statute_body for t in transition.new_titles):
+                found.add(VERSION_NEW)
+    return {note for (note, _), found in sides.items() if {VERSION_OLD, VERSION_NEW} <= found}
 
 
 def _preprocess_from_legacy(

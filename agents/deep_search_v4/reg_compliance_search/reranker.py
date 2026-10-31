@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from pydantic_ai import Agent, TextOutput
@@ -47,6 +48,11 @@ from agents.utils.agent_models import get_agent_model, primary_model_of_slot
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 from shared.config import get_settings
+from shared.library.supersession import (
+    load_supersessions,
+    riyadh_today,
+    takes_extra_slot,
+)
 from supabase import Client as SupabaseClient
 
 from . import decider_rules
@@ -71,6 +77,11 @@ _CHUNK_SOURCE_TYPES = ("regulation", "appendix", "chunk")
 # Content snippet cap for the forensic ``RerankedResult.content`` on flat
 # (circular/service) rows — logging only; the URA stage re-fetches full content.
 _FLAT_CONTENT_SNIPPET = 1_000
+
+# Old-law chunks kept ON TOP of ``max_keep`` while a law is in transition. They
+# are capped apart from everything else, so the lean stays toward the new law,
+# old text still reaches the aggregator, and no other chunk's fate changes.
+TRANSITION_EXTRA_KEEP = 3
 
 logger = logging.getLogger(__name__)
 
@@ -159,12 +170,14 @@ def _make_block(
     label: str,
     mode: str,
     rrf: float,
+    **old_chunk_gate: Any,
 ) -> dict[str, Any]:
     """Unfold + render one content row into a labelled reranker block (blocking).
 
     Dispatches on ``row["source_type"]``: circular/service rows render flat via
     their block builders (no DB hop); regulation/appendix rows go through the
-    chunk unfold path (precise/simple per ``mode``).
+    chunk unfold path (precise/simple per ``mode``). ``old_chunk_gate`` is
+    ``supersessions`` / ``sub_query`` / ``today``, forwarded to the unfolders.
     """
     rrf = float(rrf or 0.0)
     source_type = row.get("source_type", "regulation")
@@ -192,10 +205,10 @@ def _make_block(
 
     # Regulation / appendix chunk → two-shape unfold.
     if mode == "precise":
-        unfolded = unfold_chunk_precise(supabase, row)
+        unfolded = unfold_chunk_precise(supabase, row, **old_chunk_gate)
     else:
         mode = "simple"
-        unfolded = unfold_chunk_simple(supabase, row)
+        unfolded = unfold_chunk_simple(supabase, row, **old_chunk_gate)
     unfolded["_score"] = rrf
     return {
         "label": label,
@@ -309,6 +322,38 @@ def _assemble_result(block: dict[str, Any], decision: dict[str, Any]) -> Reranke
     )
 
 
+# -- Keep cap ------------------------------------------------------------------
+
+
+def _cap_sort_key(p: tuple[dict, dict]) -> tuple[int, float, float]:
+    """High-relevance ahead of medium, then decider score, then rrf (both desc).
+
+    The decider score is 0 for every qwen keep, so qwen's order is (tier, -rrf).
+    """
+    block, dec = p
+    rel = dec.get("relevance") or "medium"
+    return (0 if rel == "high" else 1, -float(dec.get("score") or 0.0), -block["rrf"])
+
+
+def _apply_keep_cap(
+    kept: list[tuple[dict, dict]],
+    max_keep: int,
+    is_old_chunk: Callable[[dict], bool],
+) -> tuple[list[tuple[dict, dict]], list[tuple[dict, dict]]]:
+    """Split the kept chunks into ``(capped, cut)``.
+
+    Everything that isn't an old chunk is sorted and capped at ``max_keep`` as
+    if the old chunks weren't there. Up to ``TRANSITION_EXTRA_KEEP`` old chunks
+    then follow it, best first. With no old chunk this is one flat cap.
+    """
+    rest = sorted((p for p in kept if not is_old_chunk(p[0])), key=_cap_sort_key)
+    old = sorted((p for p in kept if is_old_chunk(p[0])), key=_cap_sort_key)
+    return (
+        rest[:max_keep] + old[:TRANSITION_EXTRA_KEEP],
+        rest[max_keep:] + old[TRANSITION_EXTRA_KEEP:],
+    )
+
+
 # -- Decider engine (phase A) --------------------------------------------------
 
 
@@ -385,7 +430,8 @@ async def run_reranker_for_query(
             RPC similarity score). Chunk rows additionally carry the
             ``unfold_reranker.CHUNK_SELECT`` columns (+ ``corpus``).
         supabase: Supabase client for the candidate-view render hops.
-        max_keep: Per-sub-query keep cap — a single flat cap (default 8).
+        max_keep: Per-sub-query keep cap — a single flat cap (default 8). Up to
+            ``TRANSITION_EXTRA_KEEP`` eligible old-law chunks are added on top.
         model_override: Optional model registry key.
         round_trace: Optional list; one trace dict appended for the pass.
         planner_brief: Optional planner-distilled background (the
@@ -426,12 +472,18 @@ async def run_reranker_for_query(
             [],
         )
 
+    # Supersession pairs: cached and fail-open, so a law with no pair costs no
+    # query per chunk and its block is unchanged.
+    supersessions = await asyncio.to_thread(load_supersessions, supabase)
+    today = riyadh_today()
+
     first_labels = [_next_label() for _ in valid_chunks]
     active_blocks: list[dict[str, Any]] = list(
         await asyncio.gather(*[
             asyncio.to_thread(
                 _make_block, supabase, ch, lbl,
                 ch.get("_mode", "simple"), ch.get("_rrf", 0.0),
+                supersessions=supersessions, sub_query=query, today=today,
             )
             for ch, lbl in zip(valid_chunks, first_labels)
         ])
@@ -647,24 +699,23 @@ async def run_reranker_for_query(
     all_kept = list(by_id.values())
 
     # -- Apply the per-sub-query keep cap (single flat cap) -------------------
-    # One flat cap over all kept chunks. Within the cap, high-relevance chunks
-    # are ordered ahead of medium; then the decider score (descending; 0 for
-    # every qwen keep, so qwen's order is unchanged); ties broken by rrf score
-    # (descending).
-    def _cap_sort_key(p: tuple[dict, dict]) -> tuple[int, float, float]:
-        block, dec = p
-        rel = dec.get("relevance") or "medium"
-        return (0 if rel == "high" else 1, -float(dec.get("score") or 0.0), -block["rrf"])
+    # One flat cap over all kept chunks, except that eligible old chunks take
+    # the extra slots instead.
+    def _is_old_chunk(block: dict[str, Any]) -> bool:
+        row = block["chunk"]
+        return takes_extra_slot(
+            supersessions, {"id": row.get("regulation_id")}, row.get("chunk_ref"),
+            query, today,
+        )
 
-    all_kept.sort(key=_cap_sort_key)
-    truncated = max(0, len(all_kept) - max_keep)
-    all_kept_capped = all_kept[:max_keep]
+    all_kept_capped, cut = _apply_keep_cap(all_kept, max_keep, _is_old_chunk)
+    truncated = len(cut)
     total_dropped += truncated
 
     if truncated > 0:
         # Cap-truncated chunks were keep-worthy to the LLM — record them as
         # forensic drops (reason "cap", no per-item reasoning).
-        for block, _dec in all_kept[max_keep:]:
+        for block, _dec in cut:
             all_dropped.append(_dropped_row(block, "", "cap"))
         logger.info(
             "Reranker [%s]: cap truncated %d results (max_keep=%d)",

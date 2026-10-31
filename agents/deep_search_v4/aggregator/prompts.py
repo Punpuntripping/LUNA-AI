@@ -15,9 +15,18 @@ Shared design invariants (all four prompts rely on these):
 from __future__ import annotations
 
 import html
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from shared.library.supersession import (
+    both_versions_instruction,
+    chunk_provisions,
+    group_by_note,
+)
+
 if TYPE_CHECKING:
+    from shared.library.supersession import Transition
+
     from .models import AggregatorInput, Reference
 
 
@@ -756,6 +765,49 @@ def get_aggregator_prompt(prompt_key: str) -> str:
 # User message builder — renders AggregatorInput as XML-delimited text
 # ---------------------------------------------------------------------------
 
+def _joined(values: Iterable[str]) -> str:
+    """Distinct non-empty values in order, for an attribute naming several pairs."""
+    return "؛ ".join(dict.fromkeys(v for v in values if v))
+
+
+def _render_transitions(
+    transitions: list["Transition"],
+    both_versions: set[str] = frozenset(),
+    *,
+    pinned_articles: bool = False,
+    with_provisions: bool = False,
+) -> list[str]:
+    """The ``<transitions>`` block and its blank line; ``[]`` with no transition.
+
+    One entry per distinct note: the instructions are for the turn, while the
+    provisions sit on each reference. ``with_provisions`` puts them here too for
+    a message whose references could not be matched to their results.
+    ``both_versions`` holds the notes whose entry also gets the
+    ``<both_versions>`` prompt.
+    """
+    if not transitions:
+        return []
+    lines = ["<transitions>"]
+    for note, group in group_by_note(transitions).items():
+        lines.append(
+            f'  <transition phase="{_esc(_joined(t.phase for t in group))}" '
+            f'old="{_esc(_joined(t.old_title for t in group))}" '
+            f'new="{_esc(_joined(t.new_title for t in group))}" '
+            f'in_force_on="{_esc(_joined(t.in_force_on for t in group))}">'
+        )
+        for instruction in dict.fromkeys(t.instruction for t in group):
+            lines.append(f"    <instruction>{_esc(instruction)}</instruction>")
+        if note in both_versions:
+            text = both_versions_instruction(pinned_articles=pinned_articles)
+            lines.append(f"    <both_versions>{_esc(text)}</both_versions>")
+        if with_provisions and note:
+            lines.append(f"    <provisions>{_esc(note)}</provisions>")
+        lines.append("  </transition>")
+    lines.append("</transitions>")
+    lines.append("")
+    return lines
+
+
 def build_aggregator_user_message(
     agg_input: "AggregatorInput",
     references: list["Reference"],
@@ -806,11 +858,16 @@ def build_aggregator_user_message(
     # Legacy callers (ura is None) fall back to ref.snippet.
     from .preprocessor import (
         collect_ordered_ura_results,
+        collect_transitions,
+        notes_with_both_versions,
         render_aggregator_content,
     )
 
     content_by_n: dict[int, str] = {}
     status_by_n: dict[int, str] = {}
+    version_by_n: dict[int, str] = {}
+    provisions_by_n: dict[int, str] = {}
+    references_matched = False
     ura = getattr(agg_input, "ura", None)
     if ura is not None:
         ura_results = collect_ordered_ura_results(ura)
@@ -818,6 +875,7 @@ def build_aggregator_user_message(
         # Shared citation index: ref.n is threaded into for_aggregator(n=...) so
         # the aggregator view and the reference are keyed by one index.
         if len(ura_results) == len(references):
+            references_matched = True
             for ref, ura_result in zip(references, ura_results):
                 item = ura_result.for_aggregator(n=ref.n)
                 content_by_n[ref.n] = render_aggregator_content(item)
@@ -827,6 +885,25 @@ def build_aggregator_user_message(
                 # branch here.
                 if item.reg_status:
                     status_by_n[ref.n] = item.reg_status
+                if item.reg_version:
+                    version_by_n[ref.n] = item.reg_version
+                provisions = chunk_provisions(item.reg_transitions)
+                if provisions:
+                    provisions_by_n[ref.n] = provisions
+
+    # Built from the URA, outside the length guard above: a mismatch there
+    # degrades <content> to the snippet, and must not also lose the transition.
+    statute_body = next(
+        (b.body for b in context_blocks if b.label == "statute_articles"), ""
+    )
+    lines.extend(
+        _render_transitions(
+            collect_transitions(ura),
+            notes_with_both_versions(ura, statute_body),
+            pinned_articles=bool(statute_body),
+            with_provisions=not references_matched,
+        )
+    )
 
     lines.append(f"<references count=\"{len(references)}\">")
     for ref in references:
@@ -834,6 +911,16 @@ def build_aggregator_user_message(
         lines.append(f"  <reference cite=\"[{ref.n}]\">")
         lines.append(f"    <type>{_esc(ref.source_type)}</type>")
         lines.append(f"    <regulation>{_esc(ref.regulation_title)}</regulation>")
+        # Which side of a transition this is, so old and new text can't be
+        # confused. Present ONLY for a regulation in a <transitions> entry.
+        version = version_by_n.get(ref.n, "")
+        if version:
+            lines.append(f"    <version>{_esc(version)}</version>")
+        # The transitional provisions, word for word, on every reference of a
+        # pair. A SIBLING of <content>, for the same reason as <status> below.
+        provisions = provisions_by_n.get(ref.n, "")
+        if provisions:
+            lines.append(f"    <provisions>{_esc(provisions)}</provisions>")
         # Repeal flag for the parent law. Present ONLY when the regulation was
         # repealed — never on an in-force one, and never on a تعميم / خدمة /
         # حكم (no regulations_v2 row). A SIBLING of <regulation>, never folded

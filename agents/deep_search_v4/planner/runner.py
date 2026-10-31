@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from agents.models import salvage_next_steps
 from agents.utils.tracking import track_stage
+from shared.library.supersession import RESPONDER_VERSION_RULE
 from shared.observability import get_logfire
 
 from .agent import (
@@ -174,6 +175,21 @@ def _response_from_artifact(agg_output: "AggregatorOutput") -> PlannerResponse:
     )
 
 
+def _with_transition_line(
+    response: PlannerResponse, agg_output: "AggregatorOutput | None"
+) -> PlannerResponse:
+    """Append the aggregator's supersession sentence to the chat message.
+
+    By code, on every completed exit of phase 3: the responder reads excerpts of
+    the synthesis, and nothing makes it repeat a sentence. A law with
+    no supersession data leaves ``transition_line`` empty and the message as is.
+    """
+    line = getattr(agg_output, "transition_line", "")
+    if line:
+        response.chat_summary_md = f"{response.chat_summary_md.rstrip()}\n\n{line}"
+    return response
+
+
 def _minimal_response(reason: str) -> PlannerResponse:
     """Phase-2 fallback when retrieval failed entirely — honest, no fabrication.
 
@@ -238,6 +254,7 @@ async def _run_unified_responder(
         planner_brief=getattr(decision, "planner_brief", "") or "",
         ref_counts=_ref_counts(agg_output),
         prior_searches=list(getattr(deps, "prior_searches", None) or []),
+        version_rule=RESPONDER_VERSION_RULE if getattr(agg_output, "transition_line", "") else "",
     )
     inp = ResponderInput(
         mode="deep_search",
@@ -720,7 +737,7 @@ async def _run_planner_turn(
 
     return PlannerTurnResult(
         kind="completed",
-        response=response,
+        response=_with_transition_line(response, agg_output),
         decision=decision,
         agg_output=agg_output,
         degraded=degraded,
@@ -787,7 +804,7 @@ async def _phase3_unified(
             pass
     return PlannerTurnResult(
         kind="completed",
-        response=response,
+        response=_with_transition_line(response, agg_output),
         decision=decision,
         agg_output=agg_output,
         degraded=degraded,

@@ -280,6 +280,8 @@ class DeepSearchArtifact:
     ref_counts: dict[str, int] = field(default_factory=dict)
     prior_searches: list[Any] = field(default_factory=list)
     degraded: bool = False
+    #: ``supersession.RESPONDER_VERSION_RULE`` during a transition, else empty.
+    version_rule: str = ""
 
 
 @dataclass

@@ -334,3 +334,13 @@ supabase/.temp/
 !backend/tests/test_blog_related_topics.py
 # parallel conversations (171) — per-user cap + points reserve
 !backend/tests/test_parallel_runs.py
+# supersession: which version of a replaced law a title or number opens. Durable
+# because the failure is silent: an old number returning an unrelated article of
+# the new law reads exactly like a right answer. They also pin that a law with no
+# pair stays byte-identical.
+!agents/tool_repository/tests/
+agents/tool_repository/tests/*
+!agents/tool_repository/tests/test_regulation_versions.py
+!agents/simple_search/tests/
+agents/simple_search/tests/*
+!agents/simple_search/tests/test_searcher_versions.py

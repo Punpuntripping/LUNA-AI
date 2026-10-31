@@ -42,6 +42,7 @@ import html
 
 from agents.deep_search_v4.shared.case_documents import forwardable_documents
 from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
+from shared.library.supersession import RESPONDER_VERSION_RULE
 
 from .models import Mode
 
@@ -733,6 +734,10 @@ def build_responder_instructions(deps) -> str:
     gaps_block = (
         "\n".join(f"- {g}" for g in gaps) if gaps else "- No gaps reported."
     )
+    version_block = (
+        f"### Which version each rule belongs to\n{RESPONDER_VERSION_RULE}\n\n"
+        if getattr(agg, "transition_line", "") else ""
+    )
 
     return f"""\
 {welcome_block}{context_block}{framing}
@@ -745,7 +750,7 @@ def build_responder_instructions(deps) -> str:
 ### Reported gaps
 {gaps_block}
 
-### An excerpt from the detailed synthesis
+{version_block}### An excerpt from the detailed synthesis
 {synthesis_slice}{truncated}
 
 Now write `chat_summary_md`, `next_steps`, `build_artifact`, and `referenced_wi` (all user-facing text in Arabic) according to the mode framing and the system rules above. \

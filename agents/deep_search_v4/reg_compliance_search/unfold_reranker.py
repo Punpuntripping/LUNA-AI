@@ -49,16 +49,30 @@ multi-round ``unfold`` action — reg is single-pass now.)
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 from supabase import Client as SupabaseClient
 
-# The ONE repeal vocabulary («ملغي»). Shared with the URA enrichment so a
-# repealed law can never be phrased two different ways to two different agents
-# in the same turn. Returns "" for every non-repealed regulation.
-from shared.library.reg_status import status_line
+# The ONE repeal vocabulary («ملغي»), plus what a replaced law still means during
+# its transition. Shared with the URA enrichment so a repealed law can never be
+# phrased two different ways to two different agents in the same turn. A row
+# with no supersession pair gets exactly ``reg_status.status_line``: "" for every
+# non-repealed regulation.
+from shared.library.supersession import (
+    PROVISIONS_HEADING,
+    SupersessionMap,
+    aggregator_status,
+    chunk_provisions,
+    reranker_name,
+    reranker_status,
+)
 
 logger = logging.getLogger(__name__)
+
+# The default for callers with no sub-query to decide on (simple_search's opened
+# chunk): every row gets its real name and its plain repeal line.
+_NO_PAIRS = SupersessionMap()
 
 
 # -- Truncation caps (these blocks are LLM-prompt payloads) -------------------
@@ -100,23 +114,39 @@ def _truncate(text: str | None, max_chars: int) -> str:
 
 
 def _fetch_regulation_meta(
-    supabase: SupabaseClient, regulation_id: str | None
+    supabase: SupabaseClient,
+    regulation_id: str | None,
+    chunk_ref: str | None = None,
+    *,
+    supersessions: SupersessionMap = _NO_PAIRS,
+    sub_query: str | None = None,
+    today: date = date.min,
 ) -> dict[str, str]:
-    """Return ``{"name", "scope", "status"}`` for a regulation; empties on miss.
+    """Return ``{"name", "name_shown", "scope", "status", "provisions"}``; empties on miss.
 
     ``name`` is ``clean_title`` (the normalised title) falling back to the raw
     ``title``. ``scope`` is ``regulations_v2.scope`` — left empty when null
     (~a few % of the corpus); callers / the formatter tolerate that.
 
-    ``status`` is the repeal line (``shared.library.reg_status.status_line``)
+    ``name_shown`` equals ``name`` unless this chunk is an eligible old chunk
+    (``supersession.old_chunk_eligible``), which must reach the reranker looking
+    like in-force law. Keep ``name`` truthful: it becomes
+    ``RerankedResult.regulation_title``. Only ``_format_header`` shows the other.
+
+    ``status`` is the repeal line (``shared.library.reg_status.status_line``,
+    through ``supersession.reranker_status`` so an eligible old chunk gets none)
     and is ``""`` for every regulation that was NOT repealed — which is almost
     all of them. So this adds a field to the candidate block only where it
     matters, and leaves the in-force block byte-identical to before. Without
     it the reranker ranked a «ملغي» chunk against a live one on topical
     similarity alone, with nothing in its input to tell the two apart.
+
+    ``provisions`` is ``supersession.chunk_provisions`` for a row in a live
+    transition and ``""`` for every other regulation.
     """
+    empty = {"name": "", "name_shown": "", "scope": "", "status": "", "provisions": ""}
     if not regulation_id:
-        return {"name": "", "scope": "", "status": ""}
+        return empty
     try:
         resp = (
             supabase.table("regulations_v2")
@@ -127,16 +157,24 @@ def _fetch_regulation_meta(
         )
         if resp and resp.data:
             d = resp.data
+            # The row was read by this id, so the select needs no ``id`` column.
+            reg_row = {**d, "id": regulation_id}
             return {
                 "name": d.get("clean_title") or d.get("title") or "",
+                "name_shown": reranker_name(
+                    supersessions, reg_row, chunk_ref, sub_query, today
+                ),
                 "scope": d.get("scope") or "",
-                "status": status_line(
-                    d.get("status_class"), d.get("status_raw")
+                "status": reranker_status(
+                    supersessions, reg_row, chunk_ref, sub_query, today
+                ),
+                "provisions": chunk_provisions(
+                    aggregator_status(supersessions, reg_row, today).transitions
                 ),
             }
     except Exception as e:
         logger.warning("_fetch_regulation_meta(%s) failed: %s", regulation_id, e)
-    return {"name": "", "scope": "", "status": ""}
+    return empty
 
 
 def _fetch_contexts(
@@ -168,7 +206,12 @@ def _fetch_contexts(
 
 
 def unfold_chunk_simple(
-    supabase: SupabaseClient, chunk: dict[str, Any]
+    supabase: SupabaseClient,
+    chunk: dict[str, Any],
+    *,
+    supersessions: SupersessionMap = _NO_PAIRS,
+    sub_query: str | None = None,
+    today: date = date.min,
 ) -> dict[str, Any]:
     """SIMPLE unfold — regulation name, regulation scope, chunk summary.
 
@@ -179,11 +222,16 @@ def unfold_chunk_simple(
     Args:
         supabase: Supabase client.
         chunk: A `chunks_v2` row (see ``CHUNK_SELECT``).
+        supersessions, sub_query, today: decide an old chunk's status line and
+            shown name. Omitted, every row gets today's line and its real name.
 
     Returns:
         Unfolded dict with ``mode == "simple"``.
     """
-    reg = _fetch_regulation_meta(supabase, chunk.get("regulation_id"))
+    reg = _fetch_regulation_meta(
+        supabase, chunk.get("regulation_id"), chunk.get("chunk_ref"),
+        supersessions=supersessions, sub_query=sub_query, today=today,
+    )
     return {
         "mode": "simple",
         "id": chunk.get("id"),
@@ -192,14 +240,21 @@ def unfold_chunk_simple(
         "corpus": chunk.get("corpus"),
         "regulation_id": chunk.get("regulation_id"),
         "regulation_name": reg["name"],
+        "regulation_name_shown": reg["name_shown"],
         "regulation_scope": _truncate(reg["scope"], MAX_SCOPE_CHARS),
         "regulation_status": reg["status"],
+        "regulation_provisions": reg["provisions"],
         "summary": _truncate(chunk.get("summary"), MAX_SUMMARY_CHARS),
     }
 
 
 def unfold_chunk_precise(
-    supabase: SupabaseClient, chunk: dict[str, Any]
+    supabase: SupabaseClient,
+    chunk: dict[str, Any],
+    *,
+    supersessions: SupersessionMap = _NO_PAIRS,
+    sub_query: str | None = None,
+    today: date = date.min,
 ) -> dict[str, Any]:
     """PRECISE unfold — regulation name + scope, prev/current/next chunk
     context, and the current chunk summary.
@@ -212,6 +267,7 @@ def unfold_chunk_precise(
     Args:
         supabase: Supabase client.
         chunk: A `chunks_v2` row (see ``CHUNK_SELECT``).
+        supersessions, sub_query, today: as in ``unfold_chunk_simple``.
 
     Returns:
         Unfolded dict with ``mode == "precise"``. ``prev_context`` /
@@ -219,7 +275,10 @@ def unfold_chunk_precise(
         boundary) and ``""`` when the neighbour exists but has no stored
         context — the formatter renders the two cases differently.
     """
-    reg = _fetch_regulation_meta(supabase, chunk.get("regulation_id"))
+    reg = _fetch_regulation_meta(
+        supabase, chunk.get("regulation_id"), chunk.get("chunk_ref"),
+        supersessions=supersessions, sub_query=sub_query, today=today,
+    )
 
     prev_id = chunk.get("prev_chunk_id")
     next_id = chunk.get("next_chunk_id")
@@ -233,8 +292,10 @@ def unfold_chunk_precise(
         "corpus": chunk.get("corpus"),
         "regulation_id": chunk.get("regulation_id"),
         "regulation_name": reg["name"],
+        "regulation_name_shown": reg["name_shown"],
         "regulation_scope": _truncate(reg["scope"], MAX_SCOPE_CHARS),
         "regulation_status": reg["status"],
+        "regulation_provisions": reg["provisions"],
         "prev_context": (
             _truncate(ctx.get(prev_id, ""), MAX_CONTEXT_CHARS)
             if prev_id else None
@@ -292,15 +353,21 @@ def _format_header(result: dict[str, Any], label: str) -> list[str]:
     block is therefore unchanged, and the line's mere presence is the signal —
     which is also why the prompt describes it as an exception rather than as a
     field to compare candidates on.
+
+    ``regulation_name_shown`` is read here and nowhere else. It differs from
+    ``regulation_name`` only for an eligible old chunk.
     """
     apx = " (ملحق)" if result.get("corpus") == "appendix" else ""
     lines = [f"### [{label}] {result.get('title') or 'بدون عنوان'}{apx}"]
-    name = result.get("regulation_name", "")
+    name = result.get("regulation_name_shown", result.get("regulation_name", ""))
     if name:
         lines.append(f"**النظام:** {name}")
     status = result.get("regulation_status", "")
     if status:
         lines.append(f"**حالة النظام:** {status}")
+    provisions = result.get("regulation_provisions", "")
+    if provisions:
+        lines.append(f"**{PROVISIONS_HEADING}:** {provisions}")
     scope = result.get("regulation_scope", "")
     if scope:
         lines.append(f"**نطاق النظام:** {scope}")

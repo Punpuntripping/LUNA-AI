@@ -53,11 +53,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date
 from typing import Protocol, runtime_checkable
 
 from pydantic_ai import Agent, RunContext
 
+from shared.library.supersession import riyadh_today
 # Arabic-Indic → ASCII digits. Already existed for the PDPL masking codec and
 # was imported by neither resolver, which is why «٨١» missed (eval §4.3). Pure
 # stdlib underneath — no I/O, no config, no circular import back into agents/.
@@ -1200,6 +1202,11 @@ class FetchArticleResult:
     ``"not_found"``. ``confidence`` is ``"high"`` (the only resolving state — a
     unique exact title pin) or ``""``. The former ``"medium"`` value is gone with
     the non-exact auto-commit that produced it.
+
+    ``companions`` holds the other versions of the same article when a law is in
+    transition, each with its own ``reg_name`` and ``content``, so the tool
+    accumulates them separately. ``text`` already shows them. Empty for any other
+    law.
     """
 
     text: str
@@ -1209,10 +1216,11 @@ class FetchArticleResult:
     reg_name: str = ""
     article_number: str = ""
     content: str = ""
+    companions: tuple["FetchArticleResult", ...] = ()
 
 
 def fetch_article_result(
-    supabase, regulation_title: str, article_number: str
+    supabase, regulation_title: str, article_number: str, *, today: date | None = None
 ) -> FetchArticleResult:
     """Full deterministic fetch: resolve title → fetch article → render + classify.
 
@@ -1225,10 +1233,18 @@ def fetch_article_result(
     can verify before trusting it. Ambiguous / not-found return the
     corresponding plain string with no confidence and no pinnable content.
 
+    A law in a supersession pair goes to :func:`_fetch_article_versions` once
+    resolved. Every other law is untouched by that branch.
+
     TEXT ONLY — never a citation, never ``article_ref`` / ``chunk_parent_id``.
     """
+    # Here, not at module level: regulation_versions builds on this module.
+    from agents.tool_repository.regulation_versions import resolve as resolve_versions
+
     num = (article_number or "").strip()
-    resolved = resolve_regulation_id(supabase, regulation_title)
+    today = today or riyadh_today()
+    versioned = resolve_versions(supabase, regulation_title, today)
+    resolved = versioned.resolved
 
     if resolved.ambiguous:
         return FetchArticleResult(text=resolved.ambiguous, status="ambiguous")
@@ -1239,6 +1255,9 @@ def fetch_article_result(
             text=f"المادة {num} غير موجودة في {regulation_title.strip()}",
             status="not_found",
         )
+
+    if versioned.versions:
+        return _fetch_article_versions(supabase, versioned, num, today)
 
     content = _fetch_article_content(supabase, resolved.reg_id, num)
     reg_name = resolved.display or regulation_title.strip()
@@ -1262,6 +1281,44 @@ def fetch_article_result(
         reg_id=resolved.reg_id, reg_name=reg_name,
         article_number=num, content=body,
     )
+
+
+def _fetch_article_versions(
+    supabase, versioned, num: str, today: date
+) -> FetchArticleResult:
+    """``fetch_article_result`` for a law in a supersession pair.
+
+    ``regulation_versions.pick_articles`` decides which versions to show. Each is
+    rendered exactly like any other article, capped on its own, under its own
+    title. The note goes in the top-level ``text`` only: ``content`` stays the
+    verbatim body because it is what gets pinned and what reaches the executors.
+    """
+    from agents.tool_repository.regulation_versions import pick_articles
+
+    pick = pick_articles(supabase, versioned, num, today)
+    if not pick.hits:
+        names = " ولا في ".join(v.label for v in versioned.versions)
+        return FetchArticleResult(
+            text=f"المادة {num} غير موجودة في {names}",
+            status="not_found", reg_id=versioned.resolved.reg_id,
+            reg_name=versioned.resolved.display, article_number=num,
+        )
+
+    versions = []
+    for hit in pick.hits:
+        body = hit.article["content"].strip()
+        reg_name = hit.version.label if pick.labelled else hit.version.title
+        versions.append(FetchArticleResult(
+            text=f"## نص المادة {num} من {reg_name}\n\n{_cap_for_planner(body)}",
+            status="ok", confidence="high",
+            reg_id=hit.version.reg_id, reg_name=reg_name,
+            article_number=num, content=body,
+        ))
+    first, *others = versions
+    sections = [v.text for v in versions]
+    if pick.note:
+        sections.append(pick.note)
+    return replace(first, text="\n\n".join(sections), companions=tuple(others))
 
 
 def _cap_for_planner(body: str) -> str:
@@ -1537,15 +1594,18 @@ def register_fetch_article(agent: Agent) -> None:
 
         # A successful fetch is accumulated on the turn's deps slot; the runner
         # flushes all of them into ONE statute_package workspace item per search
-        # (flush_statute_package). A plain list append — no DB write here.
+        # (flush_statute_package). A plain list append — no DB write here. A law
+        # in transition can return two versions, and each gets its own entry so
+        # the package shows both under their own titles.
         if result.status == "ok":
-            accumulate_fetched_article(
-                ctx.deps,
-                reg_name=result.reg_name,
-                article_number=result.article_number,
-                content=result.content,
-                confidence=result.confidence,
-            )
+            for item in (result, *result.companions):
+                accumulate_fetched_article(
+                    ctx.deps,
+                    reg_name=item.reg_name,
+                    article_number=item.article_number,
+                    content=item.content,
+                    confidence=item.confidence,
+                )
 
         logger.info(
             "fetch_article: title=%r art=%r → status=%s conf=%s (%d chars)",

@@ -61,10 +61,15 @@ from pydantic_ai.usage import UsageLimits
 # §7.2 / D13 — the article + regulation-title legs reuse fetch_article's PURE
 # layer wholesale. Its deps Protocol has exactly one member (``.supabase``), so
 # the resolver drops in unchanged, calibrated constants included.
-from agents.tool_repository.fetch_article import (
-    article_number_keys,
-    resolve_regulation_id,
+from agents.tool_repository.fetch_article import article_number_keys
+# A law in a supersession pair: one title can mean two versions. Both resolvers
+# go through here so a title reads the same as it does in ``fetch_article``.
+from agents.tool_repository.regulation_versions import (
+    open_article,
+    resolve as resolve_versions,
+    version_question,
 )
+from shared.library.supersession import riyadh_today
 # 16,505 of 30,531 case summaries end in the pipeline's resolver-telemetry
 # appendix and 252 in a Python traceback. The card's title is derived from the
 # STRIPPED summary, so deriving ours from the raw one would title a card with a
@@ -792,13 +797,18 @@ def create_searcher_agent(
             agent="simple_search.search_fee.resolve_regulation",
             agent_family="simple_search", count=1,
         )
-        resolved = await asyncio.to_thread(
-            resolve_regulation_id, ctx.deps.supabase, regulation_title
+        today = riyadh_today()
+        versioned = await asyncio.to_thread(
+            resolve_versions, ctx.deps.supabase, regulation_title, today
         )
+        resolved = versioned.resolved
         if resolved.ambiguous:
             return resolved.ambiguous
         if not resolved.reg_id:
             return "لم يُعثر على نظام بهذا الاسم"
+        question = version_question(versioned, today)
+        if question:
+            return question
         obj = ResolvedObject(
             level="regulation_doc",
             regulation_id=resolved.reg_id,
@@ -806,7 +816,7 @@ def create_searcher_agent(
         )
         handle = ctx.deps.register_candidate(obj)
         note = "" if resolved.exact else " (تطابق تقريبي — تحقّق أنه النظام المقصود)"
-        return f"{handle} — {resolved.display}{note}"
+        return f"{handle} — {versioned.label}{note}"
 
     @agent.tool
     async def resolve_article(  # noqa: RUF029 — the supabase client is sync
@@ -843,17 +853,29 @@ def create_searcher_agent(
             agent_family="simple_search", count=1,
         )
         num = (article_number or "").strip()
-        resolved = await asyncio.to_thread(
-            resolve_regulation_id, ctx.deps.supabase, regulation_title
+        today = riyadh_today()
+        versioned = await asyncio.to_thread(
+            resolve_versions, ctx.deps.supabase, regulation_title, today
         )
+        resolved = versioned.resolved
         if resolved.ambiguous:
             return resolved.ambiguous
         if not resolved.reg_id:
             return f"لم يُعثر على المادة {num}: النظام «{regulation_title.strip()}» غير موجود"
 
-        identity = await asyncio.to_thread(
-            fetch_article_identity, ctx.deps.supabase, resolved.reg_id, num
-        )
+        if versioned.versions:
+            opened = await asyncio.to_thread(
+                open_article, ctx.deps.supabase, versioned, num, today
+            )
+            if opened.question:
+                return opened.question
+            resolved, identity = opened.resolved, opened.identity
+            label, note = opened.label, opened.note
+        else:
+            identity = await asyncio.to_thread(
+                fetch_article_identity, ctx.deps.supabase, resolved.reg_id, num
+            )
+            label, note = resolved.display, ""
         obj = ResolvedObject(
             level="article",
             regulation_id=resolved.reg_id,
@@ -867,10 +889,10 @@ def create_searcher_agent(
         handle = ctx.deps.register_candidate(obj)
         if not identity.get("id"):
             return (
-                f"{handle} — المادة {num} من {resolved.display} "
+                f"{handle} — المادة {num} من {label} "
                 "(غير موجودة في جدول المواد؛ سيُحاول استخراجها من المقطع الذي يضمّها)"
             )
-        return f"{handle} — المادة {num} من {resolved.display}"
+        return f"{handle} — المادة {num} من {label}{note}"
 
     @agent.tool
     async def ask_user(  # noqa: RUF029

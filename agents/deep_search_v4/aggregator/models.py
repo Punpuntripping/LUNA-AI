@@ -260,6 +260,13 @@ class AggregatorOutput(BaseModel):
         default_factory=dict,
         description="Reference.n -> sorted list of 0-based sub_query indices that produced it",
     )
+    # Regulation supersession. Set only when a <transitions> block fed a real
+    # synthesis. Goes to the chat message alone, never into ``synthesis_md``:
+    # the workspace item already says this in the aggregator's own words.
+    transition_line: str = Field(
+        default="",
+        description="Fixed sentence for the chat message; empty with no transition",
+    )
 
 
 class ValidationReport(BaseModel):

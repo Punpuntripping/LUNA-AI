@@ -479,6 +479,8 @@ def render_deep_search_package(a: DeepSearchArtifact) -> str:
     ]
     if a.key_findings:
         parts += ["### Key findings", _bullets(a.key_findings, ""), ""]
+    if a.version_rule:
+        parts += ["### Which version each rule belongs to", _esc(a.version_rule), ""]
     parts += [
         "### The synthesis"
         + (" (clipped: its opening and its close; the card holds the rest)" if clipped else ""),

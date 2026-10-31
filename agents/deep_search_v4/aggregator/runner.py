@@ -32,6 +32,8 @@ import logging
 import time
 from typing import Any
 
+from shared.library.supersession import responder_line
+
 from .agent import create_aggregator_agent, create_dcr_agents
 from .artifact_builder import build_artifact, render_reference_block
 from .correction import build_correction_prompt, failing_gate_names
@@ -51,6 +53,7 @@ from .postvalidator import (
 from .preprocessor import (
     attach_source_views,
     collect_ordered_ura_results,
+    collect_transitions,
     preprocess_references,
 )
 from .prompts import build_aggregator_user_message, get_aggregator_prompt
@@ -302,6 +305,7 @@ async def handle_aggregator_turn(
         ref_to_sub_queries={
             r.n: list(ref_to_sub_queries.get(r.n, [])) for r in final_references
         },
+        transition_line=_transition_line(agg_input, llm_output, clean_synthesis),
     )
 
     duration_s = time.perf_counter() - t0
@@ -632,6 +636,21 @@ def _enrich_gaps(
         existing_blob = f"{existing_blob} || {marker}"
 
     return enriched
+
+
+def _transition_line(
+    agg_input: AggregatorInput,
+    llm_output: AggregatorLLMOutput,
+    synthesis: str,
+) -> str:
+    """The chat message's supersession sentence, ``""`` when there is none.
+
+    The sentence describes the analysis, so a turn that ended on the failure
+    placeholder gets none even though its prompt carried a block.
+    """
+    if not synthesis or _MODEL_FAILURE_GAP_AR in (llm_output.gaps or []):
+        return ""
+    return responder_line(collect_transitions(agg_input.ura))
 
 
 def _compute_final_references(
