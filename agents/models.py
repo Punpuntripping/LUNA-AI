@@ -74,8 +74,9 @@ class DispatchAgent(BaseModel):
             "Short Arabic content-derived label (≤80 chars, typical 30–60). "
             "Used as workspace_item.title and agent_runs.task_label. "
             "Describes the SUBJECT of the task, not the action — no verbs "
-            "like «أبحث»/«أكتب»/«أحلل». Stable across rephrases of the same "
-            "question."
+            "like «أبحث»/«أكتب»/«أحلل». Uses the user's own words for the "
+            "matter, never a legal label they did not use. Stable across "
+            "rephrases of the same question."
         ),
     )
     # NOTE: the router no longer paraphrases the query into a ``describe_query``

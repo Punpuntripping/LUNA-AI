@@ -264,7 +264,8 @@ def register_save_memo(agent: Agent) -> None:
 
         Args:
             title: A short Arabic title derived from the message content (describe the
-                topic, not the action), used as the title of the item's card in the
+                topic, not the action), in the user's own words and never a legal
+                label they did not use. Used as the title of the item's card in the
                 workspace.
 
         Returns:
