@@ -668,6 +668,47 @@ def _load_compaction_summary(
     return md
 
 
+def _load_conversation_memory(
+    supabase: SupabaseClient, conversation_id: str, user_id: str
+) -> str | None:
+    """The rendered ``<conversation_memory>`` block, encoded, or ``None``.
+
+    **RESUME PATHS ONLY**, like ``_load_compaction_summary`` and for the same
+    reason: a fresh dispatch gets the block from ``_route``, as this turn's
+    router left it. The resume legs skip the router, so they load it here.
+
+    Same contract too. Owner-scoped (``load_conversation_memory`` filters on
+    both ids: this client is ``service_role`` and the text lands in system
+    prompts). Stored REAL, encoded at load, with any minted fakes persisted
+    before the LLM reads them. Never raises: on any failure the block is simply
+    omitted, as on a conversation with no memory. ``None`` with no query while
+    the feature is off.
+    """
+    from agents.utils.conversation_memory import (
+        encode_entries,
+        load_conversation_memory,
+        render_conversation_memory,
+    )
+    from backend.app.services.masking_service import (
+        active_codec,
+        persist_new_mappings,
+    )
+
+    try:
+        entries = load_conversation_memory(supabase, conversation_id, user_id)
+        if not entries:
+            return None
+        encoded = encode_entries(entries)
+        persist_new_mappings(supabase, user_id, active_codec())
+        return render_conversation_memory(encoded)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "_load_conversation_memory failed for conversation_id=%s: %s",
+            conversation_id, type(e).__name__,
+        )
+        return None
+
+
 def _load_prior_search_summaries(
     supabase: SupabaseClient, conversation_id: str, user_id: str
 ) -> list[PriorSearchSummary]:
@@ -1157,6 +1198,9 @@ async def _resume_major_agent_inner(
                 attached_items=attached_items,
                 recent_messages=recent_messages,
                 compaction_summary_md=compaction_summary_md,
+                conversation_memory_md=_load_conversation_memory(
+                    supabase, conversation_id, user_id
+                ),
                 target_item_id=None,
                 user_id=user_id,
                 conversation_id=conversation_id,
@@ -1364,6 +1408,10 @@ async def _resume_major_agent_inner(
         _resume_compaction_summary = _load_compaction_summary(
             supabase, conversation_id, user_id
         )
+        # Same for the memory: one read for this leg, reused below.
+        _resume_conversation_memory = _load_conversation_memory(
+            supabase, conversation_id, user_id
+        )
         _resume_settings = _get_settings()
 
         # Rebuild the WI alias map on resume — PlannerDeps is never persisted
@@ -1403,6 +1451,7 @@ async def _resume_major_agent_inner(
                 case_brief=_resume_case_brief,
                 recent_messages=_resume_recent_messages,
                 compaction_summary_md=_resume_compaction_summary,
+                conversation_memory_md=_resume_conversation_memory,
                 prior_searches=_resume_prior_searches,
                 attached_items=_resume_attached_items,
                 wi_alias_map=_resume_alias_map,
@@ -1523,6 +1572,7 @@ async def _resume_major_agent_inner(
             # Reuse the value the decider resume above already loaded + encoded
             # — no second read on the same leg.
             compaction_summary_md=_resume_compaction_summary,
+            conversation_memory_md=_resume_conversation_memory,
             target_item_id=None,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -1764,6 +1814,10 @@ async def _resume_simple_search_leg(
     # `_rewrote_pause`, and for the same reason: resolving would delete the row
     # the next turn has to resume.
     _keep_pause = False
+    # Resume skips the router. One read for this leg, reused by the hand-off.
+    conversation_memory_md = _load_conversation_memory(
+        supabase, conversation_id, user_id
+    )
     try:
         try:
             ss_outcome = await resume_simple_search(
@@ -1779,6 +1833,7 @@ async def _resume_simple_search_leg(
                 recent_messages=_load_recent_messages(
                     supabase, conversation_id, user_id=user_id
                 ),
+                conversation_memory_md=conversation_memory_md,
             )
         except asyncio.CancelledError:
             raise
@@ -1840,6 +1895,7 @@ async def _resume_simple_search_leg(
                 compaction_summary_md=_load_compaction_summary(
                     supabase, conversation_id, user_id
                 ),
+                conversation_memory_md=conversation_memory_md,
                 target_item_id=None,
                 # No welcome on any resume leg: resolve_welcome runs in _route
                 # only, so a run that paused can never re-greet mid-conversation.
@@ -2716,7 +2772,14 @@ async def _route(
         workspace_item_summaries=ctx.workspace_item_summaries,
         compaction_summary_md=ctx.compaction_summary_md,
         wi_lock_policy=wi_lock_policy,
+        conversation_memory=ctx.conversation_memory,
+        paused_exchanges_md=ctx.paused_exchanges_md,
     )
+
+    # The block as this run left it, before anything is dispatched: agents read
+    # the ``conversation_memory_md`` passed below, and ``ctx`` travels with them,
+    # so it must not keep the pre-run block.
+    ctx.conversation_memory_md = router_result.conversation_memory_md
 
     # Drain any save_memo side effects FIRST so the pinned-memo chip appears
     # whether the router answered directly or dispatched. force_attach holds the
@@ -2778,6 +2841,7 @@ async def _route(
             # above) — the specialists' planners need the same back-story, and
             # re-querying it here would be a second DB round-trip per turn.
             compaction_summary_md=ctx.compaction_summary_md,
+            conversation_memory_md=ctx.conversation_memory_md,
             welcome=welcome,
             # Unified responder (plan unified_responder.md D4): the SAME
             # RouterContext object the router just read — encoded once above,
@@ -2955,6 +3019,7 @@ async def _dispatch(
     welcome: "WelcomeState | None" = None,
     pinned_plan: "PinnedPlan | None" = None,
     router_context: "Any | None" = None,
+    conversation_memory_md: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -2993,6 +3058,11 @@ async def _dispatch(
     read (unified_responder.md D4) — carried on ``MajorAgentInput`` to the
     family runners, consumed only by families on RESPONDER_UNIFIED_FAMILIES.
     ``None`` for pinned / headless dispatches (no router ran).
+
+    ``conversation_memory_md`` is the rendered memory block as the router left it
+    this turn, already encoded. It rides ``MajorAgentInput`` to the planners and
+    goes straight to ``run_simple_search``. ``None`` for pinned / headless
+    dispatches, which have no chat to remember.
     """
     # ── Ownership gate on the router-emitted target ─────────────────────
     if target_item_id is not None and not _owned_item_exists(
@@ -3099,6 +3169,7 @@ async def _dispatch(
                 attached_items=attached_items,
                 recent_messages=recent_messages,
                 compaction_summary_md=compaction_summary_md,
+                conversation_memory_md=conversation_memory_md,
                 target_item_id=target_item_id,
                 welcome_instruction=render_welcome_instruction(welcome) or None,
                 user_id=user_id,
@@ -3255,6 +3326,7 @@ async def _dispatch(
                         recent_messages=recent_messages,
                         welcome=welcome,
                         router_context=router_context,
+                        conversation_memory_md=conversation_memory_md,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -3773,6 +3845,8 @@ async def _run_deep_search(
             # codec — do NOT re-encode (idempotent, but pointless) and do NOT
             # re-query (the caller already paid for the read).
             compaction_summary_md=input.compaction_summary_md,
+            # Already rendered and encoded, by _route or the resume leg.
+            conversation_memory_md=input.conversation_memory_md,
             prior_searches=prior_searches,
             attached_items=_planner_attached,
             wi_alias_map=wi_alias_map,

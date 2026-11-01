@@ -13,7 +13,11 @@ Instruction stack (concatenated by Pydantic AI in registration order):
      human frame (describe_query, task_label, revision marker, style prefs).
      In the legacy path (``deps.package is None``) falls back to
      ``format_writer_context`` so ``attached_items`` still get rendered.
-  4. ``@agent.instructions welcome_block`` — رسائل الترحيب: the opening line
+  4. ``@agent.instructions conversation_memory_block`` — the
+     ``<conversation_memory>`` block and how it applies to a draft. After the
+     package and the envelope, so the prefix above it is untouched. Empty when
+     the conversation has no memory.
+  5. ``@agent.instructions welcome_block`` — رسائل الترحيب: the opening line
      for ``chat_summary`` when this turn is the user's first. Empty otherwise.
 
 See ``.claude/plans/writer_redesign.md`` § Dynamic instructions for the
@@ -57,6 +61,29 @@ WRITER_LIMITS = UsageLimits(
     output_tokens_limit=OUTPUT_TOKENS_CAP,
     request_limit=2,
 )
+
+#: Printed under the <conversation_memory> block, never without it. Each line
+#: settles a static rule of this agent that the block alone leaves open:
+#:
+#: - "fill placeholders from the package": a memory value is not in the package.
+#: - "use <parties> verbatim", and the approved <plan>: the planner builds both,
+#:   and a value the user corrected while approving the plan is newer than the
+#:   entry (plan D7). The planner states such a correction explicitly.
+#: - the exhibit `label_ar`: court-facing text the model writes itself, and the
+#:   chat guide repeats it.
+#: - "cite only what appears in <references> or <sources>": a position the user
+#:   insisted on has no source and takes no citation.
+#: - the block's "your reply to the user": `chat_summary` is dropped on the
+#:   unified responder path and cut at 500 chars on the other, and `notes_ar`
+#:   reaches no chat on the other. `key_findings` reaches the bubble on both
+#:   (orchestrator ``_bubble_tokens``), and the first item survives the cap of 5.
+_MEMORY_DRAFTING_NOTE = """\
+How this memory applies to your draft:
+- A value stated in it is given, not missing: use it to fill `[…]` placeholders and missing details, exactly as you would a value from the package.
+- A fact entry outranks everything in `<package>`, including `<parties>`, `<plan>`, `<sources>`, `<facts>` and `<prior_draft>`, unless `<user_request>` or `<plan>` says the user corrected that value afterwards. State it plainly, without `(n)`.
+- The rule against the value a fact entry replaced covers everything you write: the body, each exhibit's `label_ar`, the exhibits list, `chat_summary`, `key_findings` and `notes_ar`.
+- A position the user insisted on is stated without `(n)`. The rule to cite only what appears in `<references>` or `<sources>` limits citations; it does not stop you stating it.
+- A conflict between your sources and a law entry never goes in the document. Your reply to the user about it is the FIRST item of `key_findings`, which the user always reads in the chat; `chat_summary` and `notes_ar` may not reach them."""
 
 
 def create_writer_agent(
@@ -144,6 +171,19 @@ def create_writer_agent(
             detail_level=ctx.deps.detail_level,
             tone=ctx.deps.tone,
         )
+
+    @agent.instructions
+    async def conversation_memory_block(ctx: RunContext[WriterDeps]) -> str:
+        """The rendered ``<conversation_memory>`` block, or ``""`` without one.
+
+        Already rendered, encoded and escaped, so it is printed as it is:
+        ``render_package_for_system_prompt`` is the writer's encode point and
+        this block does not pass through it.
+        """
+        memory = ctx.deps.conversation_memory_md
+        if not memory:
+            return ""
+        return f"{memory}\n\n{_MEMORY_DRAFTING_NOTE}"
 
     @agent.instructions
     async def welcome_block(ctx: RunContext[WriterDeps]) -> str:

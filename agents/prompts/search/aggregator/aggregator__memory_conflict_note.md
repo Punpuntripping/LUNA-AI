@@ -1,0 +1,1 @@
+If `<references>` contradict a `[رأي قانوني]` entry, say so in the opening of `synthesis_md`, right after the direct answer: the chat reply is written from the opening and the close of the answer only.

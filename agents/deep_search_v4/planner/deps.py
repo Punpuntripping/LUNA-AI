@@ -105,6 +105,14 @@ class PlannerDeps:
     # value from ``load_router_context``). Renderers treat it as prompt-ready.
     compaction_summary_md: str | None = None
 
+    # The rendered ``<conversation_memory>`` block for this turn, or None. Comes
+    # from ``MajorAgentInput.conversation_memory_md`` on a fresh dispatch and
+    # from the orchestrator's own load on resume (the router does not run
+    # there). Already rendered, encoded and escaped: printed as it is, never
+    # passed through ``_esc``. Read by the decider, the old responder, the
+    # unified responder and ``_build_candidate_context_blocks``.
+    conversation_memory_md: str | None = None
+
     # Migration 052 / agent communication protocol: per-conversation
     # ``WI-{seq}`` alias → workspace_items.item_id lookup. Built once per
     # turn from ``prior_searches`` + ``attached_items`` + any other WIs the
@@ -190,6 +198,7 @@ def build_planner_deps(
     prior_searches: list[PriorSearchSummary] | None = None,
     attached_items: list[WorkspaceItemSnapshot] | None = None,
     compaction_summary_md: str | None = None,
+    conversation_memory_md: str | None = None,
     wi_alias_map: dict[int, str] | None = None,
     welcome_instruction: str | None = None,
     router_context: Any | None = None,
@@ -227,6 +236,7 @@ def build_planner_deps(
         prior_searches=list(prior_searches) if prior_searches else [],
         attached_items=list(attached_items) if attached_items else [],
         compaction_summary_md=compaction_summary_md or None,
+        conversation_memory_md=conversation_memory_md or None,
         wi_alias_map=dict(wi_alias_map) if wi_alias_map else {},
         welcome_instruction=welcome_instruction or None,
         router_context=router_context,

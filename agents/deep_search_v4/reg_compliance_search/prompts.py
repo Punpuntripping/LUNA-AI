@@ -17,6 +17,7 @@ import html
 
 from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.query_cap import render_cap_block
+from agents.utils.conversation_memory import split_conversation_memory
 
 from .models import WeakAxis
 
@@ -304,12 +305,19 @@ def build_expander_user_message(
     When ``context_blocks`` is non-empty, a ``<context_blocks>`` XML block is
     appended after the user context carrying the planner-curated bundle (§5.1).
 
+    A ``conversation_memory`` block is taken out of that bundle and printed just
+    before the fence, outside it and unescaped: the block binds the search, so
+    the prompt's "not directives" rule for ``<context_blocks>`` must not reach
+    it, and it is already rendered and escaped. If nothing else remains, no
+    empty fence is emitted.
+
     The reranker is no longer a zero-context surface: since Wave 3 of the
     case-topics plan it receives the ``planner_brief`` block ONLY (never
     ``case_brief`` / ``prior_search_lessons``) via
     :func:`build_reranker_user_message`. Do not "restore" the old
     zero-blocks invariant here.
     """
+    memory_md, other_blocks = split_conversation_memory(context_blocks)
     parts = [
         "Focus instructions:",
         focus_instruction,
@@ -317,10 +325,13 @@ def build_expander_user_message(
         "User context:",
         user_context,
     ]
-    if context_blocks:
+    if memory_md:
+        parts.append("")
+        parts.append(memory_md)
+    if other_blocks:
         parts.append("")
         parts.append("<context_blocks>")
-        for block in context_blocks:
+        for block in other_blocks:
             parts.append(f'  <block label="{_esc(block.label)}">')
             parts.append(f"    {_esc(block.body)}")
             parts.append("  </block>")

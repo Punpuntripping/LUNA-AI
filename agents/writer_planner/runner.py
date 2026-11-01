@@ -261,6 +261,8 @@ async def _build_writer_planner_deps_from_input(
         # encode; the resume paths encode in _load_compaction_summary), so it is
         # forwarded verbatim — see WriterPlannerDeps.compaction_summary_md.
         compaction_summary_md=major_input.compaction_summary_md,
+        # Same contract as the compaction summary, on every entry: forwarded verbatim.
+        conversation_memory_md=major_input.conversation_memory_md,
         attached_items=list(major_input.attached_items),
         prior_artifacts=prior_artifacts,
         user_templates=user_templates,
@@ -670,6 +672,7 @@ async def handle_writer_planner_turn(
             ),
             detail_level=deps.style.detail_level,
             tone=deps.style.tone,
+            conversation_memory_md=major_input.conversation_memory_md,
             # رسائل الترحيب — set only when this is the user's opening turn, in
             # which case the executor's chat_summary is their first ever reply.
             # Unified responder (plan unified_responder.md §5.3): the greeting
@@ -905,6 +908,8 @@ async def _writing_voice(
                 # Headless / resume: the package (intent + plan + draft) is what
                 # the executor had — no wider conversation context.
                 fallback_context=None,
+                # A field of its own: `router_context` is None on a resume leg.
+                conversation_memory_md=major_input.conversation_memory_md,
                 welcome=getattr(major_input, "welcome", None),
                 welcome_instruction=major_input.welcome_instruction,
                 profession_group=load_profession_group(supabase, major_input.user_id),

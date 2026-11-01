@@ -101,6 +101,11 @@ class WriterDeps:
     # ``agents.utils.welcome.render_welcome_instruction`` and threaded down
     # through MajorAgentInput → the writer_planner runner.
     welcome_instruction: Optional[str] = None
+    # The <conversation_memory> block, threaded from MajorAgentInput through the
+    # writer_planner runner. Already rendered, encoded and escaped, so
+    # ``conversation_memory_block`` in agent.py prints it as it is. None when the
+    # conversation has no entries or the feature is off.
+    conversation_memory_md: Optional[str] = None
     # Mutable run-state ------------------------------------------------------
     _events: list[dict] = field(default_factory=list)
 
@@ -115,10 +120,16 @@ class WriterDeps:
             "revising": self.revising_item_id is not None,
             "detail_level": self.detail_level,
             "tone": self.tone,
+            "conversation_memory_present": bool(self.conversation_memory_md),
         }
 
     def tracking_input_full(self) -> dict[str, Any]:
-        """Verbatim view — env-gated span event only."""
+        """Verbatim view — env-gated span event only.
+
+        Leaves out ``conversation_memory_md`` on purpose: our own events carry
+        counts only. Memory text reaches Logfire on LLM spans only, as every
+        prompt does.
+        """
         return {
             "describe_query": self.describe_query,
             "task_label": self.task_label,
@@ -151,6 +162,7 @@ def build_writer_deps(
     tone: str = "neutral",
     package: Optional[WriterPackage] = None,
     welcome_instruction: Optional[str] = None,
+    conversation_memory_md: Optional[str] = None,
 ) -> WriterDeps:
     """Build deps with env override + kwarg precedence.
 
@@ -190,6 +202,7 @@ def build_writer_deps(
         tone=tone,
         package=package,
         welcome_instruction=welcome_instruction or None,
+        conversation_memory_md=conversation_memory_md or None,
     )
 
 

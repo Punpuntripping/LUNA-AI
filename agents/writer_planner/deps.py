@@ -10,7 +10,7 @@ pause.** It is rebuilt fresh by :func:`build_writer_planner_deps` on every
 entry, including the resume path. Only ``agent_runs.message_history`` (the
 decider's bytes) crosses the pause boundary. On resume, the orchestrator
 re-loads attached_items + prior_artifacts + recent_messages +
-compaction_summary_md.
+compaction_summary_md + conversation_memory_md.
 
 **Core invariant — see writer_planner.md § Core invariant** — this deps shape
 intentionally does NOT expose any ``content_md`` field. The planner LLM
@@ -80,6 +80,12 @@ class WriterPlannerDeps:
     # prompts.py treats it as prompt-ready — unlike attached_items /
     # prior_artifacts, which are encoded at render.
     compaction_summary_md: str | None = None
+
+    # The <conversation_memory> block, from ``MajorAgentInput.conversation_memory_md``.
+    # Already rendered, encoded with the turn codec and escaped, so prompts.py
+    # prints it as it is: no encode, no escape, no truncation. ``None`` when the
+    # conversation has no entries or the feature is off.
+    conversation_memory_md: str | None = None
 
     # Router-selected workspace_items for THIS turn. The planner sees
     # (item_id, kind, title, summary, word_count) — never content_md.
@@ -177,12 +183,18 @@ class WriterPlannerDeps:
             "recent_messages": len(self.recent_messages),
             "case_brief_present": self.case_brief is not None,
             "compaction_summary_present": bool(self.compaction_summary_md),
+            "conversation_memory_present": bool(self.conversation_memory_md),
             "detail_level": self.style.detail_level,
             "present_count": self.present_count,
         }
 
     def tracking_input_full(self) -> dict[str, Any]:
-        """Verbatim view — env-gated span event only."""
+        """Verbatim view — env-gated span event only.
+
+        Leaves out ``conversation_memory_md`` on purpose: our own events carry
+        counts only. Memory text reaches Logfire on LLM spans only, as every
+        prompt does.
+        """
         return {
             "intent": self.intent,
             "recent_messages": [getattr(m, "text", str(m)) for m in self.recent_messages],
@@ -260,6 +272,7 @@ def build_writer_planner_deps(
     recent_messages: list[ChatMessageSnapshot] | None = None,
     case_brief: str | None = None,
     compaction_summary_md: str | None = None,
+    conversation_memory_md: str | None = None,
     attached_items: list[WorkspaceItemSnapshot] | None = None,
     prior_artifacts: list[ArtifactSummaryView] | None = None,
     user_templates: list[UserTemplateTitle] | None = None,
@@ -286,6 +299,7 @@ def build_writer_planner_deps(
         recent_messages=list(recent_messages or []),
         case_brief=case_brief,
         compaction_summary_md=compaction_summary_md or None,
+        conversation_memory_md=conversation_memory_md or None,
         attached_items=attached_list,
         prior_artifacts=prior_list,
         wi_alias_map=_compute_wi_alias_map(attached_list, prior_list),

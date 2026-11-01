@@ -1123,6 +1123,7 @@ async def run_compliance(
     conversation_id: str,
     case_id: str | None,
     recent_messages: list | None = None,
+    conversation_memory_md: str | None = None,
     detail_level: str = "",
     rejection_notes: list[str] | None = None,
     model_override: ModelPolicy | str | None = None,
@@ -1151,6 +1152,7 @@ async def run_compliance(
         question,
         render_candidate_lines(candidates),
         recent_messages=recent_messages,
+        conversation_memory_md=conversation_memory_md,
         detail_level=detail_level,
         rejection_notes=rejection_notes,
     )

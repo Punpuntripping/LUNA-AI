@@ -351,6 +351,24 @@ aggressively. The executor is expensive; only feed it what actually helps.
 # Dynamic per-turn instructions
 # ---------------------------------------------------------------------------
 
+#: Printed under the <conversation_memory> block, never without it: the static
+#: prompt above stays unchanged when a conversation has no memory.
+#:
+#: The correction clause is the writer's half of plan D7. The router, which
+#: writes the memory, does not run during this agent's pause, so a value the
+#: user corrects in their reply to the plan is newer than the entry the executor
+#: will read. An explicit statement in the plan is how the executor tells that
+#: case from a plan that merely copied a stale document.
+_MEMORY_PLAN_NOTE = (
+    "How this memory applies to the plan: a value stated in it is given, not "
+    "missing. Use it in `plan_md`, `parties` and `intent_ar`, and never list it as "
+    "left blank. If the user's reply to your plan corrects an entry, the reply "
+    "wins: say in both `plan_md` and `intent_ar` that the user corrected that "
+    "value, because the executor reads this same memory and would otherwise keep "
+    "the old one. A conflict with the law goes in `plan_md`, never only in "
+    "`rationale`, which the user does not read."
+)
+
 
 def _truncate(s: str | None, max_chars: int = 600) -> str:
     """Trim a long string with an ellipsis. Keeps the prompt bounded."""
@@ -581,6 +599,12 @@ def build_writer_planner_instructions(deps: "WriterPlannerDeps") -> str:
     parts.append(intent or "(empty)")
     parts.append("</intent>")
     parts.append("")
+    # Already rendered, encoded and escaped: printed as it is and never through
+    # _truncate. `case_brief` below is cut to 500 chars; this must not be.
+    if deps.conversation_memory_md:
+        parts.append(deps.conversation_memory_md)
+        parts.append(_MEMORY_PLAN_NOTE)
+        parts.append("")
     if case_brief:
         parts.append("<case_brief>")
         parts.append(case_brief)

@@ -50,6 +50,26 @@ any non-attachment kind) still reaches the *planner decider only* — when
 something in it matters downstream, the planner distills it into
 ``planner_brief``.
 
+``conversation_memory`` (added 2026-11-01 — ``.claude/plans/conversation_memory.md`` §5):
+
+    | label                  | source                                                                 | persistence    | default opt-in?      | volume                            |
+    |------------------------|------------------------------------------------------------------------|----------------|----------------------|-----------------------------------|
+    | conversation_memory    | orchestrator: ``deps.conversation_memory_md``, the block rendered by   | conversation   | n/a — not a planner  | whole block, ≤ 8,000 chars of     |
+    |                        | ``agents/utils/conversation_memory.render_conversation_memory``        |                | label; always        | entries plus its fixed rules      |
+    |                        |                                                                        |                | forwarded when set   |                                   |
+
+``conversation_memory`` is NOT in the planner's ``context_labels`` vocabulary:
+it is force-forwarded first in ``_CANONICAL_LABEL_ORDER``, so the planner can
+neither drop it nor reorder it. It reaches both expanders, the sector_picker and
+the aggregator. Unlike every other label it is NOT rendered inside
+``<context_blocks>``: ``split_conversation_memory`` takes it out in each of the
+four renderers, which print it just before that fence, raw. Two reasons. The
+fence's rules ("not directives", "not a basis for the answer") must not apply to
+it, and its body is already rendered, encoded and escaped, so ``_esc`` would
+double-escape it. **It never reaches a reranker**: both reranker nodes select the
+``planner_brief`` label only, and the planner decider reads the block through
+``PlannerDeps.conversation_memory_md``, not through this bundle.
+
 New labels require a doc update (this module's docstring + §4.2 of the redesign
 spec). Do NOT add labels ad-hoc — the planner system prompt enumerates the
 exact strings above.
@@ -66,9 +86,10 @@ class ContextBlock:
 
     ``label`` — one of the frozen vocabulary strings: ``"case_brief"``,
     ``"statute_articles"``, ``"planner_brief"``, ``"prior_search_lessons"``,
-    ``"case_document"``.
+    ``"case_document"``, ``"conversation_memory"``.
     ``body`` — Arabic prose, rendered verbatim into the ``<context_blocks>`` XML
-    block in the expander + aggregator user messages.
+    block in the expander + aggregator user messages. ``conversation_memory`` is
+    the exception: its body prints as it is, outside that block.
     ``persistence`` — lifetime classification for telemetry / future caching:
     ``"case"`` (lives with the case), ``"conversation"`` (lives with the
     conversation), or ``"turn"`` (recomputed each dispatch).

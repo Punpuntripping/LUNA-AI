@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from pydantic_ai import Agent, ModelRetry, RunContext, TextOutput
@@ -41,6 +41,7 @@ from agents.models import (
     salvage_next_steps,
 )
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.conversation_memory import strip_conversation_memory
 from agents.utils.structured_output import make_json_salvager
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
@@ -116,6 +117,16 @@ class ResponderDeps:
             "doc_labels": list(self.doc_labels),
             "suppress_next_steps": self.suppress_next_steps,
         }
+
+    def tracking_input_full(self) -> dict[str, Any]:
+        """The verbose span payload: the reflective dump minus the memory.
+
+        The block rides inside ``context_block``, so it is cut out of that field.
+        Memory text reaches Logfire on LLM spans only, as every prompt does.
+        """
+        view = {f.name: getattr(self, f.name) for f in fields(self)}
+        view["context_block"] = strip_conversation_memory(self.context_block)
+        return view
 
 
 _FIELDS: dict[ResponderMode, str] = {

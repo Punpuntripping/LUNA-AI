@@ -208,6 +208,17 @@ class MajorAgentInput(BaseModel):
             "orchestrator encodes at load; masked-mode-off is byte passthrough)."
         ),
     )
+    conversation_memory_md: str | None = Field(
+        default=None,
+        description=(
+            "The <conversation_memory> block from "
+            "``agents.utils.conversation_memory.render_conversation_memory``: "
+            "the hidden per-conversation memory only the router writes. None "
+            "when it has no entries or the feature is off. Already rendered and "
+            "already encoded with the turn codec, and its content was escaped "
+            "once at render time: pass it through verbatim, never re-escape it."
+        ),
+    )
     target_item_id: str | None = Field(
         default=None,
         description="Existing workspace item to edit/extend; None for fresh output.",

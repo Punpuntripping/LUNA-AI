@@ -34,6 +34,10 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: "test-key"
       SUPABASE_ANON_KEY: "test-key"
       SUPABASE_JWT_SECRET: "test-secret"
+      # Dummies: the agent suites import agents.router.router, and building its
+      # model chain at import needs a key for each provider. Nothing is called.
+      ALIBABA_API_KEY_GLOBAL: "test-key"
+      OPENROUTER_API_KEY: "test-key"
       REDIS_URL: "redis://localhost:6379"
       ENVIRONMENT: "test"
     steps:
@@ -76,7 +80,8 @@ jobs:
             backend/tests/test_announcements.py \
             backend/tests/test_subscription_renewal.py \
             backend/tests/test_deep_search_gate.py \
-            backend/tests/test_wi_preview_lock.py
+            backend/tests/test_wi_preview_lock.py \
+            agents/tests/test_conversation_memory*.py
 
   frontend:
     name: Frontend

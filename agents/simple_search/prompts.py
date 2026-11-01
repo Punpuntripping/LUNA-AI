@@ -57,6 +57,46 @@ def _esc(value: object) -> str:
 
 
 # =========================================================================== #
+# Conversation memory — what this family needs beside the block.
+# =========================================================================== #
+#
+# The ``<conversation_memory>`` block is rendered, encoded and escaped once,
+# upstream, so every builder below prints it as it is and never through
+# :func:`_esc`. It sits right before the recent-messages window, which it
+# outranks. These notes print under it and never without it: the static prompts
+# in this module stay unchanged when a conversation has no memory.
+#
+# They exist for one reason. The block tells a reader to warn about a conflict
+# with the law "in your reply to the user", and in this family the reply is two
+# agents: the synthesizer or the compliance agent holds the whole document and
+# writes the body, while the responder writes the chat line from a digest clipped
+# at ``RESPONDER_EXCERPT_HARD_CAP``, and a carded body never enters the bubble.
+# So the warning has to sit where the clip keeps it, and the responder has to be
+# told it may carry it despite "never retype legal text".
+#
+# The searcher gets no note: it never reads a body and writes nothing the user
+# reads except `ask_user`, which the block already covers.
+
+_ANSWER_MEMORY_NOTE = (
+    "How this memory applies here: no entry changes the text of what you opened, "
+    "so quote it exactly as it is. If that text contradicts a law entry the user "
+    "has not insisted on, state the conflict in one plain sentence at the very "
+    "start of your answer, before anything else. The chat message is written "
+    "from the opening of your answer alone."
+)
+
+_RESPONDER_MEMORY_NOTE = (
+    "How this memory applies here: you see excerpts, so never judge a conflict "
+    "with a law entry from what an excerpt leaves out. When a document you card "
+    "opens by stating such a conflict, repeat it in one plain sentence in "
+    "`chat_summary_md`, without quoting the text, because the card's body is not "
+    "in the bubble. An uncarded body reaches the user below you with that "
+    "sentence already in it. When a chip names the user's facts, take them from "
+    "this memory first."
+)
+
+
+# =========================================================================== #
 # Shared role — the top of every synthesizer variant.
 # =========================================================================== #
 #
@@ -359,6 +399,11 @@ def build_searcher_instructions(deps: object) -> str:
     """
     blocks: list[str] = []
 
+    # The conversation memory, ahead of the window it outranks.
+    memory = getattr(deps, "conversation_memory_md", None)
+    if memory:
+        blocks.append(memory)
+
     # The conversation window (same loader as the planners). First, because it
     # is what the candidate list and the question are read AGAINST.
     history = render_recent_messages(getattr(deps, "recent_messages", None))
@@ -479,6 +524,7 @@ def build_synthesizer_user_message(
     welcome_instruction: str | None = None,
     detail_level: str = "",
     recent_messages: "list | None" = None,
+    conversation_memory_md: str | None = None,
 ) -> str:
     """Render the synthesizer's user message: question + object(s) + references.
 
@@ -492,6 +538,9 @@ def build_synthesizer_user_message(
     it would put ``&quot;`` into the user's chat bubble.
     """
     parts: list[str] = []
+
+    if conversation_memory_md:
+        parts += [conversation_memory_md, _ANSWER_MEMORY_NOTE, ""]
 
     # History FIRST, so the question below is read against the thread — the same
     # window the searcher used to pick this object (`render_recent_messages`).
@@ -668,6 +717,7 @@ def build_responder_user_message(
     docs: "list[ResponderDocDigest]",
     *,
     recent_messages: "list | None" = None,
+    conversation_memory_md: str | None = None,
     dispatched: int = 0,
     unselected_candidates: "list[str] | None" = None,
     welcome_instruction: str | None = None,
@@ -699,6 +749,8 @@ def build_responder_user_message(
             all: there the decider carries the thread; here the searcher carries
             it and never writes to the user, so the thread has to reach the
             agent that does.
+        conversation_memory_md: the ``<conversation_memory>`` block, printed as
+            it is (see the note at the top of this module).
         dispatched: how many documents were handed to synthesizers this turn.
             When it exceeds ``len(docs)`` a synthesizer was dropped
             (``_run_round`` logs and continues — ``runner.py:1268``) and the
@@ -731,6 +783,9 @@ def build_responder_user_message(
         synthesizer builders.
     """
     parts: list[str] = []
+
+    if conversation_memory_md:
+        parts += [conversation_memory_md, _RESPONDER_MEMORY_NOTE, ""]
 
     # History FIRST — same position and same renderer as the searcher and the
     # synthesizer, so all three read the turn against the same window.
@@ -979,6 +1034,7 @@ def build_compliance_user_message(
     candidate_lines: "list[str]",
     *,
     recent_messages: "list | None" = None,
+    conversation_memory_md: str | None = None,
     detail_level: str = "",
     rejection_notes: "list[str] | None" = None,
 ) -> str:
@@ -994,6 +1050,8 @@ def build_compliance_user_message(
         recent_messages: the conversation window, through the ONE shared
             renderer (:func:`render_recent_messages`) — a follow-up like «وكيف
             أطبعها؟» has its service one turn up.
+        conversation_memory_md: the ``<conversation_memory>`` block, printed as
+            it is (see the note at the top of this module).
         detail_level: the user's preference (``low`` / ``medium`` / ``high``),
             allow-listed upstream and escaped here anyway.
         rejection_notes: reasons an earlier compliance round THIS turn came back
@@ -1005,6 +1063,9 @@ def build_compliance_user_message(
     fenced as DATA (the XML-forgery defence, same as every builder above).
     """
     parts: list[str] = []
+
+    if conversation_memory_md:
+        parts += [conversation_memory_md, _ANSWER_MEMORY_NOTE, ""]
 
     # History FIRST — the same position and renderer as the other three agents.
     history = render_recent_messages(recent_messages)

@@ -39,6 +39,8 @@ from typing import Protocol, runtime_checkable
 
 from pydantic_ai import Agent, RunContext
 
+from agents.utils.conversation_memory import render_conversation_memory
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,6 +52,9 @@ class HasEditorContext(Protocol):
     avoid a hard supabase import here. ``pending_sse_events`` is a mutable
     sink: the tool appends ``workspace_item_updated`` events that
     ``run_router`` returns and ``_route`` drains (panel refresh).
+
+    ``conversation_memory`` (encoded entries) is read with ``getattr``, not
+    declared here: only ``RouterDeps`` carries it.
     """
 
     supabase: object
@@ -213,6 +218,17 @@ def register_edit_artifact(agent: Agent) -> None:
         # ``agents.artifact_editor.run_artifact_editor``.
         from agents.artifact_editor import run_artifact_editor
 
+        # Read here, not at dispatch, so an update batched in the same response
+        # is already in it. Pydantic AI starts a response's calls in order, so
+        # with this call first the update has not run yet. Its body is
+        # synchronous, so one yield lets it finish. Passed only when there is
+        # one: a conversation with no memory makes the same call as before.
+        await asyncio.sleep(0)
+        memory_md = render_conversation_memory(
+            getattr(ctx.deps, "conversation_memory", None)
+        )
+        memory_arg = {"conversation_memory_md": memory_md} if memory_md else {}
+
         # Ownership is re-checked inside the editor (user_id + conversation_id
         # filters on the fetch AND the write) — the alias map above is the
         # first gate, not the only one.
@@ -223,6 +239,7 @@ def register_edit_artifact(agent: Agent) -> None:
             task=task,
             user_id=str(getattr(ctx.deps, "user_id", "") or ""),
             conversation_id=(getattr(ctx.deps, "conversation_id", None) or None),
+            **memory_arg,
         )
 
         if result.status == "edited":

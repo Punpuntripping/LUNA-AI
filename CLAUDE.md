@@ -158,6 +158,7 @@ Agents MUST read existing reports before starting work to stay aligned on known 
 - `wave_7a_sse_hardening.md` — Heartbeat + disconnect + CancelledError (3 files modified)
 - `wave_7b_security_deployment.md` — Security headers, Docker, healthcheck, rate limiting (7 files)
 - `wave_7c_operational_maturity.md` — Error codes, audit, CI, reconnect, optimistic updates (16 files)
+- `conversation_memory.md` — Hidden per-conversation memory: router writes, all agents except rerankers and Layer 4 read; flag `CONVERSATION_MEMORY_ENABLED`
 
 **Grand plans** (Obsidian): Only `@plan-reviewer` reads them directly for detailed specs.
 All other agents work exclusively within `C:\Programming\LUNA_AI\`.

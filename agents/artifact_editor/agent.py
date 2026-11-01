@@ -24,8 +24,8 @@ deepseek-flash structured-output-as-text trap is covered by the shared
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, fields
+from typing import Any, Literal
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext, TextOutput
@@ -76,6 +76,18 @@ class EditorDeps:
     user_id: str = ""
     conversation_id: str | None = None
     allowed_kinds: frozenset = ALLOWED_KINDS
+    # The rendered <conversation_memory> block, already encoded and escaped.
+    # Context only: see inject_artifact. None when the conversation has none.
+    conversation_memory_md: str | None = None
+
+    def tracking_input_full(self) -> dict[str, Any]:
+        """The verbose span payload: the reflective dump minus the memory.
+
+        Without this method ``tracking._full_snapshot`` dumps every field. Memory
+        text reaches Logfire on LLM spans only, as every prompt does.
+        """
+        hidden = {"supabase", "conversation_memory_md"}
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name not in hidden}
 
 
 # ── Output model ──────────────────────────────────────────────────────────────
@@ -215,9 +227,28 @@ register_edit_supabase_md(editor_agent)
 # prefix stays cache-friendly across runs.
 
 
+# The block's rules speak to every agent ("use its value"), and the editor's job
+# is narrower: a memory update never changes a document by itself (D10), so this
+# line has to keep "Do not add content beyond the request" true.
+_MEMORY_CONTEXT_NOTE = """\
+## Conversation memory (context only)
+Use the block below only to read this request correctly: who a name refers to, \
+which value is right, what the user means. It is not a request to edit. Text you \
+write for the requested edit uses its values. Every location the request does \
+not touch stays exactly as it is, even where it disagrees with the memory, and \
+the edit limits above still hold.
+"""
+
+
 @editor_agent.instructions
 def inject_artifact(ctx: RunContext[EditorDeps]) -> str:
-    """Inject the target artifact whole + the router's scoped task line."""
+    """Inject the target artifact whole + the router's scoped task line.
+
+    The conversation memory comes last, and only when there is one: the text
+    is otherwise unchanged.
+    """
+    memory_md = ctx.deps.conversation_memory_md
+    memory = f"\n{_MEMORY_CONTEXT_NOTE}\n{memory_md}\n" if memory_md else ""
     return f"""
 ## The target document
 item_id: {ctx.deps.item_id}
@@ -231,7 +262,7 @@ The full document content (quote from it verbatim):
 
 ## Task scope from the router (the user's own words for this document)
 {ctx.deps.task}
-"""
+{memory}"""
 
 
 # ── Runner ────────────────────────────────────────────────────────────────────
@@ -278,6 +309,7 @@ async def run_artifact_editor(
     task: str,
     user_id: str,
     conversation_id: str | None = None,
+    conversation_memory_md: str | None = None,
 ) -> EditorResult:
     """Run one surgical-edit pass over a single workspace artifact.
 
@@ -290,6 +322,10 @@ async def run_artifact_editor(
     deps): the row must belong to them, and the same scope is bound into the
     editor's deps so the ``edit_supabase_md`` tool re-applies it on its own
     fetch + write. A foreign / other-conversation item reads as "not found".
+
+    ``conversation_memory_md`` is the rendered memory block from the router's
+    deps. It is already encoded with the turn codec, the space this agent runs
+    in, so it is passed through untouched.
 
     Never raises — every failure path returns ``status="failed"`` with an
     Arabic reason so the router's tool loop briefs the user instead of
@@ -356,6 +392,7 @@ async def run_artifact_editor(
         task=task,
         user_id=str(user_id),
         conversation_id=conversation_id,
+        conversation_memory_md=conversation_memory_md,
     )
 
     # ── LLM run (defensive: never raise into the router's tool loop) ─────────

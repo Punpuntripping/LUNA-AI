@@ -462,6 +462,15 @@ class Settings(BaseSettings):
             return v.replace(tzinfo=timezone.utc)
         return v
 
+    # ── Conversation memory — .claude/plans/conversation_memory.md ──────────
+    # Kill switch for the hidden per-conversation memory the router writes and
+    # the agents read. OFF: load returns nothing, the router tool is hidden and
+    # its rules are absent, so prompts stay as they are. Migration 200 must be
+    # applied before this goes on. Env var name == field name (no
+    # validation_alias). Settings is lru_cache'd, so a change needs the redeploy
+    # Railway does on every variable edit anyway.
+    CONVERSATION_MEMORY_ENABLED: bool = False
+
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
     # OpenRouter Decisions API per sub-query, falling back down the

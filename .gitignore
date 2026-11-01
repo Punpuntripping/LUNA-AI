@@ -75,6 +75,15 @@ agents/deep_search_v4/case_search/tests/*
 # test_loop.py's fixtures (`case_search_deps` et al.) live here — without it a
 # clean clone cannot run the one test that holds the clamp wiring.
 !agents/deep_search_v4/case_search/tests/conftest.py
+# the conversation-memory suites are durable: a memory fact outranks documents
+# for every agent, and what holds that safe is invisible at runtime (the owner
+# filter on a service-role client, real text in the DB, the disclaimer coming
+# only from the flag). Glob on purpose: the router, deep-search and writer steps
+# each add a test_conversation_memory_*.py here. The rest of agents/tests/ stays
+# ignored.
+!agents/tests/
+agents/tests/*
+!agents/tests/test_conversation_memory*.py
 # access-tiers / library-gating suites are durable — they pin revenue and
 # entitlement invariants (unlock idempotency, the frozen-library predicate, the
 # شرح exclusion, the ISR cache-leak guard). Losing them loses the contract.

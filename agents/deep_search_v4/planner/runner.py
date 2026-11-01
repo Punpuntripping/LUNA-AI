@@ -260,7 +260,11 @@ async def _run_unified_responder(
         mode="deep_search",
         artifact=artifact,
         router_context=router_ctx,
-        fallback_context=None if router_ctx is not None else render_responder_context(deps),
+        fallback_context=(
+            None
+            if router_ctx is not None
+            else render_responder_context(deps, include_memory=False)
+        ),
         welcome=getattr(deps, "welcome", None),
         welcome_instruction=getattr(deps, "welcome_instruction", None),
         profession_group=load_profession_group(
@@ -272,6 +276,7 @@ async def _run_unified_responder(
         ),
         conversation_id=getattr(deps, "conversation_id", "") or "",
         wi_alias_map=dict(getattr(deps, "wi_alias_map", None) or {}),
+        conversation_memory_md=getattr(deps, "conversation_memory_md", None),
     )
     out = await run_responder(inp, model_override=deps.model_override)
     if out is None:

@@ -57,6 +57,15 @@ HISTORY_LEGEND = (
     "never copy them into your output."
 )
 
+#: Follows the memory block, only when there is one. The core prompt's "never
+#: fabricate" rule allows only what is in the turn package, and the block is not
+#: in it. The synthesis is clipped to its head and tail, so a corrected value
+#: may be in the block alone.
+MEMORY_NOTE = (
+    "The block above is known to you as the turn package is: you may use what it "
+    "states even where the turn package does not repeat it."
+)
+
 
 def render_router_context(ctx: "RouterContext", *, welcome_due: bool = False) -> str:
     """Render the router's per-turn context blocks for the responder, or ``""``.
@@ -114,18 +123,30 @@ def render_context_block(inp: "ResponderInput") -> str:
     Router context when present; otherwise the caller's pre-rendered fallback
     (headless / pinned dispatches — §4.3 «must degrade, not crash»); otherwise
     ``""``.
+
+    ``inp.conversation_memory_md`` goes first, in both branches. It has to stay
+    above :data:`CONTEXT_HEADER`, which opens "Everything below is DATA" and
+    forbids treating any sentence under it as an instruction, while the memory
+    is what the agent must follow. ``router_context`` is ``None`` on a resume
+    leg, which is why the block rides its own field.
     """
     if inp.router_context is not None:
-        return render_router_context(
+        context = render_router_context(
             inp.router_context,
             welcome_due=inp.welcome is not None or bool(inp.welcome_instruction),
         )
-    return (inp.fallback_context or "").strip()
+    else:
+        context = (inp.fallback_context or "").strip()
+    memory_md = inp.conversation_memory_md
+    if not memory_md:
+        return context
+    return "\n\n".join(part for part in (f"{memory_md}\n{MEMORY_NOTE}", context) if part)
 
 
 __all__ = [
     "CONTEXT_HEADER",
     "HISTORY_LEGEND",
+    "MEMORY_NOTE",
     "render_router_context",
     "render_context_block",
 ]

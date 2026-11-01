@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
@@ -185,8 +185,22 @@ class SearcherDeps:
     #: only here.
     recent_messages: list = field(default_factory=list)
 
+    #: The ``<conversation_memory>`` block. Already rendered, encoded and
+    #: escaped, so the instructions print it as it is. ``None`` without a memory.
+    conversation_memory_md: str | None = None
+
     #: Optional SSE sink, async (matches the runner's C1 signature).
     emit_sse: Callable[[dict], Any] | None = None
+
+    def tracking_input_full(self) -> dict[str, Any]:
+        """The verbose span payload: what the reflective dump shows, minus the memory.
+
+        Without this method ``tracking._full_snapshot`` dumps every field. Our
+        own events carry counts only. Memory text reaches Logfire on LLM spans
+        only, as every prompt does.
+        """
+        hidden = {"supabase", "emit_sse", "conversation_memory_md"}
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name not in hidden}
 
     def register_candidate(self, obj: ResolvedObject, preview: str = "") -> str:
         """Register a resolved object and return its handle (``C1``, ``C2``, …)."""

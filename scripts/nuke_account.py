@@ -123,6 +123,7 @@ def is_allowed(email: str) -> bool:
 CASCADING_TABLES: list[tuple[str, str]] = [
     ("retrieval_artifacts", "user_id"),        # must precede workspace_items (NO ACTION FK)
     ("workspace_items", "user_id"),
+    ("conversation_memory_entries", "user_id"),  # before conversations, for a real count
     ("conversations", "user_id"),
     ("lawyer_cases", "lawyer_user_id"),
     ("message_feedback", "user_id"),

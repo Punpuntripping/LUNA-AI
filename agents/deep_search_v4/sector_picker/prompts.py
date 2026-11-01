@@ -21,6 +21,7 @@ import html
 
 from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.sector_vocab.regulations import VALID_SECTORS
+from agents.utils.conversation_memory import split_conversation_memory
 
 from .deps import Mode
 from .models import MAX_SECTORS, MIN_SECTORS
@@ -165,8 +166,10 @@ def build_sector_picker_user_message(
     """Build the user-message payload for one sector_picker call.
 
     Mirrors the expander's user-message shape: ``<query>`` + ``<mode>`` +
-    optional ``<planner_brief>`` + optional ``<context_blocks>``.
+    optional ``<planner_brief>`` + optional ``<conversation_memory>`` (already
+    rendered and escaped, so printed as it is) + optional ``<context_blocks>``.
     """
+    memory_md, other_blocks = split_conversation_memory(context_blocks)
     parts: list[str] = [
         f"<query>{_esc(query)}</query>",
         f"<mode>{_esc(mode)}</mode>",
@@ -174,7 +177,9 @@ def build_sector_picker_user_message(
     brief = (planner_brief or "").strip()
     if brief:
         parts.append(f"<planner_brief>\n{_esc(brief)}\n</planner_brief>")
-    rendered = _render_context_blocks(context_blocks or [])
+    if memory_md:
+        parts.append(memory_md)
+    rendered = _render_context_blocks(other_blocks)
     if rendered:
         parts.append(rendered)
     return "\n\n".join(parts)

@@ -73,6 +73,7 @@ from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
 from agents.deep_search_v4.sector_picker import run_sector_picker
 from agents.utils.agent_models import usage_by_model
+from agents.utils.conversation_memory import CONVERSATION_MEMORY_LABEL
 from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
@@ -1035,8 +1036,9 @@ def _build_candidate_context_blocks(
     would produce an empty body (e.g. ``deps.case_brief is None``,
     ``decision.planner_brief`` blank, ``deps.prior_searches`` empty).
 
-    Four labels are emitted: ``case_brief``, ``statute_articles``,
-    ``planner_brief``, ``prior_search_lessons``. Attachments are not built here:
+    Five labels are emitted: ``conversation_memory``, ``case_brief``,
+    ``statute_articles``, ``planner_brief``, ``prior_search_lessons``.
+    Attachments are not built here:
     uploaded case papers travel as ``case_document`` blocks, built per recipient
     by ``run_retrieval`` (:func:`_build_case_document_lists`) and spliced in at
     each call site by :func:`_with_case_documents` — deliberately outside this
@@ -1048,6 +1050,17 @@ def _build_candidate_context_blocks(
     planner in Wave 2), never downstream.
     """
     candidates: dict[str, ContextBlock] = {}
+
+    # conversation_memory — persistence="conversation". The rendered block, as
+    # it came: already encoded and escaped. ``getattr`` because the block is an
+    # addition and test doubles for these deps predate it.
+    memory_md = getattr(deps, "conversation_memory_md", None)
+    if memory_md:
+        candidates[CONVERSATION_MEMORY_LABEL] = ContextBlock(
+            label=CONVERSATION_MEMORY_LABEL,
+            body=memory_md,
+            persistence="conversation",
+        )
 
     # case_brief — persistence="case" (lives with the case across turns).
     if deps.case_brief:
@@ -1145,11 +1158,17 @@ def _build_candidate_context_blocks(
 # longer asks the planner to retype article bodies into ``planner_brief``, this
 # block is now the ONLY path those bodies have downstream. Dropping it would not
 # degrade the context, it would empty it.
+# ``conversation_memory`` leads and is forced: the planner has no label for it and
+# no say in it. Its place in this order matters less than it looks, because each
+# renderer pulls it out of the list and prints it ahead of ``<context_blocks>``,
+# which is also why a ``case_document`` spliced to the front of a bundle with no
+# ``case_brief`` (see ``_with_case_documents``) changes nothing.
 _CANONICAL_LABEL_ORDER = (
+    CONVERSATION_MEMORY_LABEL,
     "case_brief", "statute_articles", "planner_brief", "prior_search_lessons",
 )
 _FORCE_FORWARD_LABELS = frozenset(
-    {"case_brief", "statute_articles", "planner_brief"}
+    {CONVERSATION_MEMORY_LABEL, "case_brief", "statute_articles", "planner_brief"}
 )
 
 
@@ -1254,8 +1273,9 @@ async def run_retrieval(
     # ``planner_brief`` body, selected inside each executor's RerankerNode and
     # rendered as a <planner_brief> tag at the head of the reranker user message
     # (head placement keeps the prefix cacheable across the N concurrent calls
-    # in a turn). ``case_brief`` and ``prior_search_lessons`` still never reach a
-    # reranker. Do not "restore" the zero-blocks rule.
+    # in a turn). ``case_brief``, ``prior_search_lessons`` and
+    # ``conversation_memory`` never reach a reranker. Do not "restore" the
+    # zero-blocks rule.
     decision = deps._decision
     selected_blocks: list[ContextBlock] = _select_forwarded_blocks(
         decision, deps, include_planner_brief=True

@@ -47,8 +47,11 @@ def _sha(text: str) -> str:
 
 # ---------------------------------------------------------------------------
 # The pin — captured from the pre-extraction prompts.py; re-captured for the
-# deliberate «سنة القضية» ruling-age rule added to _SHARED_ROLE_AR, and again
-# for the `case_document` rule (case_documents_forwarding.md §5.4).
+# deliberate «سنة القضية» ruling-age rule added to _SHARED_ROLE_AR, again for
+# the `case_document` rule (case_documents_forwarding.md §5.4), and again for
+# the `<conversation_memory>` exception bullet (conversation_memory.md §5): that
+# one bullet, 362 characters, is the only change, and each length below grew by
+# exactly that.
 # ---------------------------------------------------------------------------
 
 # (constant, expected length in characters, expected sha256 of the UTF-8 bytes)
@@ -56,20 +59,20 @@ PRE_REFACTOR: list[tuple[str, str, int, str]] = [
     (
         "PROMPT_MODE_CASE",
         PROMPT_MODE_CASE,
-        16202,
-        "32b480216aeb0f93920ab2b5a92fd9c6453f4873a3036c6251d23acffceb9813",
+        16564,
+        "37b437659f72a4f58024b3ad76441f522f49410750d36c81490aa3096306abec",
     ),
     (
         "PROMPT_MODE_REG",
         PROMPT_MODE_REG,
-        19036,
-        "ce9841ae4523b9cc82f2a3e60ca63137d0b3663bcef61ea6f75196ed603b4849",
+        19398,
+        "02540b878abcd322948e096ec25fddc527b22c0da416e8b5a33333e59714e7b8",
     ),
     (
         "PROMPT_MODE_FULL",
         PROMPT_MODE_FULL,
-        17204,
-        "6a8f9e6d7d6924822d5aa2e63a0e45f2e0ac95d3be09582257bb019c55e5817b",
+        17566,
+        "653df2349d1772bdd8050498300e0dda5b35a4bc7a60a875ae32f3e8857022bb",
     ),
 ]
 

@@ -23,6 +23,7 @@ from shared.library.supersession import (
     chunk_provisions,
     group_by_note,
 )
+from agents.utils.conversation_memory import split_conversation_memory
 
 if TYPE_CHECKING:
     from shared.library.supersession import Transition
@@ -91,6 +92,7 @@ Your sole task: synthesize a clear Arabic answer to the user's original question
   - Refer to a document by what it is — «الحكم المرفق»، «العقد المرفق»، «مذكرة الخصم المرفقة» — never by its `WI-N` alias, which the user never sees.
   - When a document came without its full text, do not state its facts more precisely than its summary does.
   - If the part of a document that was cut off likely holds what the answer needs, say so in the gaps section.
+- **`<conversation_memory>` is the exception to the rule against content outside the references.** Its facts are the facts of the matter, stated by the user: use them even though no reference contains them, and where one disagrees with a `case_document`, the memory wins. Follow a legal position marked as insisted in the same way. Never cite either with `[n]`.
 """
 
 
@@ -808,6 +810,20 @@ def _render_transitions(
     return lines
 
 
+# Printed under the memory block, only when there is one. The block tells an
+# agent that does not write the chat reply to flag a legal conflict "in your
+# output", but the responder reads only the head and the tail of `synthesis_md`
+# (1,500 + 500 chars; the old responder reads the head alone), so a flag left in
+# the middle never reaches the chat, and the router's `insisted` rule depends on
+# the user having seen that warning. The insisted label is a different string,
+# so this does not ask for a repeat warning on an insisted entry.
+_MEMORY_CONFLICT_NOTE = (
+    "If `<references>` contradict a `[رأي قانوني]` entry, say so in the opening of "
+    "`synthesis_md`, right after the direct answer: the chat reply is written from "
+    "the opening and the close of the answer only."
+)
+
+
 def build_aggregator_user_message(
     agg_input: "AggregatorInput",
     references: list["Reference"],
@@ -840,9 +856,19 @@ def build_aggregator_user_message(
     lines.append("</sub_queries>")
     lines.append("")
 
+    # The conversation memory leaves the bundle here and prints BEFORE
+    # <context_blocks>, unescaped: it is already rendered and escaped, and the
+    # system prompt's "not a basis for the answer" rule is about that fence.
+    memory_md, context_blocks = split_conversation_memory(
+        getattr(agg_input, "context_blocks", None)
+    )
+    if memory_md:
+        lines.append(memory_md)
+        lines.append(_MEMORY_CONFLICT_NOTE)
+        lines.append("")
+
     # §5.3.B — planner-curated context bundle, rendered BEFORE <references>.
     # Empty list (default) emits nothing — pre-redesign behavior preserved.
-    context_blocks = getattr(agg_input, "context_blocks", None) or []
     if context_blocks:
         lines.append("<context_blocks>")
         for block in context_blocks:

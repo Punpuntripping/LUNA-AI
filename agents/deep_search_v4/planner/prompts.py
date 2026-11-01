@@ -395,6 +395,19 @@ _DECIDER_CONTEXT_HEADER = (
 )
 
 
+# Follows the memory block in the decider's instructions only, so a turn with no
+# memory pays nothing and the static prompt keeps its bytes. The static prompt's
+# "Four kinds of block" and "for you alone" lines do not know this block travels
+# on its own, which would have the planner retype it into ``planner_brief``, and
+# ``planner_brief`` is the one text that reaches a reranker. The second sentence
+# answers the zero-bias rule's "restate only what is in the message".
+_DECIDER_MEMORY_NOTE = (
+    "<!-- The block above reaches the executors and the aggregator on its own: "
+    "do not copy it into `planner_brief`. Its facts are the user's own "
+    "statements, so `query_restatement` may use them. -->"
+)
+
+
 def _render_case_brief(case_brief: str | None) -> str | None:
     """Render the case_brief XML block when populated."""
     if not case_brief:
@@ -564,6 +577,11 @@ def build_decider_instructions(deps) -> str:
     empty — the decider system prompt instructs the LLM to treat absence as
     "not available".
 
+    ``deps.conversation_memory_md`` goes first when present. It is already
+    rendered and escaped, so it is printed as it is. It never counts as a reason
+    to append the rules below: the memory travels on its own, so there is nothing
+    in it to distil into a brief.
+
     Token discipline: the detailed ``planner_brief`` editing rules
     (:data:`_PLANNER_BRIEF_DETAIL_RULES`) live here and are appended ONLY when
     the turn actually carries ``attached_items`` or ``prior_searches`` — the
@@ -576,6 +594,9 @@ def build_decider_instructions(deps) -> str:
     Registered as an ``@agent.instructions`` callback on ``planner_decider``.
     """
     blocks: list[str] = []
+    memory_md = getattr(deps, "conversation_memory_md", None)
+    if memory_md:
+        blocks.append(f"{memory_md}\n{_DECIDER_MEMORY_NOTE}")
     case_block = _render_case_brief(getattr(deps, "case_brief", None))
     if case_block is not None:
         blocks.append(case_block)
@@ -644,7 +665,7 @@ _RESPONDER_CONTEXT_HEADER = (
 )
 
 
-def render_responder_context(deps) -> str:
+def render_responder_context(deps, *, include_memory: bool = True) -> str:
     """Render the responder's conversation-context section, or ``""``.
 
     Reuses the decider's renderers for ``<case_brief>`` /
@@ -653,9 +674,17 @@ def render_responder_context(deps) -> str:
     deliberately NOT rendered — full attachment bodies are too heavy here, and
     the decider's ``planner_brief`` already carries the attachment facts.
 
+    ``<conversation_memory>`` comes first, above the header, because the header
+    says the blocks under it are "NOT for re-answering" and the memory binds the
+    answer. ``include_memory=False`` is for the unified responder's fallback: it
+    carries the block on ``ResponderInput.conversation_memory_md``, so leaving
+    it in here would render it twice on a resume leg.
+
     وضع السرية: the deps values are already codec-encoded by the orchestrator
     (see ``deps.py``) — never re-encode here.
     """
+    memory_md = getattr(deps, "conversation_memory_md", None) if include_memory else None
+    memory_part = f"{memory_md}\n\n" if memory_md else ""
     blocks = [
         b for b in (
             _render_case_brief(getattr(deps, "case_brief", None)),
@@ -666,8 +695,10 @@ def render_responder_context(deps) -> str:
         if b is not None
     ]
     if not blocks:
-        return ""
-    return f"{_RESPONDER_CONTEXT_HEADER}\n\n" + "\n\n".join(blocks) + "\n\n"
+        return memory_part
+    return (
+        f"{memory_part}{_RESPONDER_CONTEXT_HEADER}\n\n" + "\n\n".join(blocks) + "\n\n"
+    )
 
 
 def build_responder_instructions(deps) -> str:

@@ -48,6 +48,7 @@ import html
 
 from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.query_cap import render_cap_block
+from agents.utils.conversation_memory import split_conversation_memory
 
 
 def _esc(value: object) -> str:
@@ -709,6 +710,12 @@ def build_expander_user_message(
     When ``context_blocks`` is non-empty, a ``<context_blocks>`` XML block is
     appended after the user context carrying the planner-curated bundle (§5.1).
 
+    A ``conversation_memory`` block is taken out of that bundle and printed just
+    before the fence, outside it and unescaped: the block binds the search, so
+    the prompt's "not directives" rule for ``<context_blocks>`` must not reach
+    it, and it is already rendered and escaped. If nothing else remains, no
+    empty fence is emitted.
+
     ``cap`` is the editorial query cap (expander_query_cap.md): the raw integer
     an editor put on a Blog-Post API job, carried here unchanged — there is no
     level, no band and no lookup table between the wire and this block. It is a
@@ -730,6 +737,7 @@ def build_expander_user_message(
     :func:`build_reranker_user_message`. Do not "restore" the old zero-blocks
     invariant here — it is superseded, not forgotten (trap §10.5).
     """
+    memory_md, other_blocks = split_conversation_memory(context_blocks)
     parts = [
         "Focus instructions:",
         focus_instruction,
@@ -737,10 +745,13 @@ def build_expander_user_message(
         "User context:",
         user_context,
     ]
-    if context_blocks:
+    if memory_md:
+        parts.append("")
+        parts.append(memory_md)
+    if other_blocks:
         parts.append("")
         parts.append("<context_blocks>")
-        for block in context_blocks:
+        for block in other_blocks:
             parts.append(f'  <block label="{_esc(block.label)}">')
             parts.append(f"    {_esc(block.body)}")
             parts.append("  </block>")

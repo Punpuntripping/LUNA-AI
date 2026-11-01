@@ -379,6 +379,10 @@ class ResponderInput:
         conversation_id / case_id: span identity (``tracking._identity_from_deps``).
         wi_alias_map: ``wi_seq → item_id`` for resolving deep_search
             ``referenced_wi``.
+        conversation_memory_md: the rendered ``<conversation_memory>`` block.
+            A dedicated field rather than a read off ``router_context``, which
+            is ``None`` on resume legs. Already rendered, encoded and escaped:
+            never re-escape it.
     """
 
     mode: ResponderMode
@@ -402,6 +406,7 @@ class ResponderInput:
     conversation_id: str = ""
     case_id: str | None = None
     wi_alias_map: dict[int, str] = field(default_factory=dict)
+    conversation_memory_md: str | None = None
 
     def effective_follow_up_status(self) -> str | None:
         """Explicit ``follow_up_status`` wins; else the router context's."""

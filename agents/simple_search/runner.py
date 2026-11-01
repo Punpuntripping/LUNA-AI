@@ -800,6 +800,7 @@ async def _synthesize_group(
     detail_level: str,
     judgment_access: JudgmentAccessResolver,
     recent_messages: list | None = None,
+    conversation_memory_md: str | None = None,
     unlock_records: list[_UnlockRecord] | None = None,
     fanout_index: int = 0,
 ) -> _Answer:
@@ -873,6 +874,7 @@ async def _synthesize_group(
             references,
             detail_level=detail_level,
             recent_messages=recent_messages,
+            conversation_memory_md=conversation_memory_md,
         ),
         deps=SynthesizerDeps(conversation_id=conversation_id, case_id=case_id),
         stage="simple_search.synthesize",
@@ -1258,6 +1260,7 @@ async def run_simple_search(
     # WorkspaceItemSnapshot; dicts are coerced by _as_snapshot for eval harnesses.
     attached_items: "list[WorkspaceItemSnapshot] | list[dict] | None" = None,
     recent_messages: list | None = None,        # the planners' conversation window
+    conversation_memory_md: str | None = None,  # the rendered memory block
     user_preferences: dict | None = None,
     user_call_name: str | None = None,
     welcome: "WelcomeState | None" = None,
@@ -1281,6 +1284,10 @@ async def run_simple_search(
             ``kind='references'`` library item is **case B** — the searcher is
             skipped entirely. Any other attached item is **case C** — its cited
             sources become the searcher's candidate list.
+        conversation_memory_md: the ``<conversation_memory>`` block. Already
+            rendered, encoded and escaped, so it travels beside
+            ``recent_messages`` unchanged to every agent of the family. ``None``
+            adds nothing.
         user_preferences: read for ``detail_level`` only.
         user_call_name: reserved; the welcome line already carries the address.
         welcome: this turn's welcome state. Rendered into the **responder**
@@ -1350,6 +1357,7 @@ async def run_simple_search(
             case_id=case_id,
             emit_sse=emit_sse,
             recent_messages=list(recent_messages or []),
+            conversation_memory_md=conversation_memory_md,
         )
         for item in items:
             obj = resolved_from_attachment(item)
@@ -1397,6 +1405,7 @@ async def run_simple_search(
             detail_level=detail_level,
             judgment_access=grant_judgment_access,
             recent_messages=recent_messages,
+            conversation_memory_md=conversation_memory_md,
             span=span,
             router_context=router_context,
         )
@@ -1420,6 +1429,7 @@ async def _answer_loop(
     skip_keys: set[str] | None = None,
     turn_question: str = "",
     router_context: Any = None,
+    conversation_memory_md: str | None = None,
 ) -> SimpleSearchRunResult:
     """The D3 loop — shared by fresh dispatch and by :func:`resume_simple_search`.
 
@@ -1545,6 +1555,7 @@ async def _answer_loop(
                 # Answers in hand + crashes. NOT the slot counter: see ``lost``.
                 dispatched=len(answers) + lost,
                 recent_messages=recent_messages,
+                conversation_memory_md=conversation_memory_md,
                 welcome_instruction=welcome_instruction,
                 welcome_opening=welcome_opening,
                 unselected_candidates=unselected_candidate_lines(
@@ -1646,6 +1657,7 @@ async def _answer_loop(
                     conversation_id=conversation_id,
                     case_id=case_id,
                     recent_messages=recent_messages,
+                    conversation_memory_md=conversation_memory_md,
                     detail_level=detail_level,
                     rejection_notes=list(deps.rejection_notes),
                 )
@@ -1725,6 +1737,7 @@ async def _answer_loop(
             detail_level=detail_level,
             judgment_access=judgment_access,
             recent_messages=recent_messages,
+            conversation_memory_md=conversation_memory_md,
             unlock_records=unlock_records,
             fanout_base=dispatched,
         )
@@ -1805,6 +1818,7 @@ async def _answer_loop(
         # Answers in hand + crashes. NOT the slot counter: see ``lost``.
         dispatched=len(answers) + lost,
         recent_messages=recent_messages,
+        conversation_memory_md=conversation_memory_md,
         welcome_instruction=welcome_instruction,
         welcome_opening=welcome_opening,
         unselected_candidates=unselected_candidate_lines(
@@ -1832,6 +1846,7 @@ async def _run_round(
     detail_level: str,
     judgment_access: JudgmentAccessResolver,
     recent_messages: list | None = None,
+    conversation_memory_md: str | None = None,
     unlock_records: list[_UnlockRecord] | None = None,
     fanout_base: int = 0,
 ) -> list[_Answer]:
@@ -1857,6 +1872,7 @@ async def _run_round(
             detail_level=detail_level,
             judgment_access=judgment_access,
             recent_messages=recent_messages,
+            conversation_memory_md=conversation_memory_md,
             unlock_records=unlock_records,
             fanout_index=fanout_base + i,
         )
@@ -1961,6 +1977,7 @@ async def _finalise(
     question: str,
     dispatched: int = 0,
     recent_messages: list | None = None,
+    conversation_memory_md: str | None = None,
     welcome_instruction: str | None = None,
     welcome_opening: str = "",
     unselected_candidates: list[str] | None = None,
@@ -2167,6 +2184,7 @@ async def _finalise(
             suppress_suggestion=suppress_suggestion,
             router_context=router_context,
             recent_messages=recent_messages,
+            conversation_memory_md=conversation_memory_md,
         )
         if unified is not None:
             # SimpleSearchResponse has the same ``verdict_for`` contract the
@@ -2202,6 +2220,7 @@ async def _finalise(
                     question,
                     docs,
                     recent_messages=recent_messages,
+                    conversation_memory_md=conversation_memory_md,
                     # The delivered digests count as answered in the prompt's
                     # `<turn>` tag, so they must count as dispatched too, or a
                     # resume leg reports a dropped synthesizer that never was.
@@ -2398,6 +2417,7 @@ async def _run_unified_responder(
     suppress_suggestion: bool,
     router_context: Any,
     recent_messages: list | None,
+    conversation_memory_md: str | None = None,
 ) -> Any:
     """Step 4 on the unified responder (plan unified_responder.md §5.2).
 
@@ -2430,6 +2450,8 @@ async def _run_unified_responder(
         artifact=artifact,
         router_context=router_context,
         fallback_context=fallback,
+        # A field of its own: `router_context` is None on a resume leg.
+        conversation_memory_md=conversation_memory_md,
         welcome_instruction=welcome_instruction,
         profession_group=load_profession_group(supabase, user_id),
         style_profile=load_style_profile(supabase, user_id),  # P4, users.user_id
@@ -2472,6 +2494,7 @@ async def resume_simple_search(
     *,
     emit_sse: "Callable[[dict], Awaitable[None]] | None" = None,
     recent_messages: list | None = None,
+    conversation_memory_md: str | None = None,
     user_preferences: dict | None = None,
     welcome: "WelcomeState | None" = None,
 ) -> "SimpleSearchRunResult":
@@ -2512,6 +2535,9 @@ async def resume_simple_search(
         user_reply: what the user answered the ``ask_user`` question with.
         pause_row: the ``paused_runs`` row (as ``find_open_pause`` returns it).
         emit_sse: same live-chip sink as the fresh path.
+        conversation_memory_md: the ``<conversation_memory>`` block as it stands
+            now. The caller reloads it, because the router does not run on a
+            resume leg. The pause row carries no memory of its own.
 
     Returns:
         A :class:`SimpleSearchRunResult`, same shape and same guarantees.
@@ -2547,6 +2573,7 @@ async def resume_simple_search(
         case_id=case_id,
         emit_sse=emit_sse,
         recent_messages=list(recent_messages or []),
+        conversation_memory_md=conversation_memory_md,
     )
     # Put the handle registry back BEFORE the run: the resumed searcher's very
     # first output may name C2, and the output validator resolves against deps.
@@ -2609,6 +2636,7 @@ async def resume_simple_search(
             detail_level=detail_level,
             judgment_access=grant_judgment_access,
             recent_messages=recent_messages,
+            conversation_memory_md=conversation_memory_md,
             span=span,
             first_run_kwargs=first_run_kwargs,
             skip_keys=skip_keys,

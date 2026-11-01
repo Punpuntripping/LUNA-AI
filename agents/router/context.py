@@ -1,6 +1,6 @@
 """Router context loader — assembles eager input context for ``run_router``.
 
-The router needs five pieces of context every turn:
+The router needs six pieces of context every turn:
 
 0. The user's call name — what to address them by (migration 122), so a
    direct reply can be personal rather than anonymous.
@@ -16,6 +16,9 @@ The router needs five pieces of context every turn:
    (or all messages if the cutoff is NULL), with ``agent_question`` and
    ``agent_answer`` metadata kinds excluded (they are reserved for Tier-2
    pause/resume Q&A audit trail; they are not router prompt material).
+5. Conversation memory — the entries, the rendered block, and the paused
+   exchanges since the last routed message, so a correction given during a
+   pause reaches the memory. All empty while the feature is off.
 
 This module is the single source of truth for what the router sees per
 turn. The orchestrator imports ``load_router_context`` and forwards the
@@ -28,7 +31,15 @@ from dataclasses import dataclass, field
 
 from supabase import Client as SupabaseClient
 
+from agents.utils.conversation_memory import (
+    MemoryEntry,
+    encode_entries,
+    load_conversation_memory,
+    memory_enabled,
+    render_conversation_memory,
+)
 from agents.utils.history import messages_to_history
+from agents.utils.router_context_render import render_router_paused_exchanges
 from pydantic_ai.messages import ModelMessage
 from shared.identity import resolve_call_name
 from shared.workspace.preview_lock import LockPolicy, is_locked, preview_cut
@@ -63,6 +74,15 @@ _SUMMARY_FALLBACK_ITEM_CHARS = 1500
 # user-supplied and runs to 200k chars). Spent newest-first: the item the
 # current turn is about is the one just uploaded.
 _SUMMARY_FALLBACK_TOTAL_CHARS = 6000
+
+# --- Paused exchanges (plan conversation_memory.md §4.6) ----------------------
+# Bounds on what one router turn sees of a pause: a question can be a whole
+# writer plan, and a paused run can ask several times.
+_PAUSED_MAX_ROWS = 8
+_PAUSED_CLIP_CHARS = {"agent_question": 600, "agent_answer": 1000}
+# How far back ``_load_paused_window_rows`` reads. The window ends at the
+# previous routed message, so this only has to outreach one chained pause.
+_PAUSED_WINDOW_ROWS = 30
 
 
 @dataclass
@@ -131,6 +151,14 @@ class RouterContext:
     # ``None`` = no pending question · ``"answered"`` · ``"unanswered"``.
     pending_follow_up: PendingFollowUp | None = None
     follow_up_status: str | None = None
+    # Conversation memory (plan conversation_memory.md §4.7). ``conversation_memory``
+    # holds the ENCODED entries for the router's tool; ``conversation_memory_md``
+    # is the rendered block, overwritten by ``orchestrator._route`` after the
+    # router runs, so this object never carries a stale one. ``paused_exchanges_md``
+    # is router-only. All empty while the feature is off.
+    conversation_memory: list[MemoryEntry] = field(default_factory=list)
+    conversation_memory_md: str | None = None
+    paused_exchanges_md: str | None = None
 
 
 def _load_case_block(
@@ -396,11 +424,96 @@ def _apply_summary_fallback(summaries: list[dict]) -> None:
         item["summary_truncated"] = truncated
 
 
-def _load_filtered_messages(
+def _message_kind(row: dict) -> str | None:
+    """``metadata.kind`` of a message row, tolerating NULL metadata."""
+    metadata = row.get("metadata")
+    return metadata.get("kind") if isinstance(metadata, dict) else None
+
+
+def collect_paused_exchanges(rows: list[dict] | None) -> list[dict]:
+    """The replies given during a pause since the previous routed user message.
+
+    ``rows`` are the conversation's rows oldest first, BEFORE the excluded kinds
+    are filtered out. The window is walked back from the end, skipping the
+    current user message, and stops at the previous routed user message. Older
+    exchanges were on screen for an earlier router turn.
+
+    ``message_service`` writes the current message and an empty assistant
+    placeholder before the pipeline runs, so normally the rows end with both. A
+    routed user row with nothing after it but empty rows has had no reply, which
+    is what makes it the current message, and the same walk then gives the right
+    window on a call where the current message is not in the rows at all.
+
+    Returns ``{"kind", "text", "truncated"}`` dicts, oldest first: at most the
+    newest ``_PAUSED_MAX_ROWS``, each clipped to ``_PAUSED_CLIP_CHARS``. The text
+    is encoded BEFORE the clip. Clipping first could cut a real identifier in
+    half, and the encoder would not recognise the part that reached the prompt.
+    """
+    from backend.app.services.masking_service import encode_active
+
+    picked: list[dict] = []
+    at_tail = True
+    for row in reversed(rows or []):
+        if not (row.get("content") or "").strip():
+            continue  # this turn's placeholder, or an orphaned one
+        kind = _message_kind(row)
+        if kind in _PAUSED_CLIP_CHARS:
+            at_tail = False
+            limit = _PAUSED_CLIP_CHARS[kind]
+            text = encode_active(row["content"].strip())
+            picked.append({
+                "kind": kind,
+                "text": text[:limit].rstrip(),
+                "truncated": len(text) > limit,
+            })
+            if len(picked) == _PAUSED_MAX_ROWS:
+                break
+        elif (row.get("role") or "") == "user":
+            if not at_tail:
+                break
+            at_tail = False
+        else:
+            at_tail = False
+    picked.reverse()
+    return picked
+
+
+def _load_paused_window_rows(
     supabase: SupabaseClient, conversation_id: str
 ) -> list[dict]:
+    """The newest messages, oldest first, for ``collect_paused_exchanges``.
+
+    Its own query, and it ignores the compaction cutoff: ``_route`` compacts
+    before this loader runs, so the cut can land after a pause the router has
+    not seen yet. Never raises: a failure only leaves the pause unseen.
+
+    ``messages`` has no user column. Like the history query, this is scoped by
+    a ``conversation_id`` whose ownership the caller already verified.
+    """
+    try:
+        resp = (
+            supabase.table("messages")
+            .select("role, content, metadata")
+            .eq("conversation_id", conversation_id)
+            .order("created_at", desc=True)
+            .limit(_PAUSED_WINDOW_ROWS)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning(
+            "load_router_context: paused rows load failed: %s", type(e).__name__
+        )
+        return []
+    return list(reversed(getattr(resp, "data", None) or []))
+
+
+def _load_filtered_messages(
+    supabase: SupabaseClient,
+    conversation_id: str,
+) -> list[dict]:
     """Load conversation messages strictly after the compaction cutoff,
-    excluding agent_question / agent_answer kinds."""
+    excluding agent_question / agent_answer kinds.
+    """
     cutoff_message_id: str | None = None
     try:
         conv = (
@@ -454,11 +567,7 @@ def _load_filtered_messages(
     # (Task 13 introduces the kinds; the filter is forward-compatible).
     filtered: list[dict] = []
     for row in msg_rows:
-        metadata = row.get("metadata") or {}
-        kind = None
-        if isinstance(metadata, dict):
-            kind = metadata.get("kind")
-        if kind in _EXCLUDED_MESSAGE_KINDS:
+        if _message_kind(row) in _EXCLUDED_MESSAGE_KINDS:
             continue
         filtered.append(row)
 
@@ -577,6 +686,21 @@ def load_router_context(
         case_memory_md = encode_active(case_memory_md)
         compaction_summary_md = encode_active(compaction_summary_md)
 
+    # Conversation memory (plan §4.7): stored real, encoded here, same as the
+    # surfaces above. Fakes minted here go out with the caller's persist, before
+    # the router reads them. No query while the feature is off.
+    conversation_memory: list[MemoryEntry] = []
+    paused_exchanges_md: str | None = None
+    if memory_enabled():
+        conversation_memory = encode_entries(
+            load_conversation_memory(supabase, conversation_id, user_id)
+        )
+        paused_exchanges_md = render_router_paused_exchanges(
+            collect_paused_exchanges(
+                _load_paused_window_rows(supabase, conversation_id)
+            )
+        )
+
     return RouterContext(
         case_memory_md=case_memory_md,
         case_metadata=case_metadata,
@@ -590,12 +714,16 @@ def load_router_context(
         compaction_summary_md=compaction_summary_md,
         message_history=message_history,
         pending_follow_up=find_pending_follow_up(msg_rows),
+        conversation_memory=conversation_memory,
+        conversation_memory_md=render_conversation_memory(conversation_memory),
+        paused_exchanges_md=paused_exchanges_md,
     )
 
 
 __all__ = [
     "PendingFollowUp",
     "RouterContext",
+    "collect_paused_exchanges",
     "find_pending_follow_up",
     "load_router_context",
 ]
