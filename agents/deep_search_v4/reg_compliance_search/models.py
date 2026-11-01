@@ -81,7 +81,7 @@ class ExpanderOutput(BaseModel):
     """
 
     queries: list[str] = Field(
-        description="2-10 Arabic search queries targeting single legal concepts",
+        description="2-14 Arabic search queries targeting single legal concepts",
     )
     rationales: list[str] = Field(
         default_factory=list,
@@ -411,13 +411,8 @@ class LoopState:
     model_override: str | None = None
     unfold_mode: str = "precise"
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY
-    reranker_max_keep: int = 8  # Max results kept per sub-query (single flat cap)
-    # Dynamic result-budget model (MODE_PROFILES.md §1). When set by the
-    # planner/orchestrator, the per-sub-query reranker keep is derived at
-    # runtime as ceil(result_budget / max(N, 3)) from the expander's actual
-    # query count N — and ``reranker_max_keep`` above is ignored. When None
-    # (CLI / monitor path), the fixed ``reranker_max_keep`` is used.
-    result_budget: int | None = None
+    reranker_max_keep: int = 7  # Max results kept per sub-query (single flat cap)
+    # Clamped to ``loop.MAX_KEEP_PER_SUBQUERY``.
     round_count: int = 0
     max_rounds: int = 3
     expander_output: ExpanderOutput | None = None

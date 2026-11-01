@@ -20,6 +20,9 @@ The result-budget model (full spec: ``planning/MODE_PROFILES.md``):
   runtime: ``ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR))`` where ``N`` is
   the expander's actual emitted query count. ``build_retrieval_config`` does not
   compute it — only the loop knows ``N``.
+- Exception: ``reg_compliance`` ignores its budget value and keeps a flat 7 per
+  sub-query (``reg_compliance_search.loop.MAX_KEEP_PER_SUBQUERY``). Its entry
+  here only marks the executor as included.
 
 This module is **pure** — only ``pydantic`` (via ``.models``) is imported, never
 ``pydantic_ai`` or an executor package, so the apply tier of the test suite

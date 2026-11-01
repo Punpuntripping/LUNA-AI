@@ -131,7 +131,8 @@ Each example shows the reasoning (kept in thinking) and the resulting queries. N
 - *الاستفسارات:*
   - تجريدي: «الأسباب المشروعة لإنهاء عقد العمل غير محدد المدة»
   - تفكيكي: «التعويض المستحق عن إنهاء عقد العمل دون سبب مشروع»
-  - تفكيكي: «مهلة الإشعار عند إنهاء عقد العمل والبدل عن الإخلال بها»
+  - تفكيكي: «مهلة الإشعار عند إنهاء عقد العمل»
+  - تفكيكي: «البدل عن عدم مراعاة مهلة الإشعار عند إنهاء عقد العمل»
   - تفكيكي: «احتساب مكافأة نهاية الخدمة عند إنهاء العلاقة العمالية»
   - تفكيكي: «إنهاء عقود العمل بسبب إلغاء الوظيفة أو إعادة تنظيم المنشأة»
 
@@ -143,10 +144,13 @@ Each example shows the reasoning (kept in thinking) and the resulting queries. N
 - *التكييف:* تنفيذ عقاري على عقار مرهون لمدين فرد معسر (سؤال حلّ/معالجة). **حدّ النطاق:** أنظمة إعادة التنظيم المالي/الإفلاس تشترط عادةً صفةً تجاريةً أو مهنيةً في المدين؛ ومدينٌ اقترض لبناء مسكنه الشخصي قد لا يشمله نطاقها — فلا تُصغْ استفساراً يفترض انطباقها.
 - *الاستفسارات:*
   - تجريدي: «أثر إعسار المدين على إجراءات التنفيذ الجبري»
-  - تفكيكي: «إثبات الإعسار أمام قاضي التنفيذ وأثره على الحبس والبيع»
+  - تفكيكي: «إثبات الإعسار أمام قاضي التنفيذ»
+  - تفكيكي: «أثر ثبوت الإعسار على حبس المدين»
+  - تفكيكي: «أثر ثبوت الإعسار على بيع أموال المدين»
   - تفكيكي: «حدود حماية مسكن المدين من الحجز التنفيذي عند رهنه»
   - تفكيكي: «إعادة جدولة التمويل العقاري عند تعثر المدين عن السداد»
-  - تفكيكي: «الاعتراض على إجراءات الإخلاء التنفيذي وطلب وقفها»
+  - تفكيكي: «الاعتراض على إجراءات الإخلاء التنفيذي»
+  - تفكيكي: «طلب وقف إجراءات الإخلاء التنفيذي»
 
 ### مثال (٣) — عقد مقاولة
 
@@ -158,7 +162,8 @@ Each example shows the reasoning (kept in thinking) and the resulting queries. N
   - تجريدي: «فسخ العقد عند الإخلال بالالتزام التعاقدي»
   - تجريدي: «التعويض عن الضرر الناشئ عن الإخلال بالعقد»
   - تفكيكي: «اشتراط الإعذار قبل المطالبة بالفسخ أو التعويض»
-  - تفكيكي: «الشرط الجزائي عن التأخير في تنفيذ الالتزام وسلطة القاضي في تعديله»
+  - تفكيكي: «الشرط الجزائي عن التأخير في تنفيذ الالتزام»
+  - تفكيكي: «سلطة القاضي في تعديل الشرط الجزائي»
 
 ## Two mandatory conditions
 
@@ -168,7 +173,7 @@ Each example shows the reasoning (kept in thinking) and the resulting queries. N
    - ❌ «تعميم بخصوص إبلاغ العاملين عن المخالفات»
    - ✅ «إلزام المنشآت بنشر آليات إبلاغ العاملين عن المخالفات»
 4. **No entity or platform names** (وزارة، هيئة، أبشر، ناجز…) in any query — **even when the user named them** — UNLESS the rule you seek applies to the entity itself (its own organization or competencies). This strengthens condition 2 (which only barred authorities the user had not mentioned).
-   - ✅ «تنظيم وزارة التجارة واختصاصاتها»
+   - ✅ «اختصاصات وزارة التجارة»
    - ❌ «إجراءات السجل التجاري وفقاً لوزارة التجارة»
 
 ## Never search for an article by its number — search its provisions instead
@@ -188,12 +193,21 @@ So strip the article number and the law name, and query the legal **content** th
 
 Each query = one legal concept. Do not merge two issues into one query — semantic matching weakens when multiple concepts share a single query.
 
+**Never combine two queries into one — not even to stay inside the count range below.** If the question has more distinct issues than the range allows, drop the least important issue rather than merge it into another query.
+
+Two separate rules joined by و / أو count as a merge and must be split:
+- ❌ «مهلة الإشعار عند إنهاء عقد العمل والبدل عن الإخلال بها»
+- ✅ «مهلة الإشعار عند إنهاء عقد العمل»
+- ✅ «البدل عن عدم مراعاة مهلة الإشعار عند إنهاء عقد العمل»
+
+One concept with alternative wordings, or with two alternative triggers, is not a merge and stays one query: «إنهاء عقود العمل بسبب إلغاء الوظيفة أو إعادة تنظيم المنشأة».
+
 ## Number of queries (by question complexity)
 
 Decide the number of queries based on the complexity of the user's question:
 - **Simple question** (one clear concept): 2-4 queries
-- **Medium question** (two concepts, or a procedure + a ruling): 4-7 queries
-- **Complex question** (multiple parties, interlocking conditions, multiple issues): 6-10 queries
+- **Medium question** (two concepts, or a procedure + a ruling): 4-8 queries
+- **Complex question** (multiple parties, interlocking conditions, multiple issues): 8-14 queries
 
 Include at least one abstract (step-back) query to broaden coverage toward the governing rule — even for simple questions.
 

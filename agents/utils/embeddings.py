@@ -45,10 +45,11 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
 ALIBABA_EMBEDDING_MODEL = "text-embedding-v4"
 ALIBABA_EMBEDDING_DIMS = 1024
 
-# Per-call input cap for the DashScope embeddings endpoint. Used by the
-# batched helper to auto-split oversized lists. Shared across case_search and
+# Per-call input cap for the DashScope embeddings endpoint: text-embedding-v4
+# rejects more than 10 inputs with a 400. Used by the batched helper to
+# auto-split oversized lists. Shared across case_search and
 # reg_compliance_search so both pipelines batch identically.
-MAX_EMBED_BATCH = 25
+MAX_EMBED_BATCH = 10
 
 _alibaba_client: AsyncOpenAI | None = None
 

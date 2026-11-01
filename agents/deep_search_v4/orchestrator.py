@@ -119,9 +119,10 @@ class FullLoopDeps:
     planner_model: str | None = None
     # Planner-driven runtime knobs. ``run_retrieval`` populates these from the
     # mode-derived ``RetrievalConfig``.
-    # Per-executor result budget ("reg" / "cases"). When set, the executor loop
+    # Per-executor result budget ("reg" / "cases"). When set, the case loop
     # derives reranker_max_keep dynamically from it; when None the fixed
-    # ``*_max_keep`` caps apply. See MODE_PROFILES.md §1.
+    # ``*_max_keep`` caps apply. reg_compliance ignores it and keeps a flat
+    # ``reg_max_keep``. See MODE_PROFILES.md §1.
     result_budget: dict[str, int] | None = None
     sectors_override: list[str] | None = None
     # Sector AND-filter as an in-flight future, resolved by the sector_picker
@@ -150,7 +151,8 @@ class FullLoopDeps:
     # Per-run flat keep cap for each domain's reranker. One cap over all kept
     # results; within the cap, high-relevance results are ordered ahead of
     # medium, ties broken by score (descending), before truncation.
-    reg_max_keep: int = 8
+    # Clamped by ``reg_compliance_search.loop.MAX_KEEP_PER_SUBQUERY``.
+    reg_max_keep: int = 7
     # Cases: 7 total per sub-query (high + medium together, NOT per tier).
     # Clamped by ``case_search.loop.MAX_KEEP_PER_SUBQUERY`` — see that constant.
     case_max_keep: int = 7
@@ -432,10 +434,6 @@ async def _run_reg_compliance_phase(
         )
         reg_deps._log_id = log_id
 
-        reg_budget: int | None = None
-        if deps.result_budget:
-            reg_budget = deps.result_budget.get("reg_compliance")
-
         state = RegComplianceLoopState(
             focus_instruction=query,
             user_context="",
@@ -445,7 +443,6 @@ async def _run_reg_compliance_phase(
             concurrency=deps.concurrency,
             skip_aggregator=True,
             reranker_max_keep=deps.reg_max_keep,
-            result_budget=reg_budget,
             sectors_override=(
                 list(deps.sectors_override) if deps.sectors_override else None
             ),

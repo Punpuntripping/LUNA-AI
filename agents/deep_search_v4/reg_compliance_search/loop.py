@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from datetime import datetime, timezone
 from typing import Union
 
@@ -25,12 +24,10 @@ from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.query_cap import clamp_queries
 from agents.utils.tracking import track_stage
 
-# Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
-# When the planner passes a ``result_budget``, the per-sub-query reranker keep
-# is ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR)) where N is the
-# expander's actual emitted query count. The floor stops a degenerate 1-2
-# query expansion from piling the whole budget onto one sub-query.
-MIN_EXPANDER_DIVISOR = 3
+# Flat keep per sub-query, whatever the query count. Owner decision 2026-11-01:
+# the old ceil(budget / N) formula cut each sub-query to 3 at 14 queries in full
+# mode. Unlike case_search, this executor no longer takes a result_budget.
+MAX_KEEP_PER_SUBQUERY = 7
 
 from .expander import EXPANDER_LIMITS, create_expander_agent, get_expander_model_id as _get_expander_model_id
 
@@ -499,20 +496,7 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
             logger.warning("RerankerNode: no search results for round %d", state.round_count)
             return _end_placeholder(state)
 
-        # Dynamic result-budget model (MODE_PROFILES.md §1). When the planner
-        # passes a ``result_budget``, derive the per-sub-query reranker keep
-        # from the expander's ACTUAL emitted query count N. When it is None
-        # (CLI / monitor path), fall back to the fixed ``reranker_max_keep``.
-        reranker_max_keep = state.reranker_max_keep
-        if state.result_budget is not None:
-            n_queries = len(current_round_results)
-            reranker_max_keep = math.ceil(
-                state.result_budget / max(n_queries, MIN_EXPANDER_DIVISOR)
-            )
-            logger.info(
-                "RerankerNode: dynamic keep — result_budget=%d, N=%d -> max_keep=%d",
-                state.result_budget, n_queries, reranker_max_keep,
-            )
+        reranker_max_keep = min(state.reranker_max_keep, MAX_KEEP_PER_SUBQUERY)
 
         from .reranker import run_reranker_for_query
 
@@ -737,7 +721,6 @@ async def run_reg_search(
     skip_reranker: bool = False,
     skip_aggregator: bool = False,
     sectors_override: list[str] | None = None,
-    result_budget: int | None = None,
     context_blocks: list[ContextBlock] | None = None,
 ) -> RegSearchResult:
     """Run the complete reg_search loop for a focus instruction.
@@ -760,10 +743,6 @@ async def run_reg_search(
             this bounds PIPELINE work only; the ``search_topics`` RPC itself
             queues on the process-wide gate in
             ``agents/deep_search_v4/shared/db_gate.py``.
-        result_budget: Optional target total results (dynamic-budget model,
-            MODE_PROFILES.md §1). When set, the per-sub-query reranker keep is
-            derived at runtime from the expander's actual query count. When
-            None, the fixed ``reranker_max_keep`` on LoopState is used.
 
     Returns:
         RegSearchResult with quality, summary_md, citations, metadata.
@@ -795,7 +774,6 @@ async def run_reg_search(
         skip_reranker=skip_reranker,
         skip_aggregator=skip_aggregator,
         sectors_override=list(sectors_override) if sectors_override else None,
-        result_budget=result_budget,
         context_blocks=list(context_blocks) if context_blocks else [],
     )
 
