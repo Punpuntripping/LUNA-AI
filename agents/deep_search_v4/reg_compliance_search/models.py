@@ -314,9 +314,9 @@ class SearchOutcome:
     completion (however few rows it found), a type name = it did not.
 
     ``max_score`` / ``top_scores`` carry the ONLY mechanical relevance signal
-    the retrieval layer produces. ``search_topics`` is k-NN with no threshold
-    — it returns ``p_per_type`` rows per source type ranked by score whether or
-    not anything is relevant, so every probe comes back with 59-60 rows. Row
+    the retrieval layer produces. The topic RPC is k-NN with no threshold — it
+    returns ``p_per_type`` rows per source type ranked by score whether or not
+    anything is relevant, so every probe comes back with a full set of rows. Row
     COUNT therefore carries no relevance information at all; SCORE carries all
     of it. Calibrated against live prod on 2026-08-22: random unrelated topic
     pairs score p50 0.244 / p95 0.331 / max 0.378, while genuinely on-topic
@@ -411,8 +411,8 @@ class LoopState:
     model_override: str | None = None
     unfold_mode: str = "precise"
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY
-    reranker_max_keep: int = 7  # Max results kept per sub-query (single flat cap)
-    # Clamped to ``loop.MAX_KEEP_PER_SUBQUERY``.
+    reranker_max_keep: int = 10  # Max results kept per sub-query
+    # Lowered by query count: ``loop.keep_for_query_count``.
     round_count: int = 0
     max_rounds: int = 3
     expander_output: ExpanderOutput | None = None

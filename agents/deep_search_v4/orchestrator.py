@@ -123,7 +123,7 @@ class FullLoopDeps:
     # Per-executor result budget ("reg" / "cases"). When set, the case loop
     # derives reranker_max_keep dynamically from it; when None the fixed
     # ``*_max_keep`` caps apply. reg_compliance ignores it and keeps a flat
-    # ``reg_max_keep``. See MODE_PROFILES.md §1.
+    # ``reg_max_keep`` by query count. See MODE_PROFILES.md §1.
     result_budget: dict[str, int] | None = None
     sectors_override: list[str] | None = None
     # Sector AND-filter as an in-flight future, resolved by the sector_picker
@@ -152,8 +152,8 @@ class FullLoopDeps:
     # Per-run flat keep cap for each domain's reranker. One cap over all kept
     # results; within the cap, high-relevance results are ordered ahead of
     # medium, ties broken by score (descending), before truncation.
-    # Clamped by ``reg_compliance_search.loop.MAX_KEEP_PER_SUBQUERY``.
-    reg_max_keep: int = 7
+    # Lowered by query count: ``reg_compliance_search.loop.keep_for_query_count``.
+    reg_max_keep: int = 10
     # Cases: 7 total per sub-query (high + medium together, NOT per tier).
     # Clamped by ``case_search.loop.MAX_KEEP_PER_SUBQUERY`` — see that constant.
     case_max_keep: int = 7

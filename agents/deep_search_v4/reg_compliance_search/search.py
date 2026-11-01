@@ -13,11 +13,11 @@ reg_search is the single retrieval executor over the unified
    future with its bounded grace (compliance precedent); ``None`` or a
    non-empty list. ``[]`` is never sent to the RPC (``sectors && '{}'`` is
    always false → zero rows).
-3. **RPC** ``search_topics(p_query_embedding, p_per_type=15, [p_sectors])`` —
-   ``p_types`` omitted (NULL = all four). Rows return per-type-deduped
-   (server-side ``DISTINCT ON (doc_id)``) with ``score = 1 - cosine``. On 0
-   rows WITH a sector filter, retry once unfiltered.
-4. **Merge** — one pool: sort ALL rows by ``score`` DESC, cut the global top-15
+3. **RPC** ``search_topics_per_chunk(p_query_embedding, p_per_type=25,
+   [p_sectors])`` — all four types. Rows return with ``score = 1 - cosine``, one
+   row per chunk, with no limit per regulation. On 0 rows WITH a sector filter,
+   retry once unfiltered.
+4. **Merge** — one pool: sort ALL rows by ``score`` DESC, cut the global top-25
    (no per-type quotas downstream — D1). A ``seen source_id`` guard belt-and-
    suspenders the RPC's per-call uniqueness.
 5. **Per-type content fetch** — concurrent (``asyncio.gather``) through one
@@ -67,14 +67,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Per-type quota requested from the ``search_topics`` RPC (all four types). The
-# RPC self-tunes ``hnsw.ef_search`` from ``p_overfetch``; the old MATCH_COUNT /
-# EF_SEARCH truncation trap is gone.
-PER_TYPE = 15
+# Deep search's own RPC. ``search_topics`` keeps one chunk per regulation, which
+# is right for simple_search (it finds documents) and wrong here: a law's other
+# strong articles never reached the reranker. Replayed on 573 real sub-queries;
+# see agents_reports/search_one_chunk_per_regulation_2026-11-01.md.
+TOPICS_RPC = "search_topics_per_chunk"
+
+# Most regulation and appendix rows the RPC returns. Its window stays at 60
+# topic matches, as in ``search_topics``, so raising this adds no index work.
+# Circulars and services keep ``search_topics``' own 15 per type.
+PER_TYPE = 25
 
 # Global top-N kept after merging all four types into ONE pool (D1). The type
-# mix is whatever similarity says — no per-type quotas downstream.
-TOP_K = 15
+# mix is whatever similarity says — no per-type quotas downstream. At 15 without
+# the one-chunk-per-law rule, about 1 in 8 of the sources kept before drop out.
+TOP_K = 25
 
 # Rank-band boundary: the top-5 CHUNK rows render "precise" (prev/next context);
 # remaining chunks render "simple"; circular/service always render "flat" and
@@ -207,7 +214,7 @@ async def _search_regulations_pipeline_inner(
                 filter_sectors_future, label=query[:60],
             )
 
-        # Step 3: search_topics RPC across all four source types.
+        # Step 3: topic RPC across all four source types.
         events.append({
             "type": "status",
             "text": "جاري البحث في قاعدة بيانات الأنظمة والتعاميم والخدمات...",
@@ -218,7 +225,7 @@ async def _search_regulations_pipeline_inner(
         # 0 rows WITH a sector filter → retry once unfiltered (+ Arabic notice).
         if not rows and sectors:
             logger.info(
-                "search_topics: 0 rows with sectors %s — retrying unfiltered",
+                "topic search: 0 rows with sectors %s — retrying unfiltered",
                 sectors,
             )
             events.append({
@@ -238,17 +245,16 @@ async def _search_regulations_pipeline_inner(
             })
             # A genuine zero from a healthy RPC: no rows, no score, no error.
             # This is the ONE shape that honestly means "the corpus has
-            # nothing" — and it is rare, because search_topics is k-NN with no
-            # threshold and normally returns 59-60 rows however weak they are.
+            # nothing" — and it is rare, because the RPC is k-NN with no
+            # threshold and returns a full set of rows however weak they are.
             return SearchOutcome(
                 rows=[], count=0, gate_wait_ms=gate_wait_ms,
             )
 
-        # Step 4: Merge — ONE pool. Sort ALL rows by score DESC, cut top-15
-        # (D1). The RPC already dedups per type by doc_id server-side (D8); the
-        # ``seen source_id`` guard just belt-and-suspenders that per-call
-        # uniqueness. ``score`` = 1 - cosine (same scale as the old best_sim);
-        # no absolute gate.
+        # Step 4: Merge — ONE pool. Sort ALL rows by score DESC, cut top-25
+        # (D1). The RPC already returns one row per chunk; the ``seen source_id``
+        # guard just belt-and-suspenders that per-call uniqueness. ``score`` =
+        # 1 - cosine (same scale as the old best_sim); no absolute gate.
         rows.sort(key=lambda r: float(r.get("score") or 0.0), reverse=True)
 
         # Capture the score head HERE — this is the last point at which the
@@ -440,13 +446,12 @@ async def _search_topics_rpc(
     embedding: list[float],
     sectors: list[str] | None,
 ) -> tuple[list[dict], float]:
-    """Call the unified ``search_topics`` RPC across all four source types.
+    """Call :data:`TOPICS_RPC` across all four source types.
 
-    ``p_per_type`` = :data:`PER_TYPE` (per-type quota); ``p_types`` is omitted so
-    the RPC default (NULL = all four types) applies. ``p_sectors`` is passed ONLY
-    when ``sectors`` is a non-empty list — an empty list must never reach the RPC
-    (``sectors && '{}'`` is always false → zero rows). Rows come back ordered by
-    ``score`` DESC, already deduped per type by ``doc_id`` server-side.
+    ``p_per_type`` = :data:`PER_TYPE` (per-type quota). ``p_sectors`` is passed
+    ONLY when ``sectors`` is a non-empty list — an empty list must never reach the
+    RPC (``sectors && '{}'`` is always false → zero rows). Rows come back ordered
+    by ``score`` DESC, one per chunk.
 
     Runs inside the shared DB concurrency gate (2026-08-22). The per-phase
     ``asyncio.Semaphore(state.concurrency)`` in ``loop.py`` stays — it caps
@@ -474,7 +479,7 @@ async def _search_topics_rpc(
         }
         if sectors:
             params["p_sectors"] = sectors
-        result = supabase.rpc("search_topics", params).execute()
+        result = supabase.rpc(TOPICS_RPC, params).execute()
         return result.data or []
 
     try:
@@ -487,7 +492,7 @@ async def _search_topics_rpc(
         raise
     except Exception as e:
         logger.error(
-            "search_topics RPC failed: %s: %s", type(e).__name__, e,
+            "%s RPC failed: %s: %s", TOPICS_RPC, type(e).__name__, e,
             exc_info=True,
         )
         raise

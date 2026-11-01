@@ -94,7 +94,7 @@ _RELEVANCE_RANK: dict[str, int] = {"high": 2, "medium": 1}
 #
 # The caps' own docstring conceded they were "a last-resort backstop" from an
 # era before the domain rerankers had caps of their own. They do now (cases 7,
-# reg 7, and each is applied where the decision belongs — at the reranker, with
+# reg 7-10, and each is applied where the decision belongs — at the reranker, with
 # the candidate text in view). So the backstop is obsolete, and the merger's job
 # is now purely: dedupe by ref_id, lift relevance, union sub-query indices,
 # tier-order.

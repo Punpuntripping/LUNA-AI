@@ -24,10 +24,21 @@ from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.query_cap import clamp_queries
 from agents.utils.tracking import track_stage
 
-# Flat keep per sub-query, whatever the query count. Owner decision 2026-11-01:
-# the old ceil(budget / N) formula cut each sub-query to 3 at 14 queries in full
-# mode. Unlike case_search, this executor no longer takes a result_budget.
-MAX_KEEP_PER_SUBQUERY = 7
+# Most the reranker keeps per sub-query. Owner decision 2026-11-01: 10 up to 10
+# queries, 8 at 11-12, 7 at 13 or more. With 25 candidates a flat 7 cut sources
+# the reranker wanted; more queries already bring in more sources, so the cap
+# steps down as they rise. Unlike case_search, this executor takes no
+# result_budget (the old ceil(budget / N) cut each sub-query to 3 at 14 queries).
+MAX_KEEP_PER_SUBQUERY = 10
+
+
+def keep_for_query_count(n_queries: int) -> int:
+    """The reranker keep per sub-query for a turn with ``n_queries`` sub-queries."""
+    if n_queries <= 10:
+        return MAX_KEEP_PER_SUBQUERY
+    if n_queries <= 12:
+        return 8
+    return 7
 
 from .expander import EXPANDER_LIMITS, create_expander_agent, get_expander_model_id as _get_expander_model_id
 
@@ -496,7 +507,9 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
             logger.warning("RerankerNode: no search results for round %d", state.round_count)
             return _end_placeholder(state)
 
-        reranker_max_keep = min(state.reranker_max_keep, MAX_KEEP_PER_SUBQUERY)
+        reranker_max_keep = min(
+            state.reranker_max_keep, keep_for_query_count(len(current_round_results)),
+        )
 
         from .reranker import run_reranker_for_query
 
