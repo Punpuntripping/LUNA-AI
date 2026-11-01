@@ -15,6 +15,7 @@ export type ErrorCode =
   // Auth
   | "AUTH_INVALID"
   | "AUTH_EXPIRED"
+  | "AUTH_EMAIL_NOT_CONFIRMED"
   | "FORBIDDEN"
   // Account lifecycle
   | "ACCOUNT_DELETION_PENDING"

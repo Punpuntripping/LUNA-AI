@@ -31,6 +31,7 @@ from supabase_auth.errors import (
 from backend.app.errors import (
     LunaHTTPException,
     ErrorCode,
+    MSG_EMAIL_NOT_CONFIRMED,
     MSG_SERVICE_UNAVAILABLE,
 )
 from backend.app.deps import get_current_user, get_supabase, get_supabase_auth, get_redis
@@ -244,6 +245,14 @@ async def login(
             detail=MSG_SERVICE_UNAVAILABLE,
         )
     except AuthApiError as e:
+        # GoTrue returns this only after the password has passed, so naming it
+        # tells nobody without the password that the address is registered.
+        if e.code == "email_not_confirmed":
+            raise LunaHTTPException(
+                status_code=401,
+                code=ErrorCode.AUTH_EMAIL_NOT_CONFIRMED,
+                detail=MSG_EMAIL_NOT_CONFIRMED,
+            )
         if e.status in (400, 401, 403, 422):
             raise LunaHTTPException(
                 status_code=401,

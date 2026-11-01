@@ -65,6 +65,9 @@ export function LoginForm() {
   // exchanged here). Deliberately separate from serverError — it is not a
   // failure the visitor caused and must not render in the red box.
   const [notice, setNotice] = useState<string | null>(null);
+  // The password was right but the email is not confirmed yet: the visitor has
+  // a step left, nothing to correct, so it stays out of the red box too.
+  const [warning, setWarning] = useState<string | null>(null);
   // Raw `?next=` as it arrived; validated on every read via safeNext().
   const [nextParam, setNextParam] = useState<string | null>(null);
   // `?u=` — the account the `next` above was minted for, when an eject path
@@ -187,6 +190,7 @@ export function LoginForm() {
     setMode((prev) => (prev === "login" ? "register" : "login"));
     setErrors({});
     setServerError(null);
+    setWarning(null);
     setNotice(null);
     setRegistrationSuccess(false);
     setAgreedToTerms(false);
@@ -229,9 +233,27 @@ export function LoginForm() {
     return [];
   };
 
+  const showAuthFailure = (err: unknown, attempted: "login" | "register") => {
+    track("login_failed", {
+      method: "password",
+      mode: attempted,
+      ...(err instanceof ApiClientError
+        ? { reason: "server", status: err.status, code: err.code }
+        : { reason: "unexpected" }),
+    });
+    if (!(err instanceof ApiClientError)) {
+      setServerError("حدث خطأ غير متوقع. حاول مرة أخرى.");
+    } else if (err.code === "AUTH_EMAIL_NOT_CONFIRMED") {
+      setWarning(err.message);
+    } else {
+      setServerError(err.message);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setServerError(null);
+    setWarning(null);
 
     track("login_submitted", { method: "password", mode });
     const invalid = validate();
@@ -280,18 +302,27 @@ export function LoginForm() {
         }
       }
     } catch (err) {
-      track("login_failed", {
-        method: "password",
-        mode,
-        ...(err instanceof ApiClientError
-          ? { reason: "server", status: err.status, code: err.code }
-          : { reason: "unexpected" }),
-      });
-      if (err instanceof ApiClientError) {
-        setServerError(err.message);
-      } else {
-        setServerError("حدث خطأ غير متوقع. حاول مرة أخرى.");
-      }
+      showAuthFailure(err, mode);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // «أكّدت بريدي» on the after-signup screen. Signs in with what was just typed,
+  // so an unconfirmed visitor is told so here and keeps this screen, instead of
+  // being sent to the login form to fail there.
+  const handleConfirmedSignIn = async () => {
+    setServerError(null);
+    setWarning(null);
+    track("login_submitted", { method: "password", mode: "login" });
+    setIsSubmitting(true);
+
+    try {
+      await login(email, password);
+      track("login_succeeded", { method: "password", mode: "login" });
+      router.push(await resolveLanding());
+    } catch (err) {
+      showAuthFailure(err, "login");
     } finally {
       setIsSubmitting(false);
     }
@@ -299,6 +330,7 @@ export function LoginForm() {
 
   const handleGoogleSignIn = async () => {
     setServerError(null);
+    setWarning(null);
     track("login_submitted", { method: "google", mode });
 
     // In register mode the checkbox gates Google too (Google auto-creates the
@@ -381,6 +413,21 @@ export function LoginForm() {
     );
   }
 
+  const authMessages = (
+    <>
+      {warning && (
+        <div className="rounded-md bg-warning border border-warning-fg/25 p-3 text-sm text-warning-fg">
+          {warning}
+        </div>
+      )}
+      {serverError && (
+        <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive">
+          {serverError}
+        </div>
+      )}
+    </>
+  );
+
   // Registration success message
   if (registrationSuccess) {
     return (
@@ -406,16 +453,30 @@ export function LoginForm() {
         <p className="text-sm text-muted-foreground">
           تم إرسال رابط التحقق إلى بريدك الإلكتروني. يرجى تأكيد بريدك الإلكتروني ثم تسجيل الدخول.
         </p>
+        {authMessages}
         <button
           type="button"
-          onClick={() => {
-            setMode("login");
-            setRegistrationSuccess(false);
-          }}
-          className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          onClick={handleConfirmedSignIn}
+          disabled={isSubmitting}
+          className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          تسجيل الدخول
+          {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+          أكّدت بريدي
         </button>
+        <div>
+          <button
+            type="button"
+            onClick={() => {
+              setMode("login");
+              setRegistrationSuccess(false);
+              setServerError(null);
+              setWarning(null);
+            }}
+            className="text-sm text-muted-foreground transition-colors hover:text-foreground hover:underline"
+          >
+            العودة إلى تسجيل الدخول
+          </button>
+        </div>
       </div>
     );
   }
@@ -431,12 +492,7 @@ export function LoginForm() {
           </div>
         )}
 
-        {/* Server error */}
-        {serverError && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive">
-            {serverError}
-          </div>
-        )}
+        {authMessages}
 
         {/* Full Name — register only */}
         {mode === "register" && (
@@ -608,6 +664,7 @@ export function LoginForm() {
                 setShowOtp(true);
                 setErrors({});
                 setServerError(null);
+                setWarning(null);
                 setNotice(null);
               }}
               disabled={isSubmitting || isGoogleLoading}

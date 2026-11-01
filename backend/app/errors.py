@@ -17,6 +17,7 @@ class ErrorCode(str, Enum):
     # Auth
     AUTH_INVALID = "AUTH_INVALID"
     AUTH_EXPIRED = "AUTH_EXPIRED"
+    AUTH_EMAIL_NOT_CONFIRMED = "AUTH_EMAIL_NOT_CONFIRMED"  # 401 — right password, confirmation link not opened yet
     FORBIDDEN = "FORBIDDEN"  # authenticated but not permitted for this resource
 
     # Account lifecycle
@@ -123,6 +124,9 @@ class ErrorCode(str, Enum):
 # Canonical Arabic outage string — used by auth, deps, the DbDeadlineExceeded
 # handler, and storage 503s. Defined module-level so every 503 path reuses it.
 MSG_SERVICE_UNAVAILABLE = "الخدمة غير متاحة مؤقتاً، حاول مجدداً"
+
+# 401 AUTH_EMAIL_NOT_CONFIRMED (POST /auth/login).
+MSG_EMAIL_NOT_CONFIRMED = "الحساب غير مفعّل بعد. يرجى تأكيد بريدك الإلكتروني من الرابط المرسل إليك."
 
 # 426 APP_UPDATE_REQUIRED (backend/app/middleware/app_version.py).
 MSG_APP_UPDATE_REQUIRED = "يلزم تحديث التطبيق إلى أحدث إصدار للمتابعة"

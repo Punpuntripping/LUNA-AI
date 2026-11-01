@@ -20,10 +20,15 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from supabase_auth.errors import AuthApiError, AuthRetryableError
+from supabase_auth.helpers import handle_exception
 
 from backend.app.api import auth as auth_mod
 from backend.app.deps import get_redis, get_supabase, get_supabase_auth
-from backend.app.errors import LunaHTTPException, luna_exception_handler
+from backend.app.errors import (
+    MSG_EMAIL_NOT_CONFIRMED,
+    LunaHTTPException,
+    luna_exception_handler,
+)
 from backend.app.services import otp_limits
 from backend.tests.test_email_otp import AUTH_ID, FakeRedis, FakeSupabase
 from shared.config import Settings
@@ -354,6 +359,59 @@ def test_signup_with_session_returns_login_response(monkeypatch) -> None:
     assert body == login.json()
     assert body["user"]["has_password"] is True
     assert body["access_token"] == "access-xyz"
+
+
+# ---------------------------------------------------------------------------
+# /login refusals — an unconfirmed account is not a wrong password
+# ---------------------------------------------------------------------------
+
+API_2024 = {"X-Supabase-Api-Version": "2024-01-01"}
+
+
+class _RefusingGoTrue:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def sign_in_with_password(self, credentials):
+        raise self.error
+
+
+def _login_against(monkeypatch, body: dict, headers: Optional[dict] = None):
+    """POST /login against this GoTrue 400, built by supabase_auth's own parser
+    so a library change to where `code` comes from fails here."""
+    request = httpx.Request("POST", "https://project.supabase.co/auth/v1/token")
+    response = httpx.Response(400, json=body, headers=headers, request=request)
+    error = handle_exception(
+        httpx.HTTPStatusError("refused", request=request, response=response)
+    )
+    h = Harness(monkeypatch, shared_auth=SimpleNamespace(auth=_RefusingGoTrue(error)))
+    return h.client.post("/api/v1/auth/login", json={"email": EMAIL, "password": PASSWORD})
+
+
+@pytest.mark.parametrize(
+    "body, headers",
+    [
+        ({"code": "email_not_confirmed", "msg": "Email not confirmed"}, API_2024),
+        ({"code": 400, "error_code": "email_not_confirmed", "msg": "Email not confirmed"}, None),
+    ],
+    ids=["api-2024", "legacy"],
+)
+def test_login_unconfirmed_email_is_named(monkeypatch, body, headers) -> None:
+    res = _login_against(monkeypatch, body, headers)
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "AUTH_EMAIL_NOT_CONFIRMED"
+    assert res.json()["detail"] == MSG_EMAIL_NOT_CONFIRMED
+
+
+def test_login_wrong_password_keeps_generic_message(monkeypatch) -> None:
+    res = _login_against(
+        monkeypatch,
+        {"code": "invalid_credentials", "msg": "Invalid login credentials"},
+        API_2024,
+    )
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "AUTH_INVALID"
+    assert res.json()["detail"] == "بيانات الدخول غير صحيحة"
 
 
 # ---------------------------------------------------------------------------
