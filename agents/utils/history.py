@@ -113,6 +113,25 @@ def build_provenance_tag(
     return f"〔[نظام] أنتج هذا الردّ متخصصٌ{fam_part} وأنشأ العنصر {rendered}〕"
 
 
+def build_pause_question_tag(row: dict) -> str:
+    """Marker for a specialist's paused question or plan, or ``""`` for any other row.
+
+    An ``agent_question`` row is stored with role ``assistant``, but a planner
+    wrote it, not the router. The router's prompt says an untagged assistant
+    turn is its own direct answer, so without this marker it would read a
+    planner's question as something it asked. Older rows may lack
+    ``agent_family``; the marker then omits it.
+    """
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("kind") != "agent_question":
+        return ""
+    family = str(metadata.get("agent_family") or "").strip()
+    fam_part = f" (agent_family={family})" if family else ""
+    if metadata.get("pause_reason") == "approve_plan":
+        return f"〔[نظام] هذه خطة عرضها متخصصٌ{fam_part} أثناء مهمته〕"
+    return f"〔[نظام] هذا سؤال طرحه متخصصٌ{fam_part} أثناء مهمته〕"
+
+
 def build_next_steps_note(next_steps: list[dict] | None) -> str | None:
     """One-line note naming the next-step chips offered under an assistant turn.
 
@@ -152,9 +171,9 @@ def build_follow_up_note(question: str | None) -> str | None:
 
     Plan ``unified_responder.md`` §6.4 / D10. The question is captured in
     ``messages.metadata.follow_up_question`` — it is NOT an ``agent_question``
-    (that kind is a blocking pause and is filtered out of router history), so
-    without this note an agent reading history cannot tell that the user's next
-    message («نعم، يوجد شرط جزائي») is an answer. Returns ``None`` when empty.
+    (that kind is a blocking pause with its own message row), so without this
+    note an agent reading history cannot tell that the user's next message
+    («نعم، يوجد شرط جزائي») is an answer. Returns ``None`` when empty.
     """
     text = " ".join(str(question or "").split())
     if not text:
@@ -254,6 +273,12 @@ def messages_to_history(
     reply), so a typed «نعم» after an offer stays resolvable. Callers must
     select ``metadata`` for this to fire.
 
+    ``agent_question`` rows get the :func:`build_pause_question_tag` marker
+    prepended, so the router can tell a specialist's question from its own
+    reply. ``agent_answer`` rows are ordinary user turns. The responder runs on
+    this same list, so ``responder/context.py::HISTORY_LEGEND`` explains the
+    marker too.
+
     Identifier masking (وضع السرية): the router's prior-turn history comes
     through here (via ``load_router_context``), NOT through the orchestrator's
     ``_load_recent_messages``. Each fully-assembled message (the provenance tag
@@ -301,6 +326,9 @@ def messages_to_history(
                     tag = build_provenance_tag(list(artifact_ids), wi_provenance)
                     if tag:
                         text = f"{tag}\n{content}"
+            pause_tag = build_pause_question_tag(row)
+            if pause_tag:
+                text = f"{pause_tag}\n{text}"
             # Chips offered under this turn (metadata.next_steps) — independent
             # of wi_provenance; encoded with the rest of the surface below.
             text = append_next_steps_note(text, row)

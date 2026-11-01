@@ -918,12 +918,9 @@ def _release_agent_answer_tag(
     ``_resume_major_agent_inner`` tags every reply as an answer to the pending
     question before it knows what the reply actually is. When the reply turns
     out to be a NEW request and the turn is handed back to the router, that tag
-    is a lie with teeth: ``router/context.py`` drops ``agent_question`` /
-    ``agent_answer`` rows from the history it feeds the router, so on every
-    LATER turn the router would be blind to the request it is about to serve.
+    is wrong: the web and mobile chats would label the message «(جواب)».
 
-    Best-effort — a failed patch costs history fidelity on subsequent turns,
-    never this turn (``_route`` receives the reply text directly)."""
+    Best-effort — a failed patch costs only that label."""
     if not user_message_id:
         return
     try:
@@ -1316,7 +1313,7 @@ async def _resume_major_agent_inner(
         # Emitted AFTER agent_run_finished so the client sees the writing run
         # closed before whatever family the router picks opens its own. The
         # reply is no longer an answer to a question, so its agent_answer tag is
-        # released (router history excludes that kind) before _route reads it.
+        # released.
         if _handoff:
             _release_agent_answer_tag(supabase, user_message_id)
             async for ev in _route(
@@ -1336,8 +1333,7 @@ async def _resume_major_agent_inner(
     # start retrieving: gate it like a fresh dispatch, before the decider spends
     # anything. A refused resume MUST resolve its pause row — left open, every
     # next message would be pulled back into this run. The reply keeps its
-    # agent_answer tag: the abandoned question/answer pair stays out of router
-    # history together, leaving the original request followed by this refusal.
+    # agent_answer tag: it did answer the question.
     gated = await _check_deep_search_gate(
         supabase, user_id, entry="ds_resume", conversation_id=conversation_id,
     )
@@ -2773,7 +2769,6 @@ async def _route(
         compaction_summary_md=ctx.compaction_summary_md,
         wi_lock_policy=wi_lock_policy,
         conversation_memory=ctx.conversation_memory,
-        paused_exchanges_md=ctx.paused_exchanges_md,
     )
 
     # The block as this run left it, before anything is dispatched: agents read

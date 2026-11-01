@@ -193,9 +193,6 @@ class RouterDeps:
     # to a call batched with the final output is never read, so ``run_router``
     # checks these and repairs one that went unread (plan §4.4).
     memory_fixable_calls: set[str] = field(default_factory=set)
-    # Rendered replies given during a paused run since the last routed message
-    # (§4.6): already encoded and escaped. Rendered for the router only.
-    paused_exchanges_md: str | None = None
 
 
 @dataclass
@@ -423,6 +420,7 @@ When the user **explicitly shares a substantive request or a long template** tha
 - A reply may also END with `〔[نظام] سُئل المستخدم: …〕` — the follow-up question asked at the end of that reply, for a fact from the user's own file (context only, never write it yourself). If the user's current message **answers** that question (the reply asked whether the contract has a penalty clause and the user says «نعم، يوجد شرط جزائي 10% من قيمة العقد»; a short «لا، ما فيه» or «أرسلت إنذاراً قبل شهر» counts too), the answer is a new fact for **that** output → route `DispatchAgent` to the **same** `agent_family` named in that reply's tag, with `target_wi` = the item's alias in the tag (WI-N) — a refine of that output, exactly like the structural-improvement rule below. Do not answer it yourself via ChatResponse, and do not open a fresh output without `target_wi`.
   - Example: the last reply is tagged (agent_family=deep_search, WI-2) and ends with 〔[نظام] سُئل المستخدم: هل ينص العقد على شرط جزائي عن التأخير؟〕; the user says «نعم، يوجد شرط جزائي 10% من قيمة العقد» ⟵ route `DispatchAgent(agent_family="deep_search", target_wi="WI-2")`.
   - The only exception: the message is clearly a **new request** (a different topic or a new task, not the fact that was asked for) → route it on its own merits. If that reply carries no provenance tag, route on the content as usual.
+- A prior assistant turn may also BEGIN with `〔[نظام] هذا سؤال طرحه متخصصٌ (agent_family=writing) أثناء مهمته〕` or `〔[نظام] هذه خطة عرضها متخصصٌ (agent_family=writing) أثناء مهمته〕`: a specialist stopped mid-task to ask the user something or to show its plan for approval (context only, never write it yourself). You did not write that turn, it is not an output (the "last tagged output" rules below mean the last turn that names a WI-N), and the user's reply to it normally went to the specialist, not to you. It is still part of the conversation: what the user said there (a corrected number, a name, a direction) stands like anything they told you directly, so use it and do not ask for it again, and do not answer that old question yourself. It is not a request to change a document: if a document still carries an older value, say so in one line and offer to change it, and call `edit_artifact` only when the user's current message asks for the change. If such a turn is the last reply in the log, the specialist is no longer waiting: judge the user's current message on its merits as usual, with that question or plan in mind.
 - If the user's current request is a **scoped surgical edit to the last tagged output** (e.g.: «بدل كلمة…»، «عدّل البند الثالث»، «احذف الفقرة…»، «صحّح الاسم/الرقم») → call the `edit_artifact` tool with `target_wi` = the item's alias in the tag (WI-N), then inform the user via ChatResponse.
 - If the request is a **structural improvement or expansion of the last tagged output** (e.g.: «فصّل أكثر»، «أضف فقرة»، «اختصر»، «حسّن الصياغة»، «اشرح المواد أكثر»، «طوّل» أو «قصّر») → route `DispatchAgent` to the **same** `agent_family` named in the tag, with `target_wi` = the item's alias in the tag (WI-N).
   - Example: the last reply is tagged (agent_family=writing, WI-3) and the user says «فصّل أكثر في المواد» ⟵ route `DispatchAgent(agent_family="writing", target_wi="WI-3")` — do **not** open a new search (deep_search) because the request is an improvement to the document itself.
@@ -454,7 +452,7 @@ When the user **explicitly shares a substantive request or a long template** tha
 # Dynamic, not in SYSTEM_PROMPT: the static prefix stays cached, and with the
 # flag off these rules are absent. Plan conversation_memory.md §4.5, byte for byte.
 CONVERSATION_MEMORY_RULES = """\
-**Conversation memory.** You alone write it, with `update_conversation_memory`. Check every message before you reply: does it correct or contradict an entry, or add something the case now depends on? Fix existing entries rather than adding near-duplicates. This applies even when a specialist wrote the reply being corrected.
+**Conversation memory.** You alone write it, with `update_conversation_memory`. Check every message before you reply: does it correct or contradict an entry, or add something the case now depends on? Fix existing entries rather than adding near-duplicates. This applies even when a specialist wrote the reply being corrected. It also applies to the replies the user gave a specialist, the user turns right after a turn tagged `〔[نظام] … أثناء مهمته〕`, when no other kind of user message sits between the reply and the current message: you were not called for those, so check them too, even when the current message is about something else, and treat each one as this message for the rules below. A reply with another kind of user message after it was checked on an earlier turn, so never act on it again.
 
 **Save:** corrections to names, numbers, dates or anything else; key requests; facts that change the direction of the matter; anything the user insists on. Save only what this message adds or changes, never background restated from earlier messages. **Do not save** greetings, ordinary questions, or what is already in the memory.
 
@@ -674,7 +672,7 @@ def inject_compaction_summary(ctx: RunContext[RouterDeps]) -> str:
 
 @router_agent.instructions
 def inject_conversation_memory(ctx: RunContext[RouterDeps]) -> str:
-    """The memory rules, the memory block and the paused exchanges.
+    """The memory rules and the memory block.
 
     Empty with the flag off, so every prompt stays as it was. The rules still
     show on a conversation with no memory: that is how its first entry gets
@@ -686,7 +684,6 @@ def inject_conversation_memory(ctx: RunContext[RouterDeps]) -> str:
     parts = [
         CONVERSATION_MEMORY_RULES,
         render_conversation_memory(ctx.deps.conversation_memory),
-        ctx.deps.paused_exchanges_md,
     ]
     return "\n" + "\n\n".join(part for part in parts if part) + "\n"
 
@@ -899,7 +896,6 @@ async def run_router(
     welcome: WelcomeState | None = None,
     wi_lock_policy: LockPolicy | None = None,
     conversation_memory: list[MemoryEntry] | None = None,
-    paused_exchanges_md: str | None = None,
 ) -> RouterRunResult:
     """Run the router agent to classify user intent and respond or dispatch.
 
@@ -916,9 +912,8 @@ async def run_router(
         case_memory_md: Pre-built case memory markdown.
         case_metadata: Case name, type, parties dict.
         user_preferences: Response tone/style preferences dict.
-        message_history: Pydantic AI ModelMessage list, already filtered
-            by the loader to exclude agent_question / agent_answer kinds
-            and to start strictly after compacted_through_message_id.
+        message_history: Pydantic AI ModelMessage list holding every chat
+            message strictly after compacted_through_message_id.
         workspace_item_summaries: Compact (item_id, kind, title, summary)
             dicts for the conversation's workspace items. Optional —
             empty list when none.
@@ -936,8 +931,6 @@ async def run_router(
             nothing locks. Lands on ``RouterDeps`` and nowhere else.
         conversation_memory: This conversation's ENCODED memory entries, from
             the loader. Empty with the feature off.
-        paused_exchanges_md: Rendered paused replies since the last routed
-            message (``RouterContext.paused_exchanges_md``), or None.
 
     Returns:
         A ``RouterRunResult`` wrapping the structured output (ChatResponse if
@@ -972,7 +965,6 @@ async def run_router(
         user_message=question,
         wi_lock_policy=wi_lock_policy,
         conversation_memory=list(conversation_memory or []),
-        paused_exchanges_md=paused_exchanges_md,
     )
 
     # PII note: user_id intentionally NOT on this span. The monitor recovers

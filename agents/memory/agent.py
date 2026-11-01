@@ -189,9 +189,9 @@ def _mark_compaction_attempt(
     """Stamp ``metadata.compaction_attempt.at`` on the anchor message BEFORE the
     LLM fires, so a failure does not re-bill once per turn.
 
-    Read-modify-write on the row's existing metadata — ``metadata.kind`` is what
-    the router's message filter reads (``agents/router/context.py:293-303``) and
-    must survive. Best-effort: a failed marker write proceeds anyway.
+    Read-modify-write on the row's existing metadata — ``metadata.kind`` drives
+    the pause checks, the router's history markers and the chat's labels, and must
+    survive. Best-effort: a failed marker write proceeds anyway.
     """
     metadata = anchor.get("metadata")
     md = dict(metadata) if isinstance(metadata, dict) else {}

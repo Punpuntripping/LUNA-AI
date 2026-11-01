@@ -311,12 +311,12 @@ def A(text: str, wi: tuple[int, ...] = (), question: str | None = None) -> dict:
 
 
 def Q(text: str) -> dict:
-    """What a paused specialist asked. Hidden from router history."""
+    """What a paused specialist asked. In router history, under its marker."""
     return {"role": "assistant", "content": text, "kind": "agent_question"}
 
 
 def R(text: str) -> dict:
-    """The user's reply during a pause. Hidden from router history."""
+    """The user's reply during a pause. An ordinary turn in router history."""
     return {"role": "user", "content": text, "kind": "agent_answer"}
 
 
@@ -614,6 +614,10 @@ def c7(v: Verdict) -> None:
     _fact_with(v, 210_000)
 
 
+def c7b(v: Verdict) -> None:
+    v.no_write()
+
+
 def c8(v: Verdict) -> None:
     updated = [u for u in v.ops("update") if str(u.get("id", "")).upper() == "M-1"]
     v.need(updated, f"no update on M-1 (update ops: {v.ops('update')})")
@@ -805,6 +809,19 @@ CASES: tuple[Case, ...] = (
             Q("خطة المذكرة: 1) الوقائع: إلزام الموكل بسداد 310,000 ريال. 2) الأسباب. 3) الطلبات. هل توافق؟"),
             R("المبلغ غلط، الصحيح 210,000 ريال، والباقي تمام"),
             A("أعددت مذكرة الاعتراض وهي في مساحة العمل.", wi=(2,)),
+        ),
+    ),
+    Case(
+        "7b", "must not save", "older paused correction, already checked on an earlier turn",
+        "كم مدة الاعتراض على الأحكام العمالية؟",
+        c7b, items=(DECISION, DRAFT),
+        rows=(
+            U("اكتب مذكرة اعتراض على قرار محكمة التنفيذ", attach=(1,)),
+            Q("خطة المذكرة: 1) الوقائع: إلزام الموكل بسداد 310,000 ريال. 2) الأسباب. 3) الطلبات. هل توافق؟"),
+            R("المبلغ غلط، الصحيح 210,000 ريال، والباقي تمام"),
+            A("أعددت مذكرة الاعتراض وهي في مساحة العمل.", wi=(2,)),
+            U("اختصر الفقرة الأولى من المذكرة"),
+            A("اختصرت الفقرة الأولى من المذكرة.", wi=(2,)),
         ),
     ),
     Case(
@@ -1131,7 +1148,6 @@ async def run_case(case: Case, pass_no: int, timeout: float) -> Run:
                     compaction_summary_md=ctx.compaction_summary_md,
                     wi_lock_policy=None,
                     conversation_memory=ctx.conversation_memory,
-                    paused_exchanges_md=ctx.paused_exchanges_md,
                 ),
                 timeout,
             )

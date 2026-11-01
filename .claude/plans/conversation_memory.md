@@ -34,7 +34,7 @@ Each conversation gets one hidden memory of what must not be forgotten: the user
 | D4 | **Facts: the user wins at once**, even against OCR or an attachment. No warning, no disclaimer, no request for proof. |
 | D5 | **Law: sources win.** The agent warns. If the user still insists, the entry gets a disclaimer for agents and they follow the user, with no further warnings and no citation attached. |
 | D6 | The router does not argue about facts. Asked where a number came from, it answers in one line and continues with the user's number. |
-| D7 | Corrections given during a planner's pause reach the router on its next normal turn, with no extra LLM call. |
+| D7 | Corrections given during a planner's pause reach the router on its next normal turn, with no extra LLM call, through ordinary history (§4.6). |
 | D8 | Hidden from the user: no chip, no workspace item, no SSE event, no API. The user can ask the router what it remembers, or tell it to change something. |
 | D9 | `save_memo` stays for long verbatim messages. |
 | D10 | Stored documents and existing drafts are not changed by a memory update. |
@@ -129,9 +129,9 @@ async def update_conversation_memory(ctx, add=None, update=None, remove=None) ->
 
 ### 4.5 Router rules
 
-Put these in a dynamic `@router_agent.instructions` callback, `inject_conversation_memory`, shown only when the flag is on. It renders the rules, the block and the paused exchanges (§4.6). The static prefix stays cached.
+Put these in a dynamic `@router_agent.instructions` callback, `inject_conversation_memory`, shown only when the flag is on. It renders the rules and the block. The static prefix stays cached.
 
-> **Conversation memory.** You alone write it, with `update_conversation_memory`. Check every message before you reply: does it correct or contradict an entry, or add something the case now depends on? Fix existing entries rather than adding near-duplicates. This applies even when a specialist wrote the reply being corrected.
+> **Conversation memory.** You alone write it, with `update_conversation_memory`. Check every message before you reply: does it correct or contradict an entry, or add something the case now depends on? Fix existing entries rather than adding near-duplicates. This applies even when a specialist wrote the reply being corrected. It also applies to the replies the user gave a specialist, the user turns right after a turn tagged `〔[نظام] … أثناء مهمته〕`, when no other kind of user message sits between the reply and the current message: you were not called for those, so check them too, even when the current message is about something else, and treat each one as this message for the rules below. A reply with another kind of user message after it was checked on an earlier turn, so never act on it again.
 >
 > **Save:** corrections to names, numbers, dates or anything else; key requests; facts that change the direction of the matter; anything the user insists on. Save only what this message adds or changes, never background restated from earlier messages. **Do not save** greetings, ordinary questions, or what is already in the memory.
 >
@@ -151,12 +151,7 @@ Static `SYSTEM_PROMPT` changes:
 
 ### 4.6 Paused replies (D7)
 
-`router/context.py::_load_filtered_messages` keeps dropping `agent_question` / `agent_answer` from history. Add `collect_paused_exchanges(rows)`:
-- Walk back from the end. Skip the current user message. Collect the excluded rows until the previous routed user message.
-- Clip each question to 600 chars and each answer to 1,000, with the newest 8 rows at most.
-- Read the rows from a separate bounded query, newest ~30 and reversed, that ignores the compaction cutoff. Compaction runs before `load_router_context`, so the cut can land after a pause the router has not seen. No extra query with the flag off.
-- Encode them and store on `RouterContext.paused_exchanges_md`.
-- Render them under a line saying they are shown only so the memory can be updated, and are not part of the history.
+Replaced 2026-11-01, independently of the memory flag. The `<paused_exchanges>` block is deleted. `router/context.py` no longer drops `agent_question` / `agent_answer`, so the router's ordinary history holds every bubble the chat shows, whole and in order. An `agent_question` row carries a marker from `history.py::build_pause_question_tag`, because an untagged assistant turn means the router's own reply. The rules in §4.5 tell the router to check those replies for the memory. A pause that compaction has already cut reaches the router through the summary, like any older message.
 
 Volume: 57 paused replies in the last 30 days.
 
@@ -176,7 +171,6 @@ Sites: all four `MajorAgentInput(` constructions (orchestrator lines 1091, 1437,
 Store real, encode at load, same as compaction summaries.
 - `decode_for_persist(content)` before every write.
 - `encode_active` at load.
-- Encode the paused exchanges too.
 - Re-run the Layer 3 sentinel gate (`agents_reports/smoke_tests/masking_sentinel_baseline_plan.md`), as required for any new LLM surface.
 
 ### 4.9 Kill switch
@@ -240,8 +234,7 @@ Per [[feedback_check_whole_prompt_not_edits]]: an unchanged prompt is not a pass
 - `shared/config.py`: flag
 - `agents/models.py`: `MajorAgentInput.conversation_memory_md`
 - `agents/router/router.py`: deps, result, tool, instruction, delete the memory-route section, span attributes
-- `agents/router/context.py`: load, paused exchanges
-- `agents/utils/router_context_render.py`: render helper for paused exchanges
+- `agents/router/context.py`: load
 - `agents/orchestrator.py`: `_load_conversation_memory`, `_route`, `_dispatch`, `_run_deep_search`, four `MajorAgentInput` sites, `_resume_deps`
 - `agents/tool_repository/edit_artifact.py`, `agents/artifact_editor/agent.py`
 - `agents/responder/models.py`, `agents/responder/context.py`
@@ -262,7 +255,7 @@ Per [[feedback_check_whole_prompt_not_edits]]: an unchanged prompt is not a pass
 ## 7. Build order
 
 1. **Foundation.** Worktree, recheck the migration number against prod ([[project_migration_drift]]), migration, flag, `agents/utils/conversation_memory.py`, unit tests.
-2. **Router.** Tool, deps, load, rules, paused exchanges, delete the memory-route section, `_route` update.
+2. **Router.** Tool, deps, load, rules, delete the memory-route section, `_route` update.
 3. **Deep search.** `MajorAgentInput`, resume loader, `ContextBlock` label, split helper, planner, aggregator bullet + digests, responder.
 4. **Writer, editor, simple_search.**
 5. **Whole-prompt audit** (§5), deletion, nuke script, catalog regeneration.
@@ -283,7 +276,6 @@ Each step leaves the app working with the flag off.
 - **Rerankers:** both reranker messages never contain the block.
 - **Expanders and aggregator:** block present, outside `<context_blocks>`, not double-escaped; `cap` stays last in the case expander message.
 - **Resume:** all resume legs load the block, and the responder gets it with `router_context=None`.
-- **Paused exchanges:** window boundaries, with and without the current message in the rows; clipping; encoding.
 - **Masking:** stored content is real, prompts carry fakes.
 - **Deletion:** the migration defines the trigger as §4.10 describes (source-level check; scenario I proves it live), and `delete_conversation` has no memory code.
 
