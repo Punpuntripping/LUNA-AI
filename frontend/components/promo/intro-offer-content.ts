@@ -198,6 +198,9 @@ export const INTRO_OFFER_COPY = {
    * «أشهر العرض».
    */
   nonRefundable: "الدفعة الأولى غير قابلة للاسترداد",
+  /** /pay, a `promoOncePerUser` plan: no month count and no later payments. */
+  oneTimeOfferPriceLabel: "سعر العرض",
+  oneTimeNonRefundable: "هذه الدفعة بسعر العرض غير قابلة للاسترداد",
   /** Owner's line, verbatim (2026-10-21). */
   cancelAnytime: "تقدر تلغي اشتراكك أي وقت من خلال إعدادات الحساب",
   cta: "اشترك الآن",

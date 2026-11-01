@@ -66,6 +66,10 @@ SEED_BATCHES: tuple[dict, ...] = (
     {"batch_id": "max_t2_b", "plan_id": "max", "price_tier": 2, "batch_order": 2,
      "price_sar": "189.90", "months": 1, "seat_limit": 1000, "profession_only": False,
      "enabled": True},
+    # 204 ships it switched off.
+    {"batch_id": "basic_t1_a", "plan_id": "basic", "price_tier": 1, "batch_order": 1,
+     "price_sar": "9.80", "months": 1, "seat_limit": 500, "profession_only": False,
+     "enabled": False},
 )
 
 #: §1.3-3 / A6 — the first profession answers that unlock Pro Tier 1.
@@ -109,6 +113,7 @@ class PromoLadderModel:
         self._ladder_v2 = False
         self.ladder_v2_at: Optional[datetime] = None
         self.promo_batches: list[dict] = [dict(b) for b in SEED_BATCHES]
+        self.basic_offer_seats: list[dict] = []            # 204's own ledger
         # 183's switch and end date — Pro Tier 1 keeps both under v2 (§1.4-9).
         # Only defaulted: the payments fake sets its own first.
         if not hasattr(self, "intro_offer_enabled"):
@@ -148,6 +153,8 @@ class PromoLadderModel:
             self.tables[name] = self.early_adopter_seats      # the SAME list
         elif name == "promo_batches":
             self.tables[name] = self.promo_batches
+        elif name == "basic_offer_seats":
+            self.tables[name] = self.basic_offer_seats        # the SAME list
 
     # ── shared reads ─────────────────────────────────────────────────────
     def _plan(self, plan_id):
@@ -260,8 +267,11 @@ class PromoLadderModel:
         return next((b for b in self.promo_batches if b["batch_id"] == batch_id), None)
 
     def _batch_live(self, batch_id) -> int:
-        return sum(1 for s in self.early_adopter_seats
-                   if s.get("batch_id") == batch_id and not s.get("released_at"))
+        return (
+            sum(1 for s in self.early_adopter_seats
+                if s.get("batch_id") == batch_id and not s.get("released_at"))
+            + sum(1 for s in self.basic_offer_seats if s.get("batch_id") == batch_id)
+        )
 
     def _active_batch(self, plan_id, tier):
         """``promo_active_batch`` (§1.4-1): the lowest-ordered enabled batch of
@@ -311,10 +321,19 @@ class PromoLadderModel:
 
     def _quote(self, user_id, plan_id) -> Optional[dict]:
         """``promo_quote(user, plan)`` — §1.3, in 192's order. None = regular."""
-        if not user_id or plan_id not in SEAT_PLAN_IDS:
+        if not user_id or plan_id not in (*SEAT_PLAN_IDS, "basic"):
             return None
         if not (self.ladder_v2 and self.campaign_enabled and self.campaign_row_present):
             return None
+        # (204) once per user, and none of the Pro/Max rules below apply.
+        if plan_id == "basic":
+            if any(s.get("user_id") == user_id for s in self.basic_offer_seats):
+                return None
+            batch = self._active_batch("basic", 1)
+            if batch is None:
+                return None
+            return {"batch_id": batch["batch_id"], "price_tier": 1,
+                    "price_sar": batch["price_sar"], "months": batch["months"]}
         active = self._active_plan(user_id)
         # §1.3-1: on Pro/Max now → no new seat for that plan; Max → Pro is a
         # downgrade. Pro → Max is the switch (rule 6) and IS quoted.
@@ -365,6 +384,10 @@ class PromoLadderModel:
         mx = self._active_batch("max", 1) or self._active_batch("max", 2)
         if mx is not None:
             rows.append({"plan_id": "max", "price_sar": mx["price_sar"], "months": mx["months"]})
+        basic = self._active_batch("basic", 1)           # 204
+        if basic is not None:
+            rows.append({"plan_id": "basic", "price_sar": basic["price_sar"],
+                         "months": basic["months"]})
         return rows
 
     # ── the functions ────────────────────────────────────────────────────
@@ -410,6 +433,10 @@ class PromoLadderModel:
                         return quote["price_sar"]
                 if promo is not None and legacy_in_window:
                     return promo                                # (b2)
+            elif context == "purchase":                         # (204) one-time plan
+                quote = self._quote(uid, plan_id)
+                if quote:
+                    return quote["price_sar"]
             return listed
 
         if listed is None or promo is None:
@@ -466,6 +493,46 @@ class PromoLadderModel:
         if row.get("promo_batch_id"):
             return self._claim_batch(uid, payment_id, row)
         return self._claim_legacy(uid, payment_id, row)
+
+    def _claim_basic(self, params: dict, row: Optional[dict]) -> list[dict]:
+        """204's ``claim_basic_offer_seat``, in its order."""
+        def answer(action, seat=None):
+            return [{"seat_id": seat["seat_id"] if seat else None,
+                     "over_capacity": bool(seat["over_capacity"]) if seat else False,
+                     "action": action}]
+
+        uid = params.get("p_user_id")
+        payment_id = params.get("p_payment_id")
+        if row is None:
+            return answer("payment_not_found")
+        held = next((s for s in self.basic_offer_seats
+                     if s.get("payment_id") == payment_id), None)
+        if held is not None:
+            return answer(ss.CLAIM_ACTION_ALREADY_CLAIMED, held)
+        if not uid or (row.get("user_id") is not None and row.get("user_id") != uid):
+            return answer("user_mismatch")
+        if row.get("plan_id") != "basic" or not row.get("promo_batch_id"):
+            return answer("plan_not_eligible")
+        if row.get("status") != "paid":
+            return answer("not_paid")
+        batch = self._batch(row["promo_batch_id"])
+        if batch is None or batch["plan_id"] != "basic":
+            return answer("plan_not_eligible")
+        price, _months = self._quoted_terms(row, batch)
+        quoted = ps.q2(ps._dec(row.get("amount_sar")) + ps._dec(row.get("upgrade_credit_sar")))
+        if row.get("amount_sar") is None or quoted > ps.q2(price) + ps._dec("0.01"):
+            return answer(ss.CLAIM_ACTION_NOT_PROMO_PRICED)
+        mine = next((s for s in self.basic_offer_seats if s.get("user_id") == uid), None)
+        if mine is not None:
+            return answer(ss.CLAIM_ACTION_ALREADY_CLAIMED, mine)
+        seat = {
+            "seat_id": str(uuid.uuid4()), "user_id": uid, "payment_id": payment_id,
+            "batch_id": batch["batch_id"], "price_sar": price,
+            "over_capacity": self._batch_live(batch["batch_id"]) >= int(batch["seat_limit"]),
+            "claimed_at": row.get("paid_at") or _iso(_now()),
+        }
+        self.basic_offer_seats.append(seat)
+        return answer(ss.CLAIM_ACTION_CLAIMED, seat)
 
     def _quoted_terms(self, row, batch) -> tuple[str, int]:
         """(5a) The price and months the CUSTOMER WAS QUOTED, from the row's
@@ -666,16 +733,15 @@ class PromoLadderModel:
             return [row]
         if recurring and in_window and seat.get("batch_id") and seat.get("plan_id") == plan_id:
             return [{**row, "price_sar": seat["price_sar"]}]               # (b1)
-        if recurring:
-            quote = self._quote(uid, plan_id)
-            if quote:
-                group = (self._first_profession(uid)
-                         if plan_id == "pro" and quote["price_tier"] == 1 else None)
-                return [{**row, "price_sar": quote["price_sar"], "batch_id": quote["batch_id"],
-                         "price_tier": quote["price_tier"], "months": quote["months"],
-                         "intro_group": group}]
-            if promo is not None and in_window and not seat.get("batch_id"):
-                return [{**row, "price_sar": promo}]                       # (b2)
+        quote = self._quote(uid, plan_id)
+        if quote:
+            group = (self._first_profession(uid)
+                     if plan_id == "pro" and quote["price_tier"] == 1 else None)
+            return [{**row, "price_sar": quote["price_sar"], "batch_id": quote["batch_id"],
+                     "price_tier": quote["price_tier"], "months": quote["months"],
+                     "intro_group": group}]
+        if recurring and promo is not None and in_window and not seat.get("batch_id"):
+            return [{**row, "price_sar": promo}]                           # (b2)
         return [{**row, "price_sar": listed}]
 
     # ── dispatch ─────────────────────────────────────────────────────────
@@ -691,6 +757,8 @@ class PromoLadderModel:
             return self._intro_member(params.get("p_user_id"))
         if name == "claim_early_adopter_seat":
             return self._claim(params, row)
+        if name == "claim_basic_offer_seat":
+            return self._claim_basic(params, row)
         if name == "release_early_adopter_seat":
             return self._release(params)
         if name == "restore_early_adopter_seat":

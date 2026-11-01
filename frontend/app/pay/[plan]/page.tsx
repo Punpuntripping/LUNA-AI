@@ -327,6 +327,9 @@ export default function PayPlanPage() {
     ? null
     : termsFromCheckoutPromo(session?.promo);
   const offerTerms = introOfferTerms ?? promoTerms;
+  // Basic's offer is one payment and nothing after it, so the schedule rows
+  // («بعد 30 يوماً، ثم كل 30 يوماً») would describe a renewal that does not exist.
+  const oneTimeOffer = Boolean(promoTerms && plan.promoOncePerUser);
   // Only the profession offer's FIRST payment is non-refundable; a plain promo
   // keeps the 24h refund unless the server says otherwise.
   const nonRefundable = Boolean(session?.non_refundable || introOfferTerms);
@@ -381,7 +384,9 @@ export default function PayPlanPage() {
             }
           >
             <span className="text-sm font-medium text-primary">
-              {INTRO_OFFER_COPY.offerPriceLabel(offerTerms)}
+              {oneTimeOffer
+                ? INTRO_OFFER_COPY.oneTimeOfferPriceLabel
+                : INTRO_OFFER_COPY.offerPriceLabel(offerTerms)}
             </span>
             <span className="flex items-center gap-1 text-sm font-medium tabular-nums text-primary">
               {formatSar(offerTerms.offer_sar)}
@@ -431,21 +436,27 @@ export default function PayPlanPage() {
               introOfferTerms ? "pay-intro-offer-schedule" : "pay-promo-schedule"
             }
           >
-            <span className="text-xs font-semibold text-muted-foreground">
-              {INTRO_OFFER_COPY.scheduleHeading}
-            </span>
-            {introOfferScheduleRows(offerTerms).map((row) => (
-              <div
-                key={row.label}
-                className="flex items-baseline justify-between gap-3"
-              >
-                <span className="text-sm text-muted-foreground">{row.label}</span>
-                <span className="flex items-center gap-1 text-sm tabular-nums text-foreground">
-                  {row.amount}
-                  <RiyalSymbol className="h-3.5 w-auto" />
+            {!oneTimeOffer && (
+              <>
+                <span className="text-xs font-semibold text-muted-foreground">
+                  {INTRO_OFFER_COPY.scheduleHeading}
                 </span>
-              </div>
-            ))}
+                {introOfferScheduleRows(offerTerms).map((row) => (
+                  <div
+                    key={row.label}
+                    className="flex items-baseline justify-between gap-3"
+                  >
+                    <span className="text-sm text-muted-foreground">
+                      {row.label}
+                    </span>
+                    <span className="flex items-center gap-1 text-sm tabular-nums text-foreground">
+                      {row.amount}
+                      <RiyalSymbol className="h-3.5 w-auto" />
+                    </span>
+                  </div>
+                ))}
+              </>
+            )}
             <PromoTermsLink className="w-fit" />
           </div>
         )}
@@ -459,7 +470,9 @@ export default function PayPlanPage() {
             className="text-xs font-medium text-foreground"
             data-testid="pay-non-refundable"
           >
-            {INTRO_OFFER_COPY.nonRefundable}
+            {oneTimeOffer
+              ? INTRO_OFFER_COPY.oneTimeNonRefundable
+              : INTRO_OFFER_COPY.nonRefundable}
           </p>
         )}
       </section>

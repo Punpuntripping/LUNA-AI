@@ -13,7 +13,7 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
  * 189.90 (VAT-inclusive) in the Moyasar Wave 1 commit, and `max` was raised to
  * 289.90 by migration 147 (2026-08-29), `pro` to 94.90 by migration 168
  * (2026-09-29), and `basic` to a flat 29.90 with no promo by migration 174
- * (2026-10-08), then to a flat 39.90 by migration 191 (2026-10-27) — a price
+ * (2026-10-08), then to 39.90 by migration 191 (2026-10-27) — a price
  * migration and this file must always move as one. These are the LIST prices
  * only; no promotional amount is written down in this file any more (see the
  * المشتركون الأوائل block below).
@@ -76,8 +76,8 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
  * ⚠ THE PROMO CHANGES THE PRICE, NOT THE BILLING MODEL. `promoBillingNoteFor()`
  * exists so pro/max can state the step-up honestly («لأول شهرين، ثم يعود إلى
  * السعر المعتاد»), and it still says NOTHING about renewal for the reasons in
- * the block above. `basic` is never in a tier: «ادفع مرة واحدة — بدون تجديد
- * تلقائي» is always true for it, and must never be copied onto pro/max.
+ * the block above. «ادفع مرة واحدة — بدون تجديد تلقائي» is always true for
+ * `basic`, even at its offer price, and must never be copied onto pro/max.
  */
 export interface PricingPlan {
   /** Matches plans.plan_id in the DB. */
@@ -105,10 +105,17 @@ export interface PricingPlan {
    * «بدون تجديد تلقائي» meets. While the promo is on screen the card's note is
    * built by `promoBillingNoteFor()` from the server's month count.
    *
-   * pro/max ONLY. `basic` is never in a price tier, so its permanent note stays
-   * exactly as it is even if a promo were ever reported for it.
+   * pro/max ONLY. `basic` does not step up: its offer is one payment with
+   * nothing after it, which is `promoOncePerUser` below.
    */
   promoStepsUp?: boolean;
+  /**
+   * True ⇒ a promotional price on this plan is a single use: one purchase per
+   * user, non-refundable, and nothing recurs afterwards (migration 204). There
+   * is no schedule to show, so /pay drops it and the card says this instead.
+   * Mutually exclusive with `promoStepsUp`.
+   */
+  promoOncePerUser?: boolean;
   features: string[];
   /** The visually emphasised "most popular" card. */
   highlighted?: boolean;
@@ -119,11 +126,13 @@ export const PRICING_PLANS: PricingPlan[] = [
     id: "basic",
     nameAr: "الأساسية",
     tagline: "للبدء والاستخدام الخفيف",
-    // Flat 39.90, no promo (migration 191, 2026-10-27; was 29.90 since 174):
-    // nothing is struck through and no «المقاعد محدودة» on this card.
+    // List price (migration 191, 2026-10-27; was 29.90 since 174). The offer
+    // price comes from `/payments/early-adopter` while it sells (migration 204),
+    // so this card strikes the list price through only while the server says so.
     price: "39.90",
     period: "أسبوعياً",
     billingNote: "ادفع مرة واحدة — بدون تجديد تلقائي",
+    promoOncePerUser: true,
     features: [
       "75 نقطة استخدام طوال الاشتراك (7 أيام)",
       "15 نقطة لكل جلسة (5 ساعات)",
@@ -231,8 +240,9 @@ export function cheapestPricingPlan(
  * The cards still render in the same order today: the live tiers preserve the
  * catalog's rank — basic 39.90 < pro 59.90 (tier 2) < pro 94.90, and max
  * 149.90 / 189.90 < 289.90, every max price above every pro price. The personal
- * Pro tier-1 price (19.90) sits below basic, but it is never on the public
- * payload and never enters this ranking (`components/promo/` renders it).
+ * Pro tier-1 price (19.90) sits below basic's list price, but it is never on
+ * the public payload and never enters this ranking (`components/promo/`
+ * renders it).
  */
 export function pricingPlansAbove(
   planId: string | null | undefined,
@@ -368,6 +378,10 @@ export function promoMonthsPhrase(months: number): string {
   return `لأول ${months} شهراً`;
 }
 
+/** What a `promoOncePerUser` plan's card adds while its offer price shows. */
+export const ONCE_PER_USER_NOTE =
+  "سعر العرض يُستخدم مرة واحدة فقط وغير قابل للاسترداد";
+
 /**
  * The card note while a promo price is on screen: the term (the invariant
  * `billingNote` owes the reader), then how long the promo lasts and that the
@@ -377,13 +391,15 @@ export function promoMonthsPhrase(months: number): string {
  * directly above.
  *
  * `months` null (a backend from before batches, which sends no `months`) words
- * the duration without a number rather than guessing one. A plan that is not
- * `promoStepsUp` (basic) keeps its own note unchanged.
+ * the duration without a number rather than guessing one. A `promoOncePerUser`
+ * plan (basic) has no duration: its note gains the two facts a buyer must know
+ * first, single use and no refund.
  */
 export function promoBillingNoteFor(
   plan: PricingPlan,
   months: number | null,
 ): string {
+  if (plan.promoOncePerUser) return `${plan.billingNote} · ${ONCE_PER_USER_NOTE}`;
   if (!plan.promoStepsUp) return plan.billingNote;
   const span = months === null ? "لمدة محددة" : promoMonthsPhrase(months);
   return `${plan.billingNote} · سعر العرض ${span}، ثم يعود إلى السعر المعتاد`;

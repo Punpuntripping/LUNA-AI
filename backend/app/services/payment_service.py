@@ -302,6 +302,7 @@ REFUND_WINDOW_CLOSED_AR = "انتهت مهلة الاسترداد (24 ساعة).
 REFUND_NOT_PAID_AR = "لا يمكن استرداد عملية غير مكتملة"
 REFUND_ALREADY_AR = "تم استرداد هذه العملية من قبل"
 REFUND_NOT_REFUNDABLE_AR = "اشتراك الشهر الأول بسعر العرض غير قابل للاسترداد"
+REFUND_BASIC_OFFER_NOT_REFUNDABLE_AR = "الشراء بسعر العرض غير قابل للاسترداد"
 REFUND_FAILED_AR = "تعذّر تنفيذ الاسترداد، تواصل معنا على support@rayhanai.com"
 REFUND_SUPERSEDED_AR = (
     "لا يمكن استرداد هذه العملية لأن قيمتها استُخدمت كخصم في ترقية أحدث. "
@@ -969,7 +970,8 @@ def _fetch_public_quote(supabase: SupabaseClient) -> tuple[dict[str, str], dict[
     """``promo_public_quote()`` → ``({plan: "59.90"}, {plan: 2})``.
 
     Flag-aware in SQL: with ``ladder_v2`` it is the GENERAL quote per plan (Pro
-    Tier 2 — Tier 1 is personal — and Max's open tier); without it, today's
+    Tier 2 — Tier 1 is personal — Max's open tier, and Basic's one-time offer
+    while it sells); without it, today's
     ``plans.promo_price_sar`` with ``months = promo_days / 30``.
 
     WHITELISTED, never passed through: only ``plan_id`` / ``price_sar`` /
@@ -1738,6 +1740,22 @@ def _find_superseding_payment(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _is_basic_offer_sale(row: dict) -> bool:
+    """A Basic purchase at the offer price (204). Only a batch sale stamps
+    ``promo_batch_id``, so a list-priced Basic purchase is not one and keeps the
+    24h refund."""
+    return (
+        row.get("plan_id") == subscription_service.BASIC_OFFER_PLAN_ID
+        and bool(row.get("promo_batch_id"))
+    )
+
+
+def _is_non_refundable(row: dict) -> bool:
+    """The self-serve refund is off for the profession offer's first month and
+    for a Basic offer sale. Both are decided from what is stamped on the row."""
+    return bool(row.get("intro_offer_group")) or _is_basic_offer_sale(row)
+
+
 def transaction_summary(
     row: dict, plan_name_ar: Optional[str] = None, *, superseded: bool = False
 ) -> dict:
@@ -1757,7 +1775,8 @@ def transaction_summary(
     # عرض الشهر الأول: the first month is non-refundable (owner, 2026-10-21) —
     # and at 1.99 the refund fee alone exceeds the charge. Renewals of the same
     # subscription never carry the group, so they keep the normal 24h refund.
-    non_refundable = bool(row.get("intro_offer_group"))
+    # Basic's offer price is non-refundable too (owner, 2026-11-01).
+    non_refundable = _is_non_refundable(row)
     refundable = bool(
         row.get("status") == "paid"
         and deadline
@@ -1789,7 +1808,7 @@ def transaction_summary(
         # window: a later upgrade already spent this payment's value, so the
         # stack has to unwind from the top first (M-1).
         "superseded": superseded,
-        # The third reason `refundable` is false: an intro-offer first month.
+        # The third reason `refundable` is false: an offer-priced purchase.
         # Its own field so the receipts list can say WHY, not just hide a button.
         "non_refundable": non_refundable,
         "refund_deadline": deadline.isoformat() if deadline else None,
@@ -2298,7 +2317,7 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         # Basic-ended reason (same keys as GET /intro-offer).
         "intro_offer": intro,
         # The ROW's truth: the stamped group is what refund_payment refuses on.
-        "non_refundable": bool(payload.get("intro_offer_group")),
+        "non_refundable": _is_non_refundable(payload),
         # v2 (192): the batch price this checkout charges before any credit,
         # for how many months, and the list price after — or null when no
         # batch applies (always null with ladder_v2 off). Never a batch id, a
@@ -2661,24 +2680,25 @@ def _alert_if_batch_near_full(supabase: SupabaseClient, batch_id: Optional[str])
     try:
         res = (
             supabase.table("promo_batches")
-            .select("seat_limit")
+            .select("seat_limit, plan_id")
             .eq("batch_id", str(batch_id))
             .limit(1)
             .execute()
         )
         rows = getattr(res, "data", None) or []
-        seat_limit = int((rows[0] or {}).get("seat_limit") or 0) if rows else 0
+        batch = (rows[0] or {}) if rows else {}
+        seat_limit = int(batch.get("seat_limit") or 0)
         if seat_limit <= 0:
             return
-        # count='exact' + limit(1): the cheap COUNT(*) PostgREST offers.
-        counted = (
-            supabase.table("early_adopter_seats")
-            .select("seat_id", count="exact")
-            .eq("batch_id", str(batch_id))
-            .is_("released_at", "null")
-            .limit(1)
-            .execute()
-        )
+        # count='exact' + limit(1): the cheap COUNT(*) PostgREST offers. Basic's
+        # seats are in their own ledger and are never released (204).
+        if batch.get("plan_id") == subscription_service.BASIC_OFFER_PLAN_ID:
+            seats = supabase.table("basic_offer_seats").select("seat_id", count="exact")
+            seats = seats.eq("batch_id", str(batch_id))
+        else:
+            seats = supabase.table("early_adopter_seats").select("seat_id", count="exact")
+            seats = seats.eq("batch_id", str(batch_id)).is_("released_at", "null")
+        counted = seats.limit(1).execute()
         live = getattr(counted, "count", None)
         if live is None:
             return
@@ -2796,6 +2816,15 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
             payment_id,
             plan_id=row.get("plan_id"),
         )
+        # Basic's offer has its own ledger (204); the wrapper above is a no-op on
+        # basic. A list-priced Basic purchase has no batch and claims nothing.
+        if _is_basic_offer_sale(state):
+            claim = await run_db(
+                subscription_service.claim_basic_offer_seat,
+                supabase,
+                row["user_id"],
+                payment_id,
+            )
         # v2 (192): a NEW seat in a batch may have taken it to 90%. Keyed on the
         # row's own promo_batch_id (stamped only while ladder_v2 was on), so a
         # flag-off purchase never reaches it.
@@ -3197,11 +3226,15 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
     # reason rather than "the window closed". Self-serve only: a refund an
     # operator issues from Moyasar's dashboard arrives as a webhook and is
     # processed by _mark_refunded like any other.
-    if row.get("intro_offer_group"):
+    if _is_non_refundable(row):
         raise LunaHTTPException(
             status_code=409,
             code=ErrorCode.PAYMENT_NOT_REFUNDABLE,
-            detail=REFUND_NOT_REFUNDABLE_AR,
+            detail=(
+                REFUND_BASIC_OFFER_NOT_REFUNDABLE_AR
+                if _is_basic_offer_sale(row)
+                else REFUND_NOT_REFUNDABLE_AR
+            ),
         )
 
     paid_at = _parse_ts(row.get("paid_at"))

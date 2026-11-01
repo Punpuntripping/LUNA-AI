@@ -69,6 +69,7 @@ from datetime import timedelta
 
 import pytest
 
+from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.services import payment_method_service as pm
 from backend.app.services import payment_service as ps
 from backend.app.services import renewal_service as rs
@@ -853,8 +854,9 @@ def test_the_public_answer_is_cached(keys):
 # ═══════════════════════════════════════════════════════════════════════════
 # 10. basic — 39.90 flat, never in a tier, an enrolment for nobody
 #
-# Migration 191 / pricing_campaigns_v2.md §8: basic's promo is gone and its list
-# price is 39.90. Nothing about any campaign moves it any more.
+# Migration 191 / pricing_campaigns_v2.md §8: basic's list price is 39.90 and the
+# Pro/Max campaign never moves it. Its own one-time offer (204) is at the end of
+# this file, and ships switched off.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -1206,3 +1208,210 @@ def test_v2_a_held_batch_seat_survives_a_rollback(renewals_on):
     })
     run(rs.run_due_renewals(db))
     assert renewals_on == [1990]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Basic's one-time offer (migration 204)
+#
+# 9.80 for 500 seats, open to everyone including past Basic buyers, once per
+# user, no refund. Its ledger is separate so it can never touch a Pro/Max seat.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def basic_offer(subscription=None) -> FakeSupabase:
+    db = ladder(subscription)
+    db._batch("basic_t1_a")["enabled"] = True
+    return db
+
+
+def test_basic_offer_ships_switched_off(keys):
+    """The migration alone changes nothing: same price, not on the public page."""
+    db = ladder()
+
+    assert checkout(db, "basic")["amount_sar"] == "39.90"
+    assert "basic" not in run(ps.early_adopter_campaign_state(db))["promo"]
+
+
+def test_basic_offer_is_on_the_public_payload_while_it_sells(keys):
+    payload = run(ps.early_adopter_campaign_state(basic_offer()))
+
+    assert payload["promo"]["basic"] == "9.80"
+    assert payload["months"]["basic"] == 1
+
+
+def test_basic_offer_prices_and_stamps_the_checkout(keys):
+    db = basic_offer()
+    quote = checkout(db, "basic")
+
+    assert quote["amount_sar"] == "9.80"
+    assert quote["amount_halalas"] == 980
+    assert quote["non_refundable"] is True
+    assert quote["promo"] == {"price_sar": "9.80", "months": 1, "list_sar": "39.90"}
+    assert quote["requires_recurring_consent"] is False
+    row = db.tables["payment_transactions"][-1]
+    assert row["promo_batch_id"] == "basic_t1_a"
+    assert row["intro_offer_terms"]["offer_sar"] == "9.80"
+    assert not row.get("intro_offer_group")
+    assert ps.q2(price_now(db, "basic")) == ps.q2("9.80")
+    assert ps.q2(price_now(db, "basic", context=ps.PRICE_CONTEXT_CURRENT)) == ps.q2("39.90")
+
+
+def test_basic_offer_reaches_someone_who_already_bought_basic(keys):
+    """Owner: «applied for all even who has already paid»."""
+    db = basic_offer()
+    paid_row(db, plan_id="basic", amount="39.90")
+
+    assert checkout(db, "basic")["amount_sar"] == "9.80"
+
+
+def test_basic_offer_is_once_per_user(keys, monkeypatch):
+    db = basic_offer()
+    first, result = buy(db, monkeypatch, "basic")
+
+    assert first["amount_sar"] == "9.80" and result["granted"] is True
+    assert len(db.basic_offer_seats) == 1
+
+    second = checkout(db, "basic")
+    assert second["amount_sar"] == "39.90"
+    assert second["promo"] is None
+    assert second["non_refundable"] is False
+
+
+def test_basic_offer_settling_twice_takes_one_seat(keys, monkeypatch):
+    """/verify and the webhook both run the settlement."""
+    db = basic_offer()
+    quote, _ = buy(db, monkeypatch, "basic")
+    pay(db, monkeypatch, quote["payment_id"], quote["amount_halalas"])
+
+    assert len(db.basic_offer_seats) == 1
+
+
+def test_a_full_price_basic_purchase_does_not_use_the_offer(keys, monkeypatch):
+    """Bought at 39.90 while the offer was off: the offer is still theirs."""
+    db = ladder()
+    buy(db, monkeypatch, "basic")
+    assert db.basic_offer_seats == []
+
+    db._batch("basic_t1_a")["enabled"] = True
+    assert checkout(db, "basic")["amount_sar"] == "9.80"
+
+
+def test_basic_offer_leaves_a_pro_seat_alone(keys, monkeypatch):
+    """The reason for the separate ledger: claiming in early_adopter_seats would
+    release a lapsed subscriber's seat as 'upgraded' and lose their price."""
+    db = basic_offer(sub("pro", source="payment", days_left=-1))
+    held = seat(db)
+    held.update(batch_id="pro_t2_a", plan_id="pro", price_tier=2, price_sar="59.90")
+
+    quote, result = buy(db, monkeypatch, "basic")
+
+    assert quote["amount_sar"] == "9.80" and result["granted"] is True
+    assert live_seats(db, USER) == [held]
+    assert db.basic_offer_seats[0]["user_id"] == USER
+
+
+def test_basic_offer_does_not_use_a_pro_tier(keys, monkeypatch):
+    db = basic_offer()
+    db.tables["users"][0]["profession_first_group"] = "legal"
+    buy(db, monkeypatch, "basic")
+    db.tables["user_subscriptions"][0]["expires_at"] = _iso(_now() - timedelta(days=1))
+
+    assert checkout(db, "pro")["amount_sar"] == "19.90"
+
+
+def test_basic_offer_sale_cannot_be_refunded(keys, monkeypatch):
+    db = basic_offer()
+    quote, _ = buy(db, monkeypatch, "basic")
+    row = db._payment(quote["payment_id"])
+
+    async def _never(ref, amount):
+        raise AssertionError("the provider must not be called")
+
+    monkeypatch.setattr(ps, "refund_at_provider", _never)
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ps.refund_payment(db, USER, quote["payment_id"]))
+
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.PAYMENT_NOT_REFUNDABLE
+    assert exc.value.detail == ps.REFUND_BASIC_OFFER_NOT_REFUNDABLE_AR
+    assert row["status"] == "paid"
+
+    summary = ps.transaction_summary(row)
+    assert summary["refundable"] is False and summary["non_refundable"] is True
+
+
+def test_a_list_priced_basic_purchase_keeps_its_refund(keys):
+    db = basic_offer()
+    row = paid_row(db, plan_id="basic", amount="39.90")
+
+    summary = ps.transaction_summary(row)
+    assert summary["refundable"] is True and summary["non_refundable"] is False
+
+
+def test_a_dashboard_refund_leaves_the_offer_used(keys, monkeypatch):
+    """Only an operator can refund this sale. It stays once per user."""
+    db = basic_offer()
+    quote, _ = buy(db, monkeypatch, "basic")
+    row = db._payment(quote["payment_id"])
+
+    run(ps._mark_refunded(db, row, {"id": MOYASAR_ID, "status": "refunded"}))
+
+    assert len(db.basic_offer_seats) == 1
+    assert checkout(db, "basic")["amount_sar"] == "39.90"
+
+
+def test_basic_offer_closes_when_the_seats_are_gone(keys):
+    db = basic_offer()
+    db._batch("basic_t1_a")["seat_limit"] = 1
+    db.basic_offer_seats.append({
+        "seat_id": str(uuid.uuid4()), "user_id": OTHER, "payment_id": str(uuid.uuid4()),
+        "batch_id": "basic_t1_a", "price_sar": "9.80", "over_capacity": False,
+        "claimed_at": _iso(_now()),
+    })
+
+    assert checkout(db, "basic")["amount_sar"] == "39.90"
+    payload = run(ps.early_adopter_campaign_state(db))
+    assert "basic" not in payload["promo"]
+    assert payload["promo"]["pro"] == "59.90"
+
+
+def test_a_quote_open_when_the_last_seat_sold_is_honoured_and_stamped(keys, monkeypatch):
+    db = basic_offer()
+    quote = checkout(db, "basic")
+    db._batch("basic_t1_a")["seat_limit"] = 1
+    db.basic_offer_seats.append({
+        "seat_id": str(uuid.uuid4()), "user_id": OTHER, "payment_id": str(uuid.uuid4()),
+        "batch_id": "basic_t1_a", "price_sar": "9.80", "over_capacity": False,
+        "claimed_at": _iso(_now()),
+    })
+
+    pay(db, monkeypatch, quote["payment_id"], quote["amount_halalas"])
+
+    mine = next(s for s in db.basic_offer_seats if s["user_id"] == USER)
+    assert mine["over_capacity"] is True
+
+
+def test_a_failed_basic_claim_never_fails_the_purchase(keys, monkeypatch):
+    db = basic_offer()
+    quote = checkout(db, "basic")
+    original_rpc = db.rpc
+
+    def exploding(name, params):
+        if name == "claim_basic_offer_seat":
+            raise RuntimeError("postgrest exploded")
+        return original_rpc(name, params)
+
+    monkeypatch.setattr(db, "rpc", exploding)
+    result = pay(db, monkeypatch, quote["payment_id"], quote["amount_halalas"])
+
+    assert result["granted"] is True
+    assert db.tables["user_subscriptions"][0]["plan_id"] == "basic"
+
+
+def test_the_near_full_alert_counts_basics_own_ledger(keys, monkeypatch):
+    db = basic_offer()
+    db._batch("basic_t1_a")["seat_limit"] = 1
+    monkeypatch.setattr(ps, "_BATCH_NEAR_FULL_ALERTED", set())
+    buy(db, monkeypatch, "basic")
+
+    assert "basic_t1_a" in ps._BATCH_NEAR_FULL_ALERTED

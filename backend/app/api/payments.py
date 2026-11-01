@@ -124,7 +124,7 @@ async def checkout(
                                            #   "then_sar", "then_months", "list_sar", "offer_sar",
                                            #   "offer_months", "reason", "basic_ended_at"}) when
                                            #   this checkout is the offer
-          "non_refundable": false,         # true exactly when intro_offer is set
+          "non_refundable": false,         # true when intro_offer is set, or on a Basic offer sale
           "promo": null                    # ladder_v2 batch sale: {"price_sar": "19.90",
                                            #   "months": 2, "list_sar": "94.90"} — the price
                                            #   before any upgrade credit; never a batch id,
@@ -295,7 +295,7 @@ async def history(
           "created_at", "paid_at", "fulfilled_at", "updated_at",
           "refundable": true,               # status=paid AND within 24h AND not superseded
           "superseded": false,              # a later upgrade already spent this one's value
-          "non_refundable": false,          # عرض الشهر الأول first month — never refundable
+          "non_refundable": false,          # عرض الشهر الأول first month or a Basic offer sale
           "refund_deadline": "2026-08-04T…" # paid_at + 24h, null before payment
         }
 

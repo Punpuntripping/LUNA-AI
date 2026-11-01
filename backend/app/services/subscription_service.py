@@ -113,6 +113,10 @@ NON_CUSTOMER_PLAN_IDS: frozenset[str] = frozenset({"free", "dev"})
 # in section 7 self-guards on this set, so no call site has to remember.
 EARLY_ADOPTER_PLAN_IDS = frozenset({"pro", "max"})
 
+# Basic's one-time offer (migration 204). Its seats live in `basic_offer_seats`,
+# never in `early_adopter_seats`, so a Basic purchase cannot touch a Pro/Max seat.
+BASIC_OFFER_PLAN_ID = "basic"
+
 # `early_adopter_seats.release_reason` CHECK (138). Named so the two callers
 # cannot drift into a string the constraint rejects.
 RELEASE_REASON_REFUND = "refund"
@@ -1090,6 +1094,55 @@ def release_early_adopter_seat(
             user_id, plan_id, reason,
         )
     return released
+
+
+def claim_basic_offer_seat(
+    supabase: SupabaseClient, user_id: str, payment_id: str
+) -> Optional[dict]:
+    """``claim_basic_offer_seat(user, payment)`` — marks the offer used.
+
+    Called after ``grant_plan`` for a Basic sale stamped with a batch. Idempotent
+    on the payment (the webhook and ``/verify`` both reach it), and it never
+    raises: the plan is granted and the money is in. A failed claim is logged at
+    ERROR because of what it means: this user could buy at the offer price again.
+
+    Returns the RPC row (``seat_id``/``over_capacity``/``action``) or None.
+    """
+    if not user_id:
+        return None
+    try:
+        row = _rpc_row(
+            supabase.rpc(
+                "claim_basic_offer_seat",
+                {"p_user_id": user_id, "p_payment_id": payment_id},
+            ).execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — includes "function does not exist"
+        logger.error(
+            "claim_basic_offer_seat FAILED for user=%s payment=%s. The plan IS "
+            "granted, but the offer is not marked used. Reconcile by hand: %s",
+            user_id, payment_id, exc,
+        )
+        return None
+
+    action = str(row.get("action") or "unknown")
+    if action not in (CLAIM_ACTION_CLAIMED, CLAIM_ACTION_ALREADY_CLAIMED):
+        logger.error(
+            "claim_basic_offer_seat returned action=%r for user=%s payment=%s — the "
+            "offer is not marked used for an offer-priced sale",
+            action, user_id, payment_id,
+        )
+        return row
+    if row.get("over_capacity"):
+        logger.warning(
+            "basic offer seat claimed OVER CAPACITY: user=%s payment=%s — an open "
+            "quote settled after the last seat sold",
+            user_id, payment_id,
+        )
+    logger.info(
+        "basic offer seat %s: user=%s payment=%s", action, user_id, payment_id
+    )
+    return row
 
 
 def restore_early_adopter_seat(
