@@ -23,6 +23,7 @@ import { JsonLd } from "@/components/seo/JsonLd";
 import { buildLegislation, buildPaywallFragment } from "@/lib/seo/schema";
 import {
   getRegulationDoc,
+  NOINDEX_UNLISTED,
   toDocStatus,
   toSnippet,
   findMetadataValue,
@@ -67,6 +68,7 @@ export async function generateMetadata({
     title,
     description,
     alternates: { canonical },
+    ...(doc.indexable === false ? { robots: NOINDEX_UNLISTED } : {}),
     openGraph: {
       title,
       description,

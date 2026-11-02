@@ -10,7 +10,9 @@ Sibling of ``scripts/build_seo_slugs.py`` (regulation / service / circular) and
 ``scripts/publish_articles.py`` (مادة). Same contracts as both:
 
   * MERGE-upsert on the composite PK ``(content_type, content_id)`` writing ONLY
-    ``slug`` + ``updated_at`` — any ``seo_tier`` / ``gate_override`` already on
+    ``slug`` + ``indexable=false`` + ``updated_at`` — a new ruling is never handed
+    to a crawler by publishing it, that is ``--indexable``'s job alone, and any
+    ``seo_tier`` / ``gate_override`` already on
     the row SURVIVES untouched (gating via ``scripts/set_gate.py`` and publishing
     here are independent knobs).
   * ``--dry-run`` is the DEFAULT. Nothing is written without ``--apply``.
@@ -1173,6 +1175,7 @@ def select_sample(
     limit: int,
     alloc: Optional[dict[str, Any]] = None,
     pool: Optional[set[str]] = None,
+    exclude: Optional[set[str]] = None,
 ) -> tuple[list[dict], dict]:
     """Pick the ``limit`` judgments to publish. Deterministic and re-runnable.
 
@@ -1190,11 +1193,15 @@ def select_sample(
     3,000 rows out of a 10,000-row selection afterwards would apply the diversity
     policy to a population that is not the one being chosen from, and the result
     would inherit the corpus's concentration rather than correct it.
+
+    ``exclude`` removes those corpus ids at the same stage, for the same reason.
     """
     alloc = dict(alloc or _FEED_ALLOCATION)
     candidates = _load_candidates(client)
     if pool is not None:
         candidates = [r for r in candidates if str(r.get("id")) in pool]
+    if exclude:
+        candidates = [r for r in candidates if str(r.get("id")) not in exclude]
 
     # Stage 1 — eligibility. The four field gates already ran server-side; what
     # remains is rejecting rows whose derived subject is the naming fallback.
@@ -1508,11 +1515,16 @@ def cmd_unpublish_all(client, apply: bool) -> None:
 
 
 def cmd_publish(
-    client, limit: int, apply: bool, base: str, alloc: Optional[dict[str, Any]] = None
+    client, limit: int, apply: bool, base: str, alloc: Optional[dict[str, Any]] = None,
+    *,
+    exclude_pdpl_risk: bool = False,
 ) -> None:
     """Select the rows, derive slugs, and (on ``--apply``) upsert the sidecar."""
     existing, taken = _load_existing(client)
-    rows, stats = select_sample(client, limit, alloc)
+    exclude = _load_pdpl_risk_ids(client) if exclude_pdpl_risk else None
+    if exclude is not None:
+        print(f"  excluding PDPL-flagged rulings: {len(exclude)}")
+    rows, stats = select_sample(client, limit, alloc, exclude=exclude)
 
     print(
         f"\n--- candidate funnel ---\n"
@@ -1555,6 +1567,7 @@ def cmd_publish(
                 "content_type": CONTENT_TYPE,
                 "content_id": cid,
                 "slug": final,
+                "indexable": False,
                 "updated_at": now_iso,
             }
         )
@@ -1827,6 +1840,13 @@ def main() -> None:
         help=f"rows --list details before summarising (default: {_LIST_PREVIEW}; 0 = all)",
     )
     ap.add_argument(
+        "--exclude-pdpl-risk",
+        action="store_true",
+        help="leave out every ruling flagged by library_judgment_pdpl_risk. The page "
+        "stays open to anyone with the link whatever its robots tag says, so a "
+        "bulk publish should not include them.",
+    )
+    ap.add_argument(
         "--unpublish-all",
         action="store_true",
         help="clear ALL judgment slugs from the sidecar (requires --apply)",
@@ -1886,7 +1906,10 @@ def main() -> None:
     if args.indexable:
         cmd_index(client, args.limit, args.apply, base, alloc)
     else:
-        cmd_publish(client, args.limit, args.apply, base, alloc)
+        cmd_publish(
+            client, args.limit, args.apply, base, alloc,
+            exclude_pdpl_risk=args.exclude_pdpl_risk,
+        )
     if not args.apply:
         print("(no rows written — re-run with --apply to persist)\n")
 

@@ -11,8 +11,10 @@ Publishing = setting a slug on the مادة's ``seo_item_meta`` SIDECAR row
 to exist (else 404), the doc-page ``article_index`` lists only slugged مواد, and
 the articles sitemap emits only slugged مواد whose parent regulation is also
 published — so this one flip is authoritative the instant it lands. The upsert is
-a MERGE keyed on ``(content_type, content_id)`` — only ``slug``/``updated_at`` are
-touched; any ``seo_tier``/``gate_override`` override on the row SURVIVES (gating
+a MERGE keyed on ``(content_type, content_id)`` — only ``slug``/``indexable``/
+``updated_at`` are touched; a مادة picked by hand here goes to Google, the column
+default does not apply; any ``seo_tier``/``gate_override`` override on the row
+SURVIVES (gating
 via ``scripts/set_gate.py`` and publishing here are independent).
 
 Run from the repo root.
@@ -278,12 +280,15 @@ def main() -> None:
             ).eq("content_type", "article").eq("content_id", content_id).execute()
             print(f"  المادة {no:<5} unpublished (slug cleared)")
         else:
-            # Merge-upsert: set only slug + updated_at; preserve any override cols.
+            # Merge-upsert: set only slug + indexable + updated_at; preserve any
+            # override cols. Indexable because this tool is the hand-picked Google
+            # set, and migration 210 made the column default false.
             client.table("seo_item_meta").upsert(
                 {
                     "content_type": "article",
                     "content_id": content_id,
                     "slug": art_slug,
+                    "indexable": True,
                     "updated_at": now,
                 },
                 on_conflict="content_type,content_id",

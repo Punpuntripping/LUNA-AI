@@ -4230,3 +4230,73 @@ def test_a_mada_page_with_no_figures_never_reads_the_images_table() -> None:
     assert art is not None
     assert art["images"] == {}
     assert "chunk_images" not in counting.tables_queried
+
+
+# ---------------------------------------------------------------------------
+# Unlisted pages: `seo_item_meta.indexable` reaches the robots tag and the article
+# sitemap on every wing, not only judgments (migration 210).
+# ---------------------------------------------------------------------------
+
+
+def test_regulation_doc_carries_the_sidecar_flag() -> None:
+    fake = _reg_doc_fake(_article_rows([1, 2]), n_chunks=0)
+    fake.tables["seo_item_meta"][0]["indexable"] = False
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+    assert doc["indexable"] is False
+
+
+def test_a_listed_regulation_stays_indexable() -> None:
+    fake = _reg_doc_fake(_article_rows([1, 2]), n_chunks=0)
+    fake.tables["seo_item_meta"][0]["indexable"] = True
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+    assert doc["indexable"] is True
+
+
+def test_article_doc_carries_its_own_sidecar_flag() -> None:
+    fake = _article_surface_fake([_extracted_article(1, "نص المادة.")], [])
+    fake.tables["seo_item_meta"][1]["indexable"] = False
+    art = ls.get_regulation_article(fake, "nizam-test", "m-1")
+    assert art is not None
+    assert art["indexable"] is False
+
+
+def test_circular_doc_carries_the_sidecar_flag() -> None:
+    circ_id = "99999999-2222-3333-4444-555555555555"
+    fake = FakeSupabase(
+        seo_item_meta=[{"content_type": "circular", "content_id": circ_id,
+                        "slug": "taamim", "seo_tier": None, "gate_override": None,
+                        "indexable": False}],
+        circulars=[{"id": circ_id, "circ_ref": "c-1", "title": "تعميم",
+                    "content": "نص التعميم.", "source": "entity", "entity_id": None}],
+    )
+    doc = ls.get_circular_doc(fake, "taamim")
+    assert doc is not None
+    assert doc["indexable"] is False
+
+
+def test_article_sitemap_lists_only_indexable_rows() -> None:
+    """The article feed had no `indexable` filter of its own, so a bulk publish
+    would have sent every مادة to Google however the flag was set."""
+    fake = _article_surface_fake(
+        [_extracted_article(1, "نص."), _extracted_article(2, "نص.")], []
+    )
+    meta = fake.tables["seo_item_meta"]
+    meta[1].update({"indexable": True, "updated_at": "2026-11-02T00:00:00+00:00"})
+    meta[2].update({"indexable": False, "updated_at": "2026-11-02T00:00:00+00:00"})
+    rows, _total = ls.sitemap_article_urls(fake, "https://rayhanai.com")
+    locs = [row["loc"] for row in rows]
+    assert len(locs) == 1
+    assert locs[0].endswith("/m-1")
+
+
+def test_doc_models_declare_indexable() -> None:
+    """`response_model` strips undeclared keys, so an undeclared flag would vanish
+    on the way out and every page would read as listed."""
+    from backend.app.api import public_library as pl
+
+    for model in (pl.RegulationDocResponse, pl.RegulationArticleResponse,
+                  pl.CircularDocResponse):
+        assert "indexable" in model.model_fields
+

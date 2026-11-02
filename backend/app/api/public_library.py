@@ -1606,6 +1606,9 @@ class RegulationDocResponse(BaseModel):
     already show anonymously — no body content, no change to the gate."""
 
     slug: str
+    # May a crawler have this page: `seo_item_meta.indexable`. Drives the page's
+    # robots tag, and it is the same flag the sitemap reads (migration 210).
+    indexable: bool = True
     title: str
     status: str
     status_raw: Optional[str] = None
@@ -1674,6 +1677,9 @@ class RegulationArticleResponse(BaseModel):
     either may be null at an end."""
 
     slug: str
+    # May a crawler have this page: `seo_item_meta.indexable`. Drives the page's
+    # robots tag, and it is the same flag the sitemap reads (migration 210).
+    indexable: bool = True
     article_no: int
     article_label: str
     regulation: ArticleRegulationRef
@@ -1866,6 +1872,9 @@ class CircularDocResponse(BaseModel):
     corpus. The field is absent, not empty."""
 
     slug: str
+    # May a crawler have this page: `seo_item_meta.indexable`. Drives the page's
+    # robots tag, and it is the same flag the sitemap reads (migration 210).
+    indexable: bool = True
     title: str
     entity_name: Optional[str] = None
     source_label: Optional[str] = None

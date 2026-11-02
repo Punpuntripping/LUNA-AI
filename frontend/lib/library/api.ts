@@ -419,8 +419,18 @@ export interface ArticleIndexEntry {
   slug: string;
 }
 
+/**
+ * Robots value for a published page kept out of Google. Same value judgments use.
+ * The sitemap reads the same flag, so leaving a page out of the sitemap and tagging
+ * it `noindex` can never disagree. The tag is what keeps it out: law pages link to
+ * each other, so Google finds these without a sitemap.
+ */
+export const NOINDEX_UNLISTED = { index: false, follow: false } as const;
+
 export interface RegulationDoc {
   slug: string;
+  /** May a crawler have this page: `seo_item_meta.indexable`. Absent = yes. */
+  indexable?: boolean;
   title: string;
   status: ApiDocStatus;
   status_raw: string;
@@ -492,6 +502,8 @@ export interface ArticleSharh {
  */
 export interface RegulationArticle {
   slug: string;
+  /** May a crawler have this page: `seo_item_meta.indexable`. Absent = yes. */
+  indexable?: boolean;
   article_no: number;
   article_label: string;
   regulation: ArticleRegulationRef;
@@ -692,6 +704,8 @@ export interface CircularsFilters {
  */
 export interface CircularDoc {
   slug: string;
+  /** May a crawler have this page: `seo_item_meta.indexable`. Absent = yes. */
+  indexable?: boolean;
   title: string;
   entity_name: string | null;
   source_label: string | null;

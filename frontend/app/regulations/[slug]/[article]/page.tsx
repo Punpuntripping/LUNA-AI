@@ -21,7 +21,12 @@ import {
 import { FullContentGate } from "@/components/library/FullContentGate";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
-import { getRegulationArticle, toDocStatus, toSnippet } from "@/lib/library/api";
+import {
+  getRegulationArticle,
+  NOINDEX_UNLISTED,
+  toDocStatus,
+  toSnippet,
+} from "@/lib/library/api";
 import { getCalculatorsForArticle } from "@/lib/calculators/registry";
 import type { BreadcrumbItem } from "@/types/library";
 import { ogImageUrl } from "@/lib/seo/og";
@@ -64,6 +69,7 @@ export async function generateMetadata({
     title,
     description,
     alternates: { canonical },
+    ...(doc.indexable === false ? { robots: NOINDEX_UNLISTED } : {}),
     openGraph: {
       title,
       description,

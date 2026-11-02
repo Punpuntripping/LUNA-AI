@@ -610,7 +610,8 @@ def get_item_meta(
     Keyed on the composite PK ``(content_type, content_id)`` (migration 095).
     ``content_id`` is TEXT in the schema; callers pass whatever key shape the
     corpus uses (uuid, reg_ref, derived article key). Returns the row dict
-    (``slug``, ``seo_tier``, ``gate_override``, ``updated_at``) or ``None``.
+    (``slug``, ``seo_tier``, ``gate_override``, ``indexable``, ``updated_at``) or
+    ``None``.
 
     Read-only, no side effects. A query error is swallowed to ``None`` so a
     sidecar blip degrades to "no override" (→ section default) rather than a 500.
@@ -620,7 +621,10 @@ def get_item_meta(
     try:
         result = (
             supabase.table("seo_item_meta")
-            .select("content_type, content_id, slug, seo_tier, gate_override, updated_at")
+            .select(
+                "content_type, content_id, slug, seo_tier, gate_override, "
+                "indexable, updated_at"
+            )
             .eq("content_type", content_type)
             .eq("content_id", str(content_id))
             .limit(1)
@@ -4130,7 +4134,7 @@ def get_regulation_doc(
     try:
         meta = (
             supabase.table("seo_item_meta")
-            .select("content_id")
+            .select("content_id, indexable")
             .eq("content_type", "regulation")
             .eq("slug", slug)
             .limit(1)
@@ -4142,6 +4146,7 @@ def get_regulation_doc(
         content_id = meta_rows[0].get("content_id")
         if not content_id:
             return None
+        indexable = bool(meta_rows[0].get("indexable", True))
 
         reg_res = (
             supabase.table("regulations_v2")
@@ -4439,6 +4444,7 @@ def get_regulation_doc(
         "metadata": _reg_metadata(reg),
         "summary_md": reg.get("llm_summary") or reg.get("summary"),
         "gate": gate,
+        "indexable": indexable,
         "toc": toc,
         # article_index links each مادة page from the doc TOC (empty until the
         # seo_articles index is built for this regulation). Additive — existing
@@ -5330,6 +5336,7 @@ def get_regulation_article(
             "status": map_reg_status(reg.get("status_class")),
         },
         "gate": gate,
+        "indexable": bool(pub_meta.get("indexable", True)),
         "is_fallback_body": is_fallback_body,
         "context_title": chunk.get("title"),
         "text": cut["text"],
@@ -5382,6 +5389,7 @@ def sitemap_article_urls(
             .select("content_id, slug, updated_at", count="exact")
             .eq("content_type", "article")
             .not_.is_("slug", "null")
+            .eq("indexable", True)
             .order("updated_at", desc=True)
             .order("content_id", desc=False)
             .range(offset, offset + page_size - 1)
@@ -5795,7 +5803,7 @@ def get_circular_doc(
     try:
         meta = (
             supabase.table("seo_item_meta")
-            .select("content_id")
+            .select("content_id, indexable")
             .eq("content_type", "circular")
             .eq("slug", slug)
             .limit(1)
@@ -5807,6 +5815,7 @@ def get_circular_doc(
         content_id = meta_rows[0].get("content_id")
         if not content_id:
             return None
+        indexable = bool(meta_rows[0].get("indexable", True))
 
         circ_res = (
             supabase.table("circulars")
@@ -5876,6 +5885,7 @@ def get_circular_doc(
         "official_sources": official_sources,
         "metadata": metadata,
         "gate_effective": gate_effective,
+        "indexable": indexable,
         "text": cut["visible_text"],
         "is_truncated": cut["is_truncated"],
         "hidden_placeholder_lines": cut["hidden_placeholder_lines"],

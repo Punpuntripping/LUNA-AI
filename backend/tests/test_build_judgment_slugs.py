@@ -365,6 +365,14 @@ def stubbed(monkeypatch):
     return corpus
 
 
+class TestExcludeIds:
+    def test_excluded_rulings_are_never_selected(self, stubbed):
+        baseline = [str(r["id"]) for r in bjs.select_sample(None, 300)[0]]
+        flagged = set(baseline[:40])
+        rows, _ = bjs.select_sample(None, 300, exclude=flagged)
+        assert not flagged & {str(r["id"]) for r in rows}
+
+
 class TestSelectSample:
     def test_every_feed_is_represented_and_the_limit_is_met(self, stubbed):
         rows, stats = bjs.select_sample(None, 400)

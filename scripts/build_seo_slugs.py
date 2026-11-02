@@ -8,7 +8,9 @@ this script NEVER rewrites an existing slug (URLs must not change once
 published); it only fills the blanks.
 
 Like ``scripts/set_gate.py`` it MERGE-upserts on the composite PK
-``(content_type, content_id)``: only ``slug`` (+ ``updated_at``) is written, so
+``(content_type, content_id)``: only ``slug``, ``indexable`` (+ ``updated_at``) are
+written. A new slug is OUT of Google and the sitemap unless ``--indexable`` is
+passed (migration 210), and
 any existing ``seo_tier`` / ``gate_override`` on the row survives untouched. The
 corpus surfaces are pipeline-owned VIEWS/tables — this script only ever writes to
 the sidecar, never to them.
@@ -229,7 +231,11 @@ def _load_corpus(client, table: str, cols: tuple[str, ...]) -> list[dict]:
 
 
 def process_type(
-    client, content_type: str, apply: bool, only_ids: set[str] | None = None
+    client,
+    content_type: str,
+    apply: bool,
+    only_ids: set[str] | None = None,
+    indexable: bool = False,
 ) -> dict:
     """Compute (and, when ``apply``, write) slugs for one content_type.
 
@@ -300,6 +306,7 @@ def process_type(
                 "content_type": content_type,
                 "content_id": cid,
                 "slug": final,
+                "indexable": indexable,
                 "updated_at": now_iso,
             }
         )
@@ -427,6 +434,12 @@ def main() -> None:
         help="actually write (DEFAULT is a dry-run that writes nothing)",
     )
     ap.add_argument(
+        "--indexable",
+        action="store_true",
+        help="let Google have the slugs written by this run (sitemap + no noindex). "
+        "Default: published but out of Google.",
+    )
+    ap.add_argument(
         "--ids-file",
         metavar="PATH",
         help="publish (or, with --unpublish, un-publish) ONLY these corpus ids "
@@ -489,7 +502,7 @@ def main() -> None:
 
     grand = {"total": 0, "already": 0, "new": 0, "collision": 0, "fallback": 0}
     for ct in types:
-        stats = process_type(client, ct, args.apply, only_ids)
+        stats = process_type(client, ct, args.apply, only_ids, args.indexable)
         for k in grand:
             grand[k] += stats[k]
 

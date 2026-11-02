@@ -15,7 +15,7 @@ import { CircularCard } from "@/components/library/hub/CircularCard";
 import { FullContentGate } from "@/components/library/FullContentGate";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
-import { getCircularDoc, toSnippet } from "@/lib/library/api";
+import { getCircularDoc, NOINDEX_UNLISTED, toSnippet } from "@/lib/library/api";
 import type {
   BreadcrumbItem,
   MetadataItem,
@@ -53,6 +53,7 @@ export async function generateMetadata({
     title,
     description,
     alternates: { canonical },
+    ...(doc.indexable === false ? { robots: NOINDEX_UNLISTED } : {}),
     openGraph: {
       title,
       description,
