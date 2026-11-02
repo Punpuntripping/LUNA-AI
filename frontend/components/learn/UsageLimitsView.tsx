@@ -442,7 +442,7 @@ export function UsageLimitsView() {
               نقاطك: <b className="text-foreground">فتح المصادر</b> من المكتبة
               (100 للأساسية · 200 للاحترافية · 1000 للقصوى)، و
               <b className="text-foreground"> استخراج النص</b> من الملفات
-              بالصفحات (15 · 40 · 500 شهرياً).
+              بالصفحات (50 · 150 · 1000 شهرياً).
             </p>
             {/* The «سقف شهري احتياطي (300 / 1000)» line that stood here was
                 removed with migration 129: those numbers were set to NULL so
