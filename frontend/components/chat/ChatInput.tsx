@@ -34,6 +34,12 @@ import { BlogChips } from "@/components/chat/BlogChip";
 import { LibraryItemChips } from "@/components/chat/LibraryItemChip";
 import { TemplateChip } from "@/components/chat/TemplateChip";
 import { ComposerPlusMenu } from "@/components/chat/ComposerPlusMenu";
+import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
+import {
+  FREE_OCR_PAGES,
+  FREE_TRIAL_OCR_PAGES,
+} from "@/components/promo/free-trial-content";
+import { useFreeTrialStore } from "@/stores/free-trial-store";
 // Chat-depth analytics (product_analytics §3b). Fire-and-forget, individually
 // guarded inside the tracker — a tracking failure must never block a send (T9).
 import {
@@ -469,6 +475,24 @@ export function ChatInput({
     [removePendingFile],
   );
 
+  // The free week, offered the moment the attached PDFs run past the free plan
+  // instead of after a refused send. Once per composer: dismissing it must not
+  // bring it back on every file, and a send still reaches the limit dialog.
+  // Skipped past what the week covers, so nobody spends it on a file that would
+  // still be refused.
+  const [pdfOfferPages, setPdfOfferPages] = useState<number | null>(null);
+  const pdfOfferShownRef = useRef(false);
+  const maybeOfferFreeWeek = useCallback(() => {
+    if (pdfOfferShownRef.current) return;
+    if (!useFreeTrialStore.getState().eligible) return;
+    const pages = useChatStore
+      .getState()
+      .pendingFiles.reduce((sum, f) => sum + (f.pageCount ?? 0), 0);
+    if (pages <= FREE_OCR_PAGES || pages > FREE_TRIAL_OCR_PAGES) return;
+    pdfOfferShownRef.current = true;
+    setPdfOfferPages(pages);
+  }, []);
+
   // Kick off resumable uploads for a list of already-validated files. Requires
   // an existing conversation. Shared by the file picker (when a conversation is
   // present) and the post-create consume effect (files carried over from a brand
@@ -504,6 +528,10 @@ export function ChatInput({
           {
             onInitialized: (itemId) => {
               updatePendingFile(pendingId, { itemId, uploadStatus: "uploading" });
+            },
+            onPageCount: (pages) => {
+              updatePendingFile(pendingId, { pageCount: pages });
+              maybeOfferFreeWeek();
             },
             onProgress: (s) => {
               if (s.status === "uploading" || s.status === "finalizing") {
@@ -541,7 +569,7 @@ export function ChatInput({
         uploadHandlesRef.current.set(pendingId, handle);
       }
     },
-    [conversationId, addPendingFile, updatePendingFile, qc],
+    [conversationId, addPendingFile, updatePendingFile, maybeOfferFreeWeek, qc],
   );
 
   // New-chat handoff: when files were picked before a conversation existed, the
@@ -1143,6 +1171,17 @@ export function ChatInput({
         )}
       </div>
       </div>
+      {pdfOfferPages !== null && (
+        <QuotaUpgradeDialog
+          open
+          onOpenChange={(next) => {
+            if (!next) setPdfOfferPages(null);
+          }}
+          currentPlanId="free"
+          documentPages={pdfOfferPages}
+          onFreeTrialClaimed={() => setPdfOfferPages(null)}
+        />
+      )}
     </div>
   );
 }

@@ -8,6 +8,14 @@
 /** The catalog card the week is presented as. */
 export const FREE_TRIAL_PLAN_ID = "basic" as const;
 
+/**
+ * `plans.ocr_pages_monthly` for `free` and for the granted plan. Used only to
+ * decide when to show the offer, so a drift here mistimes a popup and nothing
+ * more: the quota gate reads the database on every send.
+ */
+export const FREE_OCR_PAGES = 3;
+export const FREE_TRIAL_OCR_PAGES = 50;
+
 export const FREE_TRIAL_COPY = {
   title: "جرّب ريحان مجاناً لمدة أسبوع",
   badge: "أسبوع مجاني",
@@ -18,11 +26,15 @@ export const FREE_TRIAL_COPY = {
   pending: "جارٍ التفعيل…",
   /** The dialog's banner line: true because the blocked message sends itself. */
   unblock: "فعّل العرض وسنكمل طلبك فوراً.",
+  /** Nothing was refused yet, so nothing resumes: the file stays attached. */
+  unblockPdf: "فعّل العرض ويبقى ملفك مرفقاً لترسله.",
+  pdfLead: (pages: number): string =>
+    `عدد صفحات ملفك ${pages}، والباقة المجانية تشمل ${FREE_OCR_PAGES} صفحات.`,
   failed: "تعذّر تفعيل العرض. حاول مرة أخرى.",
   features: [
     "74 نقطة استخدام طوال الأسبوع",
     "15 نقطة لكل جلسة (5 ساعات)",
-    "50 صفحة استخراج نص",
+    `${FREE_TRIAL_OCR_PAGES} صفحة استخراج نص`,
     "تقارير الباحث ومسودات الكاتب كاملة مع مشاركتها وتصديرها",
     "الوصول الكامل للمكتبة القانونية",
   ],

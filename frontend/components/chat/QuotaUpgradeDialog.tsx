@@ -35,6 +35,7 @@ import { IntroOfferSummary } from "@/components/promo/IntroOfferSummary";
 import { FreeTrialCard } from "@/components/promo/FreeTrialCard";
 import {
   FREE_TRIAL_COPY,
+  FREE_TRIAL_OCR_PAGES,
   FREE_TRIAL_PLAN_ID,
 } from "@/components/promo/free-trial-content";
 import {
@@ -87,10 +88,14 @@ interface QuotaUpgradeDialogProps {
   currentPlanId?: string | null;
   /**
    * The free week was granted from this dialog. The offer appears only where a
-   * caller passes this, because only the chat's limit dialog has a refused
-   * message to carry on with.
+   * caller passes this: the chat's limit dialog and the composer's PDF offer.
    */
   onFreeTrialClaimed?: () => void;
+  /**
+   * The composer opened this because the attached PDFs run past the free plan.
+   * Nothing has been refused, so there is no `info` or `deepSearchGate`.
+   */
+  documentPages?: number;
 }
 
 /**
@@ -125,6 +130,7 @@ export function QuotaUpgradeDialog({
   deepSearchGate: gate,
   currentPlanId,
   onFreeTrialClaimed,
+  documentPages,
 }: QuotaUpgradeDialogProps) {
   const [now, setNow] = useState<number>(() => Date.now());
 
@@ -164,10 +170,12 @@ export function QuotaUpgradeDialog({
 
   // الأسبوع المجاني (migration 205). Fail-closed like the offers above: until
   // the server says eligible, this dialog shows the ordinary plans.
+  const pdfOffer = documentPages !== undefined;
+  const trialSurface = blocked || pdfOffer;
   const trialEligible = useFreeTrialStore((s) => s.eligible);
   useEffect(() => {
-    if (open && blocked) void useFreeTrialStore.getState().refresh();
-  }, [open, blocked]);
+    if (open && trialSurface) void useFreeTrialStore.getState().refresh();
+  }, [open, trialSurface]);
   const claim = useClaimFreeTrial();
   const { reset: resetClaim } = claim;
   useEffect(() => {
@@ -212,14 +220,19 @@ export function QuotaUpgradeDialog({
 
   // Offered only where Basic itself would clear this block: the week has about
   // Basic's limits, so a block Basic cannot lift is one the week cannot lift.
+  // And never for a document longer than the week covers: that spends the user's
+  // only week on a file that would still be refused. `used` on an OCR block is
+  // the projected total, this send included.
   const freeTrialPlan = findPricingPlan(FREE_TRIAL_PLAN_ID);
+  const ocrPagesNeeded = documentPages ?? (info?.meter === "ocr" ? info.used : 0);
   const showFreeTrial =
-    blocked &&
+    trialSurface &&
     !onPaidPlan &&
     trialEligible &&
     onFreeTrialClaimed !== undefined &&
     freeTrialPlan !== undefined &&
-    (!ladder || ladder.includes(FREE_TRIAL_PLAN_ID));
+    (!ladder || ladder.includes(FREE_TRIAL_PLAN_ID)) &&
+    ocrPagesNeeded <= FREE_TRIAL_OCR_PAGES;
 
   const title = showFreeTrial
     ? FREE_TRIAL_COPY.title
@@ -246,7 +259,9 @@ export function QuotaUpgradeDialog({
   // one promises a reset. DEPENDS ON migration 131 — do not ship this copy
   // ahead of it.
   const unblockLine = showFreeTrial
-    ? FREE_TRIAL_COPY.unblock
+    ? pdfOffer
+      ? FREE_TRIAL_COPY.unblockPdf
+      : FREE_TRIAL_COPY.unblock
     : notIncluded
       ? "الاشتراك يفعّل هذه الميزة فوراً."
       : onPaidPlan
@@ -268,6 +283,7 @@ export function QuotaUpgradeDialog({
 
   const trialOffers = shownPlans.length + 1;
   const trialGroup = introOffer?.profession_group ?? null;
+  const trialTrigger = pdfOffer ? "pdf" : "limit";
 
   // One `free_trial_shown` per opening.
   const trialTrackedRef = useRef(false);
@@ -278,13 +294,21 @@ export function QuotaUpgradeDialog({
     }
     if (!showFreeTrial || trialTrackedRef.current) return;
     trialTrackedRef.current = true;
-    track("free_trial_shown", { offers: trialOffers, group: trialGroup });
-  }, [open, showFreeTrial, trialOffers, trialGroup]);
+    track("free_trial_shown", {
+      offers: trialOffers,
+      group: trialGroup,
+      trigger: trialTrigger,
+    });
+  }, [open, showFreeTrial, trialOffers, trialGroup, trialTrigger]);
 
   const handleClaimFreeTrial = () => {
     claim.mutate(undefined, {
       onSuccess: () => {
-        track("free_trial_claimed", { offers: trialOffers, group: trialGroup });
+        track("free_trial_claimed", {
+          offers: trialOffers,
+          group: trialGroup,
+          trigger: trialTrigger,
+        });
         onFreeTrialClaimed?.();
         useFreeTrialStore.getState().markClaimed();
       },
@@ -370,11 +394,13 @@ export function QuotaUpgradeDialog({
         <DialogHeader className="text-right sm:text-right">
           <DialogTitle className="text-xl">{title}</DialogTitle>
           <DialogDescription className="text-right leading-relaxed">
-            {info
-              ? info.message_ar
-              : gate
-                ? gate.message_ar
-                : "اختر باقة أعلى للحصول على نقاط استخدام أكثر."}
+            {documentPages !== undefined
+              ? FREE_TRIAL_COPY.pdfLead(documentPages)
+              : info
+                ? info.message_ar
+                : gate
+                  ? gate.message_ar
+                  : "اختر باقة أعلى للحصول على نقاط استخدام أكثر."}
           </DialogDescription>
         </DialogHeader>
 

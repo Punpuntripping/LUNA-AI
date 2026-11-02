@@ -92,6 +92,8 @@ function arabicErrorFromUnknown(err: unknown): string {
  * for the list view (documents-by-case or workspace-by-conversation).
  */
 export interface ImperativeUploadCallbacks {
+  /** Fires once a PDF's pages are counted, before /init is called. */
+  onPageCount?: (pages: number) => void;
   /** Fires once /init returns. */
   onInitialized?: (resourceId: string) => void;
   /** Fires on every tus chunk progress event. */
@@ -159,7 +161,10 @@ export function runResumableUpload(
         let pageCount = 1;
         if (file.type === "application/pdf") {
           const n = await getPdfPageCount(file);
-          if (n && n > 0) pageCount = n;
+          if (n && n > 0) {
+            pageCount = n;
+            callbacks.onPageCount?.(n);
+          }
         }
         initRes = await workspaceApi.initAttachment(target.conversationId, {
           filename: file.name,

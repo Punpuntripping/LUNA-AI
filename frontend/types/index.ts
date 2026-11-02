@@ -170,6 +170,8 @@ export type AttachmentUploadStatus =
   | "cancelled";
 
 export interface PendingFile {
+  /** PDF pages counted in the browser. Unset for images and unreadable files. */
+  pageCount?: number;
   id: string;
   file: File;
   previewUrl: string;
