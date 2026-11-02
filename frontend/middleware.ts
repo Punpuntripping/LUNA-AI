@@ -90,6 +90,16 @@ function reportOriginLock(record: OriginLockRecord): void {
   state.pending = 0;
 }
 
+/**
+ * ⚠ MUST STAY EXEMPT. Railway's deploy healthcheck probes the container directly,
+ * so it never carries the edge secret. Refusing it fails every deploy, including
+ * the one that sets `ORIGIN_LOCK_MODE=enforce`, which would leave the old observing
+ * image running while the operator believes the lock is on. Exact match, like the
+ * backend's `EXEMPT_PATHS`. The route answers from this process and returns nothing
+ * worth protecting.
+ */
+const HEALTHCHECK_PATH = "/api/v1/health";
+
 let disarmedLockReported = false;
 
 /**
@@ -137,6 +147,8 @@ export function middleware(request: NextRequest) {
   // always `localhost:PORT` in standalone. Env is read here, per request, so the
   // lock arms from the running container's variables, not from the build.
   reportDisarmedLock();
+  if (pathname === HEALTHCHECK_PATH) return NextResponse.next();
+
   const lock = decideOriginLock({
     host: request.headers.get("host"),
     edgeSecretHeader: request.headers.get(EDGE_SECRET_HEADER),

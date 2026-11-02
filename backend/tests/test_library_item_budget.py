@@ -264,7 +264,7 @@ def stub_hubs(monkeypatch):
             q = kw.get("q") or ""
             # A distinct ``q`` is a distinct slice of the corpus — that is the
             # whole reason reach has to be metered rather than requests.
-            tag = f"{_section}{('-' + str(abs(hash(q)) % 997)) if q else ''}"
+            tag = f"{_section}-{q}" if q else _section
             return {
                 "items": [_item(tag, page, n) for n in range(PAGE_SIZE)],
                 "page": page,
