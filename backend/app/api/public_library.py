@@ -2791,6 +2791,7 @@ async def list_regulations(
             **_hub_caps(tier),
         )
 
+    await library_budget.enforce_daily_search(request, current_user, q, tier)
     metered = _hub_is_metered(q, page)
     if metered:
         await library_budget.enforce_item_budget(request, user_id, tier)
@@ -3011,6 +3012,7 @@ async def list_compliance(
             **_hub_caps(tier),
         )
 
+    await library_budget.enforce_daily_search(request, current_user, q, tier)
     metered = _hub_is_metered(q, page)
     if metered:
         await library_budget.enforce_item_budget(request, user_id, tier)
@@ -3209,6 +3211,7 @@ async def list_circulars(
             **_hub_caps(tier),
         )
 
+    await library_budget.enforce_daily_search(request, current_user, q, tier)
     metered = _hub_is_metered(q, page)
     if metered:
         await library_budget.enforce_item_budget(request, user_id, tier)
@@ -3366,6 +3369,7 @@ async def list_judgments(
             **_hub_caps(tier),
         )
 
+    await library_budget.enforce_daily_search(request, current_user, q, tier)
     metered = _hub_is_metered(q, page)
     if metered:
         await library_budget.enforce_item_budget(request, user_id, tier)

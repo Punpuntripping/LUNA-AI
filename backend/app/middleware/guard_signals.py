@@ -10,7 +10,7 @@ Backend stdlib logging does not reach Logfire, so these use the logfire API. Eve
 function here is safe to call from a request path: a telemetry failure costs one
 stdlib line and never reaches the caller.
 
-⚠ ``limiter`` IS THE ATTRIBUTE THAT MATTERS. Three limiters can refuse a library
+⚠ ``limiter`` IS THE ATTRIBUTE THAT MATTERS. Four limiters can refuse a library
 reader and their 429s are byte-identical on purpose (``rate_limit.py``, one
 contract), so a status code cannot say which one fired. That hid the real cause of
 the 2026-10-20 search complaint: the review blamed the 60/min bucket, but all 23
@@ -49,7 +49,8 @@ CARRIER_EVENT = "library.carrier_call"
 LIMITER_GLOBAL = "global"  # RateLimitMiddleware: per path, fails open
 LIMITER_ROUTE = "route"  # route_limits: verified identity, fails closed
 LIMITER_ITEM_BUDGET = "item_budget"  # library_budget_service: the hourly reach meter
-LIMITERS = (LIMITER_GLOBAL, LIMITER_ROUTE, LIMITER_ITEM_BUDGET)
+LIMITER_DAILY_CAP = "daily_cap"  # library_budget_service: per account, per Riyadh day
+LIMITERS = (LIMITER_GLOBAL, LIMITER_ROUTE, LIMITER_ITEM_BUDGET, LIMITER_DAILY_CAP)
 
 KEY_ANON = "anon"
 KEY_USER = "user"  # the global limiter's is the UNVERIFIED sub: a label, not proof

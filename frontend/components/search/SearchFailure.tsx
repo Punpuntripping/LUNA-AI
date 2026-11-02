@@ -30,17 +30,18 @@ export function SearchFailure({
   kind: SearchErrorKind;
   onRetry: () => void;
 }) {
-  if (kind === "rate_limited") {
+  if (kind === "rate_limited" || kind === "daily_limit") {
+    const daily = kind === "daily_limit";
     return (
       <div
         dir="rtl"
         className="flex flex-col items-center justify-center gap-2 py-16 text-center"
       >
         <p className="text-sm font-medium text-foreground">
-          {SEARCH_COPY.rateLimitedTitle}
+          {daily ? SEARCH_COPY.dailyLimitTitle : SEARCH_COPY.rateLimitedTitle}
         </p>
         <p className="text-xs text-muted-foreground">
-          {SEARCH_COPY.rateLimitedBody}
+          {daily ? SEARCH_COPY.dailyLimitBody : SEARCH_COPY.rateLimitedBody}
         </p>
       </div>
     );

@@ -388,6 +388,11 @@ def test_a_logfire_failure_never_costs_a_reader_their_unlock(
 
 def _call_carrier(monkeypatch: pytest.MonkeyPatch, page_type: str, *, service: Any) -> Any:
     monkeypatch.setattr(library_items, "get_user_id", lambda *_: "u-1")
+
+    async def _free_caller(*_a: Any) -> tuple[str, str]:
+        return "free", "u-1"
+
+    monkeypatch.setattr(library_items, "_hub_caller", _free_caller)
     monkeypatch.setattr(library_items.library_item_service, "create_library_item", service)
     monkeypatch.setattr(library_items, "_wi_to_response", lambda item: item)
     monkeypatch.setattr(
@@ -395,6 +400,7 @@ def _call_carrier(monkeypatch: pytest.MonkeyPatch, page_type: str, *, service: A
     )
     return asyncio.run(
         library_items.create_library_item(
+            None,
             "00000000-0000-4000-8000-000000000001",
             library_items.CreateLibraryItemRequest(page_type=page_type, page_id="slug"),
             current_user=SimpleNamespace(auth_id="a-1"),

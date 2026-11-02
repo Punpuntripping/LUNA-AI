@@ -26,14 +26,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
+from backend.app.api.public_library import _hub_caller
 from backend.app.api.workspace import _to_response as _wi_to_response
 from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.middleware import guard_signals
 from backend.app.models.responses import WorkspaceItemResponse
+from backend.app.services import library_budget_service as library_budget
 from backend.app.services import library_item_service
 from backend.app.services.case_service import get_user_id
 from shared.auth.jwt import AuthUser
@@ -106,6 +108,7 @@ class LibraryItemResponse(BaseModel):
     response_model=LibraryItemResponse,
 )
 async def create_library_item(
+    request: Request,
     conversation_id: str,
     body: CreateLibraryItemRequest,
     current_user: AuthUser = Depends(get_current_user),
@@ -131,6 +134,8 @@ async def create_library_item(
         user_id,
         page_type if page_type in library_item_service.SUPPORTED_PAGE_TYPES else "other",
     )
+    tier, _user_id = await _hub_caller(supabase, current_user)
+    await library_budget.enforce_daily_carry(request, current_user, tier)
     item, already_attached = await run_db(
         library_item_service.create_library_item,
         supabase,

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
@@ -45,7 +46,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.api import public_library as pl
 from backend.app.deps import get_current_user_optional, get_supabase
-from backend.app.errors import LunaHTTPException, luna_exception_handler
+from backend.app.errors import ErrorCode, LunaHTTPException, luna_exception_handler
 from backend.app.middleware.rate_limit import RATE_LIMIT_MESSAGE
 from backend.app.middleware.route_limits import library_rate_limit
 from backend.app.services import case_service
@@ -109,6 +110,10 @@ class _FakePipeline:
         self._ops.append(("expire", (key, seconds)))
         return self
 
+    def incr(self, key: str) -> "_FakePipeline":
+        self._ops.append(("incr", (key,)))
+        return self
+
     async def execute(self) -> List[Any]:
         if self._store.fail:
             raise ConnectionError("redis is down")
@@ -138,6 +143,9 @@ class _FakePipeline:
                 results.append(len(self._store.zsets.get(args[0], {})))
             elif op == "expire":
                 results.append(True)
+            elif op == "incr":
+                self._store.counters[args[0]] = self._store.counters.get(args[0], 0) + 1
+                results.append(self._store.counters[args[0]])
         return results
 
 
@@ -147,6 +155,7 @@ class FakeRedis:
     def __init__(self, fail: bool = False) -> None:
         self.zsets: Dict[str, Dict[str, float]] = {}
         self.strings: Dict[str, str] = {}
+        self.counters: Dict[str, int] = {}
         self.fail = fail
 
     def pipeline(self) -> _FakePipeline:
@@ -1070,3 +1079,197 @@ def test_the_process_fallback_is_bounded() -> None:
     for i in range(50):
         window.add("user-0", [f"regulations:x{i}"], 1e12, 3600, 10)
     assert len(window._buckets["user-0"]) <= 11  # limit + 1
+
+
+# ---------------------------------------------------------------------------
+# Daily caps: 100 searches for every account, 10 carries on a free one
+# ---------------------------------------------------------------------------
+
+Q = "نظام العمل"
+
+
+def _search_hub(client: TestClient, n: int) -> List[int]:
+    return [
+        client.get(REG_HUB, params={"q": f"{Q} {i}"}).status_code for i in range(n)
+    ]
+
+
+@pytest.mark.parametrize("plan", ["free", "pro"])
+def test_the_101st_search_is_refused_on_every_plan(stub_hubs, plan) -> None:
+    client = _client(user=_User(), redis=FakeRedis(), plan=plan)
+
+    assert set(_search_hub(client, 100)) == {200}
+
+    refused = client.get(REG_HUB, params={"q": Q})
+    assert refused.status_code == 429
+    assert refused.json()["error"]["code"] == "DAILY_LIMIT_REACHED"
+    assert "الحد اليومي" in refused.json()["error"]["message"]
+    assert 0 < int(refused.headers["Retry-After"]) <= 86_400
+    assert refused.headers["Cache-Control"] == "private, no-store"
+
+
+def test_the_cap_is_shared_across_the_search_boxes(stub_hubs) -> None:
+    client = _client(user=_User(), redis=FakeRedis(), plan="pro")
+    assert set(_search_hub(client, 100)) == {200}
+
+    for section in SEARCH_WINGS:
+        assert client.get(HUBS[section][0], params={"q": Q}).status_code == 429
+
+
+def test_browsing_never_counts_and_still_works_past_the_cap(stub_hubs) -> None:
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis, plan="pro")
+    assert client.get(REG_HUB).status_code == 200
+    assert redis.counters == {}
+
+    assert set(_search_hub(client, 101)[:100]) == {200}
+    assert client.get(REG_HUB).status_code == 200
+
+
+def test_an_anonymous_visitor_has_no_counter(stub_hubs) -> None:
+    """`q` is dropped for them before the cap, so there is nothing to count."""
+    redis = FakeRedis()
+    client = _client(user=None, redis=redis)
+    assert client.get(REG_HUB, params={"q": Q}).status_code == 200
+    assert redis.counters == {}
+
+
+def test_each_account_has_its_own_count(stub_hubs) -> None:
+    redis = FakeRedis()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(redis=redis)),
+        url=SimpleNamespace(path="/api/v1/search"),
+        query_params={"q": Q},
+    )
+    first = SimpleNamespace(auth_id="auth-first")
+    second = SimpleNamespace(auth_id="auth-second")
+
+    async def _drive() -> None:
+        for _ in range(100):
+            await lb.enforce_daily_search(request, first, Q)
+        with pytest.raises(LunaHTTPException):
+            await lb.enforce_daily_search(request, first, Q)
+        await lb.enforce_daily_search(request, second, Q)
+
+    asyncio.run(_drive())
+
+
+def test_the_day_turns_over_at_midnight_in_riyadh(monkeypatch) -> None:
+    redis = FakeRedis()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(redis=redis)),
+        url=SimpleNamespace(path="/api/v1/search"),
+        query_params={"q": Q},
+    )
+    user = SimpleNamespace(auth_id="auth-1")
+    # 20:59:59 UTC is 23:59:59 in Riyadh; one second later the day has changed.
+    before = 1_762_117_199.0
+    monkeypatch.setattr(lb.time, "time", lambda: before)
+    monkeypatch.setenv(lb.DAILY_SEARCH_LIMIT_ENV, "1")
+
+    async def _drive() -> None:
+        await lb.enforce_daily_search(request, user, Q)
+        with pytest.raises(LunaHTTPException):
+            await lb.enforce_daily_search(request, user, Q)
+        monkeypatch.setattr(lb.time, "time", lambda: before + 1)
+        await lb.enforce_daily_search(request, user, Q)
+
+    asyncio.run(_drive())
+
+
+def test_a_redis_outage_refuses_nobody(stub_hubs) -> None:
+    client = _client(user=_User(), redis=None, plan="pro")
+    assert set(_search_hub(client, 101)) == {200}
+
+
+def test_a_failing_redis_refuses_nobody() -> None:
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(redis=FakeRedis(fail=True))),
+        url=SimpleNamespace(path="/api/v1/search"),
+        query_params={"q": Q},
+    )
+    user = SimpleNamespace(auth_id="auth-1")
+
+    async def _drive() -> None:
+        for _ in range(101):
+            await lb.enforce_daily_search(request, user, Q)
+
+    asyncio.run(_drive())
+
+
+def test_zero_turns_the_search_cap_off(stub_hubs, monkeypatch) -> None:
+    monkeypatch.setenv(lb.DAILY_SEARCH_LIMIT_ENV, "0")
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis, plan="pro")
+    assert set(_search_hub(client, 101)) == {200}
+    assert redis.counters == {}
+
+
+def _carry_client(redis: FakeRedis, monkeypatch, tier: str) -> TestClient:
+    from backend.app.api import library_items as li
+    from backend.app.deps import get_current_user
+
+    async def _tier(_supabase: Any, _user: Any) -> Tuple[str, str]:
+        return tier, USER
+
+    def _unreachable(*_a: Any, **_k: Any) -> Any:
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.DOC_NOT_FOUND, detail="غير موجود"
+        )
+
+    monkeypatch.setattr(li, "get_user_id", lambda *_: USER)
+    monkeypatch.setattr(li, "_hub_caller", _tier)
+    monkeypatch.setattr(li.library_item_service, "create_library_item", _unreachable)
+    app = FastAPI()
+    app.state.redis = redis
+    app.add_exception_handler(LunaHTTPException, luna_exception_handler)
+    app.include_router(li.router, prefix="/api/v1")
+    app.dependency_overrides[get_supabase] = lambda: FakeSupabase()
+    app.dependency_overrides[get_current_user] = lambda: _User()
+    return TestClient(app)
+
+
+CARRY = "/api/v1/conversations/11111111-1111-4111-8111-111111111111/library-items"
+CARRY_BODY = {"page_type": "regulation", "page_id": "nizam"}
+
+
+def test_the_11th_carry_is_refused_on_a_free_account(monkeypatch) -> None:
+    client = _carry_client(FakeRedis(), monkeypatch, "free")
+    assert {client.post(CARRY, json=CARRY_BODY).status_code for _ in range(10)} == {404}
+
+    refused = client.post(CARRY, json=CARRY_BODY)
+    assert refused.status_code == 429
+    assert refused.json()["error"]["code"] == "DAILY_LIMIT_REACHED"
+    assert "الحد اليومي" in refused.json()["error"]["message"]
+
+
+def test_a_paid_account_has_no_carry_cap(monkeypatch) -> None:
+    redis = FakeRedis()
+    client = _carry_client(redis, monkeypatch, "paid")
+    assert {client.post(CARRY, json=CARRY_BODY).status_code for _ in range(11)} == {404}
+    assert redis.counters == {}
+
+
+def test_library_search_shares_the_count_with_the_search_boxes(monkeypatch) -> None:
+    from backend.app.api import search as search_api
+    from backend.app.deps import get_current_user
+
+    redis = FakeRedis()
+    monkeypatch.setattr(
+        search_api.search_service,
+        "run_bm25",
+        lambda *_a, **_k: SimpleNamespace(hits=[], total=0, total_is_exact=True),
+    )
+    monkeypatch.setenv(lb.DAILY_SEARCH_LIMIT_ENV, "2")
+    app = FastAPI()
+    app.state.redis = redis
+    app.add_exception_handler(LunaHTTPException, luna_exception_handler)
+    app.include_router(search_api.router)
+    app.dependency_overrides[get_supabase] = lambda: FakeSupabase()
+    app.dependency_overrides[get_current_user] = lambda: _User()
+    client = TestClient(app)
+
+    assert client.get("/api/v1/search", params={"q": Q}).status_code == 200
+    assert client.get("/api/v1/search", params={"q": Q}).status_code == 200
+    assert client.get("/api/v1/search", params={"q": Q}).status_code == 429
+

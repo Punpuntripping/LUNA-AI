@@ -89,6 +89,7 @@ export type ErrorCode =
   | "INVALID_UUID"
   // Rate limiting
   | "RATE_LIMITED"
+  | "DAILY_LIMIT_REACHED"
   // Service availability
   | "SERVICE_UNAVAILABLE"
   // Native app below the minimum supported version — HTTP 426. Only ever sent

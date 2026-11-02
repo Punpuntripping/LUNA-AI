@@ -67,6 +67,8 @@ export interface HubSearchResponse {
 /**
  * Why a search produced nothing, when it was not simply an empty result set.
  *
+ *   daily_limit  → 429: today's search cap is spent. Waiting a moment will not
+ *                  help, so it gets its own words.
  *   rate_limited → 429: a rate limit refused this search. A real, explainable
  *                  answer that must never render as «something broke». Searches
  *                  no longer spend the hourly reach meter, so this is the
@@ -74,7 +76,7 @@ export interface HubSearchResponse {
  *   failed       → dead session, transport fault, 5xx, unparsable body. All
  *                  indistinguishable to a reader, and all mean «try again».
  */
-export type SearchErrorKind = "rate_limited" | "failed";
+export type SearchErrorKind = "daily_limit" | "rate_limited" | "failed";
 
 export class SearchRequestError extends Error {
   readonly kind: SearchErrorKind;
@@ -111,23 +113,25 @@ export const searchKeys = {
 };
 
 /**
- * Is this non-OK response the project's standard rate-limit refusal?
+ * Why did this non-OK response refuse the search?
  *
- * Status first, because that is the one signal every layer preserves: the
- * backend's 429 is JSON, but an edge-injected one (Cloudflare) is HTML and
- * would never parse. The `RATE_LIMITED` code is a second chance only. Same
- * check `HubCtaWall` makes — deliberately duplicated rather than shared,
- * because it is four lines and the alternative is a client component importing
- * from another client component for a helper.
+ * The body comes first because the daily cap and the per-minute limit share the
+ * 429 status. Status still decides everything else, because it is the one signal
+ * every layer preserves: the backend's 429 is JSON, but an edge-injected one
+ * (Cloudflare) is HTML and would never parse. Same check `HubCtaWall` makes for a
+ * rate limit, deliberately duplicated rather than shared, because the alternative
+ * is a client component importing from another client component for a helper.
  */
-async function isRateLimited(res: Response): Promise<boolean> {
-  if (res.status === 429) return true;
+async function refusalKind(res: Response): Promise<SearchErrorKind> {
+  let code: string | undefined;
   try {
     const body = (await res.json()) as { error?: { code?: string } };
-    return body?.error?.code === "RATE_LIMITED";
+    code = body?.error?.code;
   } catch {
-    return false;
+    code = undefined;
   }
+  if (code === "DAILY_LIMIT_REACHED") return "daily_limit";
+  return res.status === 429 || code === "RATE_LIMITED" ? "rate_limited" : "failed";
 }
 
 /**
@@ -167,9 +171,7 @@ async function fetchHubSearch(
   }
 
   if (!res.ok) {
-    throw new SearchRequestError(
-      (await isRateLimited(res)) ? "rate_limited" : "failed",
-    );
+    throw new SearchRequestError(await refusalKind(res));
   }
 
   const payload = (await res.json()) as HubSearchResponse;
@@ -353,9 +355,7 @@ async function fetchLibrarySearch(
   }
 
   if (!res.ok) {
-    throw new SearchRequestError(
-      (await isRateLimited(res)) ? "rate_limited" : "failed",
-    );
+    throw new SearchRequestError(await refusalKind(res));
   }
 
   const payload = (await res.json()) as Record<string, unknown>;

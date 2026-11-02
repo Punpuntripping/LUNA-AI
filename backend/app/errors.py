@@ -110,6 +110,8 @@ class ErrorCode(str, Enum):
 
     # Rate limiting
     RATE_LIMITED = "RATE_LIMITED"
+    # A daily cap, not a burst: waiting a moment will not help.
+    DAILY_LIMIT_REACHED = "DAILY_LIMIT_REACHED"
 
     # Service availability (dependency failure ≠ user error)
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"

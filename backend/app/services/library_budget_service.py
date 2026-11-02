@@ -172,6 +172,12 @@ __all__ = [
     "item_keys",
     "enforce_item_budget",
     "charge_items",
+    "DAILY_SEARCH_LIMIT_ENV",
+    "DAILY_CARRY_LIMIT_FREE_ENV",
+    "DEFAULT_DAILY_SEARCH_LIMIT",
+    "DEFAULT_DAILY_CARRY_LIMIT_FREE",
+    "enforce_daily_search",
+    "enforce_daily_carry",
     "count_document_opens",
     "yield_to_open_report",
     "reset_process_state",
@@ -548,6 +554,135 @@ async def enforce_item_budget(
         raise _budget_exceeded(state)
 
     return state
+
+
+# --- daily caps ------------------------------------------------------------
+#
+# Owner decision 2026-11-02: 100 searches a day for EVERY signed-in account, and 10
+# carries to chat a day on a free account. A separate thing from the item budget
+# above, which meters what a caller sees per hour and which page 1 of a search
+# left on purpose.
+#
+# THE UNIT IS THE DAY, NOT THE MINUTE. Readers search in bursts and scripts run all
+# day, so a per-minute cap refuses the reader and lets the script through. On
+# /api/v1/search over the 14 days to 2026-11-02, 88% of real searches fell in a
+# minute holding more than 3, while the busiest day for ALL users together was 100.
+#
+# Anonymous callers need no cap: `q` is signed-in only and is dropped for them.
+# Keyed on the verified auth id, the one identity every call site already holds, so
+# the search boxes and /library share one count.
+#
+# ⚠ FAILS OPEN, unlike the item budget above. It counts requests, and with Redis
+# down it has no shared count to read, so an in-process count would refuse a reader
+# on one worker and not the next. A lost count for a day costs nothing. Set an env
+# var to 0 to turn that cap off.
+
+DAILY_SEARCH_LIMIT_ENV = "LIBRARY_DAILY_SEARCH_LIMIT"
+DAILY_CARRY_LIMIT_FREE_ENV = "LIBRARY_DAILY_CARRY_LIMIT_FREE"
+DEFAULT_DAILY_SEARCH_LIMIT = 100
+DEFAULT_DAILY_CARRY_LIMIT_FREE = 10
+
+_DAY_SECONDS = 86_400
+_RIYADH_UTC_OFFSET_SECONDS = 3 * 3_600  # no daylight saving in Saudi Arabia
+_DAILY_KEY_PREFIX = "library:dailycap"
+
+MSG_DAILY_SEARCH_LIMIT = (
+    "وصلت إلى الحد اليومي للبحث. يتجدد الحد عند منتصف الليل بتوقيت السعودية."
+)
+MSG_DAILY_CARRY_LIMIT = (
+    "وصلت إلى الحد اليومي لإضافة الصفحات إلى المحادثة. "
+    "يتجدد الحد عند منتصف الليل بتوقيت السعودية."
+)
+
+
+async def _enforce_daily(
+    request: Optional[Request],
+    kind: str,
+    subject: Optional[str],
+    limit: int,
+    message: str,
+    tier: Optional[str],
+) -> None:
+    """Count this call against today, and refuse (429) past ``limit``."""
+    if not subject or limit <= 0:
+        return
+    redis = _redis(request)
+    if redis is None:
+        return
+
+    now = time.time()
+    day = int((now + _RIYADH_UTC_OFFSET_SECONDS) // _DAY_SECONDS)
+    key = f"{_DAILY_KEY_PREFIX}:{kind}:{subject}:{day}"
+    try:
+        pipe = redis.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, 2 * _DAY_SECONDS)
+        results = await pipe.execute()
+        used = int(results[0] or 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Library daily cap: Redis error, not counting: %s", e)
+        return
+
+    if used <= limit:
+        return
+
+    logger.info("Library daily cap reached: kind=%s used=%s limit=%s", kind, used, limit)
+    guard_signals.report_refused(
+        guard_signals.LIMITER_DAILY_CAP,
+        request,
+        key_kind=guard_signals.KEY_USER,
+        tier=tier,
+    )
+    reset_at = (day + 1) * _DAY_SECONDS - _RIYADH_UTC_OFFSET_SECONDS
+    headers = rate_limit_headers(
+        reset_at=reset_at,
+        window_seconds=max(1, int(reset_at - now)),
+        remaining=0,
+    )
+    headers["Cache-Control"] = "private, no-store"
+    raise LunaHTTPException(
+        status_code=429,
+        code=ErrorCode.DAILY_LIMIT_REACHED,
+        detail=message,
+        headers=headers,
+    )
+
+
+async def enforce_daily_search(
+    request: Optional[Request],
+    current_user: Any,
+    q: Optional[str],
+    tier: Optional[str] = None,
+) -> None:
+    """One search against today's cap. A request with no ``q`` is browsing: no-op."""
+    if not q:
+        return
+    await _enforce_daily(
+        request,
+        "search",
+        getattr(current_user, "auth_id", None),
+        _env_int(DAILY_SEARCH_LIMIT_ENV, DEFAULT_DAILY_SEARCH_LIMIT),
+        MSG_DAILY_SEARCH_LIMIT,
+        tier,
+    )
+
+
+async def enforce_daily_carry(
+    request: Optional[Request],
+    current_user: Any,
+    tier: Optional[str],
+) -> None:
+    """One carry to chat against today's cap. Free accounts only."""
+    if tier != FREE_TIER:
+        return
+    await _enforce_daily(
+        request,
+        "carry",
+        getattr(current_user, "auth_id", None),
+        _env_int(DAILY_CARRY_LIMIT_FREE_ENV, DEFAULT_DAILY_CARRY_LIMIT_FREE),
+        MSG_DAILY_CARRY_LIMIT,
+        tier,
+    )
 
 
 async def charge_items(

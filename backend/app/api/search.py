@@ -50,13 +50,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from supabase import Client as SupabaseClient
 
 from backend.app.deps import get_current_user, get_supabase
 from backend.app.models.search import SearchHit, SearchResponse
 from backend.app.services import (
     case_service,
+    library_budget_service as library_budget,
     library_items_service,
     search_service,
 )
@@ -110,6 +111,7 @@ def _hit_models(hits: list[dict]) -> list[SearchHit]:
 
 @router.get("/search", response_model=SearchResponse)
 async def search_library(
+    request: Request,
     response: Response,
     q: str = Query(..., description="search text (>= 3 chars)"),
     corpus: Optional[list[str]] = Query(
@@ -141,7 +143,8 @@ async def search_library(
     NOT metered against the library item budget (owner, 2026-08-30): yielded
     items are neither charged nor refused on it, so a reader at their hourly hub
     cap can still search. ``current_user`` stays required — the route is
-    auth-only — but nothing here reads the caller's tier any more.
+    auth-only — but nothing here reads the caller's tier any more. It does count
+    towards the daily search cap, shared with the hub search boxes.
     """
     response.headers["Cache-Control"] = _PRIVATE_CACHE_CONTROL
 
@@ -156,6 +159,8 @@ async def search_library(
         return SearchResponse(
             query=query, corpora=list(corpora), page=page, page_size=page_size
         )
+
+    await library_budget.enforce_daily_search(request, current_user, query)
 
     limit = min(page_size, search_service.MAX_RESULTS - offset)
     result = await run_db(

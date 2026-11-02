@@ -102,6 +102,13 @@ export const SEARCH_COPY = {
   rateLimitedBody: "انتظر قليلاً ثم أعد البحث.",
 
   /**
+   * Today's search cap is spent. Never «انتظر قليلاً»: that is untrue here. No
+   * number, because the cap is a setting and copy would drift from it.
+   */
+  dailyLimitTitle: "وصلت إلى الحد اليومي للبحث",
+  dailyLimitBody: "يتجدد الحد عند منتصف الليل بتوقيت السعودية.",
+
+  /**
    * Shown when the result set spills past the first page. Says «narrow it»
    * rather than a count, because the hub envelope carries `total_pages`, not a
    * total — and an invented number is worse than none.
