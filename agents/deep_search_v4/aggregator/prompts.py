@@ -24,6 +24,7 @@ from shared.library.supersession import (
     group_by_note,
 )
 from agents.utils.conversation_memory import split_conversation_memory
+from agents.utils.today import today_line
 
 if TYPE_CHECKING:
     from shared.library.supersession import Transition
@@ -832,8 +833,12 @@ def build_aggregator_user_message(
 
     References are already N-assigned by the pre-processor. This function just
     serializes them with their numbers so the LLM can cite them by number.
+
+    Today's date opens the message and not the system prompts, so the v1 prompts
+    keep their bytes. Every path sends this text: the critique and rewrite stages
+    append to it, and the correction turn replays it as message history.
     """
-    lines: list[str] = []
+    lines: list[str] = [today_line(), ""]
 
     lines.append("<original_query>")
     lines.append(_esc(agg_input.original_query.strip()))

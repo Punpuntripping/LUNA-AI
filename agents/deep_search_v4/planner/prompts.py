@@ -43,6 +43,7 @@ import html
 
 from agents.deep_search_v4.shared.case_documents import forwardable_documents
 from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
+from agents.utils.today import today_line
 from shared.library.supersession import RESPONDER_VERSION_RULE
 
 from .models import Mode
@@ -601,7 +602,8 @@ def build_decider_instructions(deps) -> str:
     ``deps.recent_messages`` / ``deps.prior_searches`` / ``deps.attached_items``
     and renders the five ``<…>`` blocks. Blocks are omitted when their source is
     empty — the decider system prompt instructs the LLM to treat absence as
-    "not available".
+    "not available". Today's date always comes first, right after the static
+    prompt.
 
     ``deps.conversation_memory_md`` goes first when present. It is already
     rendered and escaped, so it is printed as it is. It never counts as a reason
@@ -619,6 +621,7 @@ def build_decider_instructions(deps) -> str:
 
     Registered as an ``@agent.instructions`` callback on ``planner_decider``.
     """
+    today = today_line()
     blocks: list[str] = []
     memory_md = getattr(deps, "conversation_memory_md", None)
     if memory_md:
@@ -646,9 +649,9 @@ def build_decider_instructions(deps) -> str:
     if not blocks:
         # Nothing to render — return a header-only stub so the LLM knows the
         # rendering ran (and there was simply no context to inject).
-        return f"{_DECIDER_CONTEXT_HEADER}\n\n(لا سياقَ مُحقَّناً لهذه الدورة.)"
+        return f"{today}\n\n{_DECIDER_CONTEXT_HEADER}\n\n(لا سياقَ مُحقَّناً لهذه الدورة.)"
 
-    rendered = f"{_DECIDER_CONTEXT_HEADER}\n\n" + "\n\n".join(blocks)
+    rendered = f"{today}\n\n{_DECIDER_CONTEXT_HEADER}\n\n" + "\n\n".join(blocks)
 
     # Conditional planner_brief editing rules — only when there is an
     # attachment or a prior search to summarise into the brief.
@@ -740,7 +743,7 @@ def build_responder_instructions(deps) -> str:
     ``deps._decision.planner_brief`` (when non-empty) so the chat summary stays
     aligned with the framing the executors + aggregator already used.
 
-    Order: welcome block → conversation context
+    Order: today's date → welcome block → conversation context
     (:func:`render_responder_context`, omitted when empty) → mode framing →
     planner_brief → digest. Same on the degraded path.
 
@@ -761,10 +764,12 @@ def build_responder_instructions(deps) -> str:
     if welcome_block:
         welcome_block = f"{welcome_block}\n"
     context_block = render_responder_context(deps)
+    today = f"{today_line()}\n\n"
 
     if agg is None:
         # Degraded path — phase 2 produced nothing. Keep the responder honest.
         return (
+            f"{today}"
             f"{welcome_block}"
             f"{context_block}"
             f"{framing}\n\n"
@@ -797,7 +802,7 @@ def build_responder_instructions(deps) -> str:
     )
 
     return f"""\
-{welcome_block}{context_block}{framing}
+{today}{welcome_block}{context_block}{framing}
 
 {planner_brief_block}## Search outcome (a digest for reference — do not copy it verbatim)
 

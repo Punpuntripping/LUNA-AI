@@ -7,8 +7,8 @@ its own schema — a smaller tool schema and a stable cached prefix.
 Layer 2 (user-facing voice) · model slot ``responder`` = ``_FLASH`` (tier_2).
 
 * Static instructions: ``SYSTEM_PROMPTS[mode]`` — byte-identical across turns.
-* Dynamic instruction: the router-context block pre-rendered by the runner into
-  ``ResponderDeps.context_block`` (``context.py``).
+* Dynamic instructions: today's date, then the router-context block pre-rendered
+  by the runner into ``ResponderDeps.context_block`` (``context.py``).
 * User message: the turn package (``prompts.build_turn_message``).
 
 Structured output opts into the shared salvager
@@ -43,6 +43,7 @@ from agents.models import (
 from agents.utils.agent_models import ModelPolicy, get_agent_model
 from agents.utils.conversation_memory import strip_conversation_memory
 from agents.utils.structured_output import make_json_salvager
+from agents.utils.today import today_line
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .models import (
@@ -210,6 +211,11 @@ def create_responder(
         retries=2,
         output_retries=3,
     )
+
+    @agent.instructions
+    def _today() -> str:
+        """Today's date, right after the static prompt."""
+        return today_line()
 
     @agent.instructions
     def _context(ctx: RunContext[ResponderDeps]) -> str:

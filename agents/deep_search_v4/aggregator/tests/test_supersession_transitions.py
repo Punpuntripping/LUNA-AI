@@ -27,6 +27,7 @@ from agents.deep_search_v4.aggregator.prompts import build_aggregator_user_messa
 from agents.deep_search_v4.aggregator.runner import handle_aggregator_turn
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.ura.schema import RegURAResult, UnifiedRetrievalArtifact
+from agents.utils.today import today_line
 from shared.library.supersession import (
     Pair,
     Successor,
@@ -147,8 +148,11 @@ def test_no_pair_law_message_is_byte_identical_to_master(title: str):
     references, _ = preprocess_references(agg_input)
 
     message = build_aggregator_user_message(agg_input, references)
+    # The date line changes daily, so it is the one part outside the pin.
+    assert message.startswith(f"{today_line()}\n\n")
+    body = message.removeprefix(f"{today_line()}\n\n")
 
-    assert hashlib.sha256(message.encode("utf-8")).hexdigest() == _MASTER_SHA256[title]
+    assert hashlib.sha256(body.encode("utf-8")).hexdigest() == _MASTER_SHA256[title]
 
 
 def test_no_pair_law_renders_no_new_element():

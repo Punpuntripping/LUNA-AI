@@ -27,6 +27,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from agents.models import ChatMessageSnapshot, WorkspaceItemSnapshot
+from agents.utils.today import today_line
 from backend.app.services.writer_planner_context import ArtifactSummaryView
 
 logger = logging.getLogger(__name__)
@@ -590,7 +591,7 @@ def build_writer_planner_instructions(deps: "WriterPlannerDeps") -> str:
     attached = _render_attached_items(deps.attached_items)
     prior = _render_prior_artifacts(deps.prior_artifacts)
 
-    parts: list[str] = []
+    parts: list[str] = [today_line(), ""]
     parts.append("# Current user turn")
     parts.append("")
     parts.append("<intent>")

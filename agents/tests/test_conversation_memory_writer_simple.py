@@ -41,6 +41,7 @@ from agents.simple_search.searcher import (
 )
 from agents.simple_search.synthesizer import SynthesizerOutput
 from agents.utils.conversation_memory import MemoryEntry, render_conversation_memory
+from agents.utils.today import today_line
 from agents.utils.tracking import _bounded_snapshot, _full_snapshot
 from agents.writer import agent as writer_agent
 from agents.writer.deps import build_writer_deps
@@ -376,8 +377,8 @@ def test_searcher_instructions_print_the_block_before_the_window(block: str) -> 
     assert text.replace(f"{block}\n", "", 1) == plain
 
 
-def test_searcher_instructions_stay_empty_with_nothing_to_add() -> None:
-    assert P.build_searcher_instructions(SearcherDeps(supabase=None)) == ""
+def test_searcher_instructions_are_the_date_alone_with_nothing_to_add() -> None:
+    assert P.build_searcher_instructions(SearcherDeps(supabase=None)) == today_line()
 
 
 def test_the_notes_keep_the_warning_where_the_digest_can_see_it() -> None:

@@ -53,6 +53,7 @@ from agents.deep_search_v4.planner.runner import _run_unified_responder
 from agents.deep_search_v4.reg_compliance_search import loop as reg_loop
 from agents.deep_search_v4.reg_compliance_search import prompts as reg_prompts
 from agents.deep_search_v4.reg_compliance_search import reranker as reg_reranker
+from agents.utils.today import today_line
 from agents.deep_search_v4.reg_compliance_search.models import (
     LoopState as RegLoopState,
     RegComplianceSearchDeps,
@@ -651,7 +652,7 @@ def test_decider_reads_the_block_first():
         )
     )
     assert rendered.startswith(
-        f"{planner_prompts._DECIDER_CONTEXT_HEADER}\n\n{MEMORY_MD}\n"
+        f"{today_line()}\n\n{planner_prompts._DECIDER_CONTEXT_HEADER}\n\n{MEMORY_MD}\n"
     )
     assert rendered.index("</conversation_memory>") < rendered.index("<case_brief>")
     assert rendered.count("<conversation_memory>") == 1
@@ -743,7 +744,7 @@ def test_old_responder_instructions_carry_the_block(agg_output):
     rendered = planner_prompts.build_responder_instructions(deps)
 
     assert rendered.count("<conversation_memory>") == 1
-    assert rendered.startswith(MEMORY_MD)
+    assert rendered.startswith(f"{today_line()}\n\n{MEMORY_MD}")
 
 
 # ---------------------------------------------------------------------------

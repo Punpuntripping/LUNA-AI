@@ -55,6 +55,7 @@ from agents.utils.router_context_render import (
     render_router_user_preferences,
     render_router_workspace_summaries,
 )
+from agents.utils.today import today_line
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.tracking import track_stage
 from agents.utils.welcome import WelcomeState, render_welcome_instruction
@@ -591,6 +592,14 @@ def _esc(value: object) -> str:
     the instructions ("prompt injection by XML forgery").
     """
     return html.escape("" if value is None else str(value), quote=False)
+
+
+@router_agent.instructions
+def inject_today() -> str:
+    """Today's date. Registered first: it changes once a day, so it sits right
+    after the static prompt and every block below keeps its place.
+    """
+    return today_line()
 
 
 @router_agent.instructions

@@ -33,6 +33,7 @@ from pydantic_ai.usage import UsageLimits
 
 from agents.tool_repository.edit_supabase_md import register_edit_supabase_md
 from agents.utils.agent_models import get_agent_model
+from agents.utils.today import today_line
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 from agents.utils.tracking import run_tracked
@@ -238,6 +239,12 @@ write for the requested edit uses its values. Every location the request does \
 not touch stays exactly as it is, even where it disagrees with the memory, and \
 the edit limits above still hold.
 """
+
+
+@editor_agent.instructions
+def inject_today() -> str:
+    """Today's date, right after the static prompt. See ``agents/utils/today.py``."""
+    return today_line()
 
 
 @editor_agent.instructions

@@ -84,6 +84,9 @@ agents/deep_search_v4/case_search/tests/*
 !agents/tests/
 agents/tests/*
 !agents/tests/test_conversation_memory*.py
+# the date line is durable: nothing at runtime notices an agent that stopped
+# receiving it. The model just guesses the date again.
+!agents/tests/test_today_context.py
 # access-tiers / library-gating suites are durable — they pin revenue and
 # entitlement invariants (unlock idempotency, the frozen-library predicate, the
 # شرح exclusion, the ISR cache-leak guard). Losing them loses the contract.

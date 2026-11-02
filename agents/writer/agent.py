@@ -6,18 +6,21 @@ Instruction stack (concatenated by Pydantic AI in registration order):
 
   1. Static ``instructions=get_writer_prompt(subtype)`` — the subtype-specific
      drafting rules (role + subtype body + JSON output contract).
-  2. ``@agent.instructions package_content_block`` — renders
+  2. ``@agent.instructions today_block`` — today's date, for deadlines and
+     elapsed time. It changes once a day, so it sits right after the static
+     prompt.
+  3. ``@agent.instructions package_content_block`` — renders
      ``ctx.deps.package`` (the planner's WriterPackage) as a
      ``<package>...</package>`` system block. Empty in the legacy path.
-  3. ``@agent.instructions workspace_envelope_block`` — renders the per-turn
+  4. ``@agent.instructions workspace_envelope_block`` — renders the per-turn
      human frame (describe_query, task_label, revision marker, style prefs).
      In the legacy path (``deps.package is None``) falls back to
      ``format_writer_context`` so ``attached_items`` still get rendered.
-  4. ``@agent.instructions conversation_memory_block`` — the
+  5. ``@agent.instructions conversation_memory_block`` — the
      ``<conversation_memory>`` block and how it applies to a draft. After the
      package and the envelope, so the prefix above it is untouched. Empty when
      the conversation has no memory.
-  5. ``@agent.instructions welcome_block`` — رسائل الترحيب: the opening line
+  6. ``@agent.instructions welcome_block`` — رسائل الترحيب: the opening line
      for ``chat_summary`` when this turn is the user's first. Empty otherwise.
 
 See ``.claude/plans/writer_redesign.md`` § Dynamic instructions for the
@@ -33,6 +36,7 @@ from pydantic_ai import Agent, RunContext, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.today import today_line
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 from agents.utils.welcome import WELCOME_CHAR_ALLOWANCE
@@ -128,10 +132,16 @@ def create_writer_agent(
 
     # Registration order matters: Pydantic AI's ``@agent.instructions``
     # decorator concatenates dynamic returns AFTER the static ``instructions=``
-    # argument, in the order the callables were registered. We register
-    # ``package_content_block`` FIRST so the structured package precedes the
-    # human envelope frame in the assembled system prompt — the model reads
-    # the structured context, then the lighter-weight frame.
+    # argument, in the order the callables were registered. ``today_block``
+    # goes first, right after the static prompt. ``package_content_block``
+    # follows it so the structured package precedes the human envelope frame
+    # in the assembled system prompt — the model reads the structured
+    # context, then the lighter-weight frame.
+    @agent.instructions
+    def today_block() -> str:
+        """Today's date. See ``agents/utils/today.py``."""
+        return today_line()
+
     @agent.instructions
     async def package_content_block(ctx: RunContext[WriterDeps]) -> str:
         """Render the planner's WriterPackage as a ``<package>...</package>``

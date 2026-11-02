@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 
 from agents.simple_search.models import SIMPLE_SEARCH_LEVELS
 from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
+from agents.utils.today import today_line
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from agents.deep_search_v4.aggregator.models import Reference
@@ -393,11 +394,10 @@ def build_searcher_instructions(deps: object) -> str:
     """Per-turn dynamic instructions for the searcher (case-C candidates + feedback).
 
     Rendered as an ``@agent.instructions`` callback so the blocks are rebuilt
-    every run (a loop-back round must see the rejection that caused it). Returns
-    ``""`` when there is nothing to add, so the call site injects it
-    unconditionally.
+    every run (a loop-back round must see the rejection that caused it). Today's
+    date comes first, right after the static prompt, so this is never empty.
     """
-    blocks: list[str] = []
+    blocks: list[str] = [today_line()]
 
     # The conversation memory, ahead of the window it outranks.
     memory = getattr(deps, "conversation_memory_md", None)
@@ -537,7 +537,7 @@ def build_synthesizer_user_message(
     built by ``agents.utils.welcome`` from an already-cleaned name, and escaping
     it would put ``&quot;`` into the user's chat bubble.
     """
-    parts: list[str] = []
+    parts: list[str] = [today_line(), ""]
 
     if conversation_memory_md:
         parts += [conversation_memory_md, _ANSWER_MEMORY_NOTE, ""]
@@ -782,7 +782,7 @@ def build_responder_user_message(
         :func:`_esc` and fenced as DATA, the same discipline as the searcher and
         synthesizer builders.
     """
-    parts: list[str] = []
+    parts: list[str] = [today_line(), ""]
 
     if conversation_memory_md:
         parts += [conversation_memory_md, _RESPONDER_MEMORY_NOTE, ""]
@@ -1062,7 +1062,7 @@ def build_compliance_user_message(
     Every user-authored or DB-sourced value is escaped through :func:`_esc` and
     fenced as DATA (the XML-forgery defence, same as every builder above).
     """
-    parts: list[str] = []
+    parts: list[str] = [today_line(), ""]
 
     if conversation_memory_md:
         parts += [conversation_memory_md, _ANSWER_MEMORY_NOTE, ""]

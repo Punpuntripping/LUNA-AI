@@ -88,3 +88,7 @@ pywebpush==2.5.0
 markdown-it-py>=4.0,<5.0
 weasyprint==70.0
 pypandoc_binary==1.17
+
+# Hijri date in the agents' date line (agents/utils/today.py). Umm al-Qura
+# calendar; no dependencies of its own.
+hijridate==2.6.0
