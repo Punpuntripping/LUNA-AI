@@ -14,11 +14,10 @@ import type { SearchErrorKind } from "@/hooks/use-search";
  * second copy of the rate-limit wording is exactly how two surfaces start
  * disagreeing about what a 429 means.
  *
- * ⚠ THE TWO BRANCHES ARE DIFFERENT ANSWERS AND MUST STAY DIFFERENT. A full reach
- * budget is a true statement ABOUT THE READER and carries no retry — at an hour
- * of `Retry-After` a button could only fail again — while a fault is «try again»
- * and carries one. Collapsing them into a single «something went wrong» is the
- * exact bug the access-tiers work fixed one layer down.
+ * ⚠ THE TWO BRANCHES ARE DIFFERENT ANSWERS AND MUST STAY DIFFERENT. A rate limit
+ * is a true statement ABOUT THE READER and carries no retry, while a fault is
+ * «try again» and carries one. Collapsing them into a single «something went
+ * wrong» is the exact bug the access-tiers work fixed one layer down.
  *
  * `"use client"` because of `onRetry`: unlike `SearchEmptyState` this is not a
  * pure presentational subtree, and a server component importing it would build

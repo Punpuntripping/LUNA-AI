@@ -59,6 +59,13 @@ export const SEARCH_MIN_LENGTH = 3;
  *  value (`ChatsPage`), so every live search box in the app feels identical. */
 export const SEARCH_DEBOUNCE_MS = 250;
 
+/**
+ * The hub boxes wait longer because each one runs the wing's whole card query,
+ * 0.3–1.1 s on the backend. Replaying the 2026-10-20 session: 250 ms fired 30
+ * requests for 7 searches, 400 ms would have fired 23.
+ */
+export const HUB_SEARCH_DEBOUNCE_MS = 400;
+
 // ------------------------------------------------------------------
 // Shared strings
 // ------------------------------------------------------------------
@@ -85,11 +92,11 @@ export const SEARCH_COPY = {
   retry: "إعادة المحاولة",
 
   /**
-   * The reach meter (navigation hardening 2.2) refused this search. A REAL
-   * answer, not a broken page — so it never collapses into `errorTitle`. Same
-   * wording family as `rateLimitedCopy` in `lib/library/gate-copy.ts`, and it
-   * likewise carries no retry button: at an hour of `Retry-After` a button
-   * could only fail again.
+   * A rate limit refused this search. A REAL answer, not a broken page — so it
+   * never collapses into `errorTitle`. Same wording family as `rateLimitedCopy`
+   * in `lib/library/gate-copy.ts`. Search left the hourly reach meter (page 1 of a
+   * hub search on 2026-11-02), so what is left is the per-minute limit, and
+   * «انتظر قليلاً» is true.
    */
   rateLimitedTitle: "طلبات كثيرة في وقت قصير",
   rateLimitedBody: "انتظر قليلاً ثم أعد البحث.",

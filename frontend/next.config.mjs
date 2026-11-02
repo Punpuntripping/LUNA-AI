@@ -132,8 +132,12 @@ const nextConfig = {
     ];
   },
 
-  // API proxy for development (avoid CORS issues)
+  // API proxy for local development only (avoids CORS there). Production clients
+  // call NEXT_PUBLIC_API_URL directly. Left on in production, this route forwards a
+  // caller's headers through a second Cloudflare hop, which replaces their IP with
+  // this service's and hides it from audit rows and per-IP limits.
   async rewrites() {
+    if (!isDev) return [];
     return [
       {
         source: "/api/:path*",

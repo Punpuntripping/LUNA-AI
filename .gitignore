@@ -163,6 +163,10 @@ agents/tests/*
 # identity under forged CF-Connecting-IP / X-Forwarded-For headers.
 !backend/tests/test_origin_lock.py
 !backend/tests/test_client_ip_resolution.py
+# the guard-signal suite is durable: three limiters answer an identical 429, so the
+# `limiter` label is the only way to tell them apart, and the per-user alerts depend
+# on an id the Logfire scrubber would otherwise mangle for about 1 user in 6.
+!backend/tests/test_guard_signals.py
 # navigation-hardening suites are durable — anon must NEVER be metered per-user
 # (an IP key here would meter the ISR renderer and take the public library down),
 # the 429 must stay a single shared contract, and the filter vocabularies pin the

@@ -104,6 +104,11 @@ enumeration bound it used to provide now rests entirely on the unlock ledger and
 the edge. Re-visiting pages already seen stays free, so this bites on new reach
 only.
 
+⚠ Search left this meter in two steps, both the owner's: ``/api/v1/search`` on
+2026-08-30, and page 1 of a hub ``?q=`` on 2026-11-02
+(``public_library._hub_is_metered``). This module meters browsing. Do not tune
+the ladder to answer a search complaint.
+
 TUNING
 ------
 Env-configurable, read FRESH on every call so a change is an env flip rather than
@@ -139,6 +144,7 @@ from fastapi import Request
 from redis.asyncio import Redis as AsyncRedis
 
 from backend.app.errors import ErrorCode, LunaHTTPException
+from backend.app.middleware import guard_signals
 from backend.app.middleware.rate_limit import (
     RATE_LIMIT_MESSAGE,
     rate_limit_headers,
@@ -532,6 +538,12 @@ async def enforce_item_budget(
             "backend=%s",
             state.user_id, state.used, state.limit, state.window_seconds,
             state.backend,
+        )
+        guard_signals.report_refused(
+            guard_signals.LIMITER_ITEM_BUDGET,
+            request,
+            key_kind=guard_signals.KEY_USER,
+            tier=tier,
         )
         raise _budget_exceeded(state)
 

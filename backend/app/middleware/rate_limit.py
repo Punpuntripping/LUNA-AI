@@ -48,6 +48,9 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from redis.asyncio import Redis as AsyncRedis
 
+from backend.app.middleware import guard_signals
+from backend.app.middleware.origin_lock import lock_is_enforcing
+
 logger = logging.getLogger(__name__)
 
 # Default limits (per IP per window)
@@ -163,7 +166,9 @@ def is_isr_bake_request(request: Request) -> bool:
     if not secret:
         return False
     supplied = request.headers.get(ISR_BAKE_HEADER) or ""
-    return hmac.compare_digest(supplied, secret)
+    # Bytes, because compare_digest raises TypeError on non-ASCII `str`, and this
+    # value comes straight off the wire.
+    return hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8"))
 
 # Arabic 429 message — the ONE string both limiters use (Rule #5).
 RATE_LIMIT_MESSAGE = "تم تجاوز الحد المسموح من الطلبات"
@@ -322,8 +327,14 @@ def trust_cf_headers() -> bool:
 
     Read fresh on every call (same stance as ask_service's kill switches) so the
     cutover is an env-var change, and so tests can toggle it with monkeypatch.
+
+    ⚠ THE FLAG ALONE IS NOT ENOUGH. These headers are only Cloudflare's while the
+    origin lock proves every request came through Cloudflare. Rolling the lock back
+    to observe has to stop the trust too, or anyone reaching the Railway host could
+    forge ``CF-Connecting-IP`` and ``X-Verified-Bot``: a fresh rate-limit bucket per
+    request, a forged audit IP, and the anonymous hub cap lifted.
     """
-    return _env_bool(TRUST_CF_HEADERS_ENV, default=False)
+    return _env_bool(TRUST_CF_HEADERS_ENV, default=False) and lock_is_enforcing()
 
 
 def _forwarded_or_peer(request: Request) -> Optional[str]:
@@ -351,7 +362,7 @@ def resolve_client_ip(request: Request) -> Optional[str]:
         hop, else the socket peer, else ``None``. ``CF-Connecting-IP`` is
         ignored completely, so an attacker cannot mint buckets by sending it.
 
-    ``TRUST_CF_HEADERS`` true (only once every DNS record is orange-clouded):
+    ``TRUST_CF_HEADERS`` true AND the origin lock enforcing:
         ``CF-Connecting-IP`` wins when present; when it is absent or blank we
         fall back to the same XFF/peer chain, which keeps direct-to-origin
         callers Cloudflare never sees — the Railway healthcheck on
@@ -422,6 +433,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        guard_signals.flush_due()
+
         # Skip exempt paths
         if request.url.path in EXEMPT_PATHS:
             return await call_next(request)
@@ -499,7 +512,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         rate_key_id = client_ip  # default: IP-based
 
         auth_header = request.headers.get("authorization", "")
-        if is_user_keyed_auth_path(request) and auth_header.startswith("Bearer "):
+        # The scheme is case-insensitive, and FastAPI's HTTPBearer agrees, so a
+        # case-sensitive check here would hand `bearer <token>` the per-IP key.
+        has_bearer = auth_header[:7].lower() == "bearer "
+        if is_user_keyed_auth_path(request) and has_bearer:
             # GET /auth/me — see is_user_keyed_auth_path. Unlike the branch
             # below, the token is VERIFIED here (signature/exp/aud): this path
             # sits in the strict auth bucket, so a forged `sub` must not mint
@@ -507,7 +523,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             verified_sub = await _verified_sub(auth_header[7:])
             if verified_sub:
                 rate_key_id = f"user:{verified_sub}"
-        elif auth_header.startswith("Bearer ") and not request.url.path.startswith("/api/v1/auth/"):
+        elif has_bearer and not request.url.path.startswith("/api/v1/auth/"):
             try:
                 # Decode WITHOUT verification — just extract 'sub' for rate limiting.
                 # Full verification happens in deps.get_current_user().
@@ -548,6 +564,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             reset_at = int(now + window)
 
             if current_count > max_requests:
+                guard_signals.report_refused(
+                    guard_signals.LIMITER_GLOBAL,
+                    request,
+                    key_kind=(
+                        guard_signals.KEY_USER
+                        if rate_key_id.startswith("user:")
+                        else guard_signals.KEY_ANON
+                    ),
+                )
                 return rate_limited_response(reset_at=reset_at, window_seconds=window)
 
             # Proceed with request

@@ -67,11 +67,10 @@ export interface HubSearchResponse {
 /**
  * Why a search produced nothing, when it was not simply an empty result set.
  *
- *   rate_limited → 429: the per-user reach meter (navigation hardening 2.2) is
- *                  full for this window. A real, explainable answer — search
- *                  results charge the item budget exactly like browse results
- *                  (§5.4, no exemption), so this is reachable by normal use and
- *                  must never render as «something broke».
+ *   rate_limited → 429: a rate limit refused this search. A real, explainable
+ *                  answer that must never render as «something broke». Searches
+ *                  no longer spend the hourly reach meter, so this is the
+ *                  per-minute limit.
  *   failed       → dead session, transport fault, 5xx, unparsable body. All
  *                  indistinguishable to a reader, and all mean «try again».
  */
@@ -139,11 +138,15 @@ async function isRateLimited(res: Response): Promise<boolean> {
  * global «redirect to /login» while a reader is on a PUBLIC library page. It
  * surfaces here as `failed`, the box keeps working, and the page they were
  * reading stays on screen.
+ *
+ * `signal` drops the response of a query the reader has typed past. It does not
+ * refund anything: a request that already reached the backend is still charged.
  */
 async function fetchHubSearch(
   section: SearchSurface,
   query: string,
-  filters?: SearchFilters,
+  filters: SearchFilters | undefined,
+  signal: AbortSignal,
 ): Promise<HubSearchResponse> {
   const token = getAccessToken();
   if (!token) throw new SearchRequestError("failed");
@@ -155,9 +158,11 @@ async function fetchHubSearch(
   try {
     res = await fetch(
       `${API_BASE}/api/v1/public/library/${section}?${params.toString()}`,
-      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal },
     );
-  } catch {
+  } catch (error) {
+    // An abort is the reader typing, never a failed search.
+    if (signal.aborted) throw error;
     throw new SearchRequestError("failed");
   }
 
@@ -192,9 +197,9 @@ export interface UseHubSearchParams {
  * ONE PAGE, not an infinite list, and that is a decision rather than a
  * shortcut: BM25 pins an exact title match at rank 1 by construction (§4.3) and
  * ranks the rest, so page 2 of a navigation search is almost always the wrong
- * answer to a better query. It also keeps the item budget honest — every
- * yielded row is charged (§5.4). When the set spills over,
- * `SEARCH_COPY.moreResults` asks for another word instead of paging.
+ * answer to a better query. It is also what keeps a search free: page 1 spends
+ * no reach budget (`_hub_is_metered`), deeper pages do. When the set spills
+ * over, `SEARCH_COPY.moreResults` asks for another word instead of paging.
  *
  * `keepPreviousData` holds the previous result set on screen while the next
  * keystroke's query is in flight, so the grid does not collapse to a skeleton
@@ -210,7 +215,7 @@ export function useHubSearch({
   const trimmed = query.trim();
   return useQuery({
     queryKey: searchKeys.hub(section, trimmed, filters),
-    queryFn: () => fetchHubSearch(section, trimmed, filters),
+    queryFn: ({ signal }) => fetchHubSearch(section, trimmed, filters, signal),
     enabled: enabled && trimmed.length >= SEARCH_MIN_LENGTH,
     placeholderData: keepPreviousData,
     staleTime: 60_000,

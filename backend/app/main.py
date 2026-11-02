@@ -550,8 +550,8 @@ def create_app() -> FastAPI:
     #         edge is refused before it can cost a Logfire span, a Redis
     #         round-trip in the rate limiter, or any routing/DB work.
     #     Disabled by default (EDGE_SECRET unset ⇒ pure pass-through) — see
-    #     middleware/origin_lock.py. Do not set EDGE_SECRET until the zone's
-    #     records are orange-clouded.
+    #     middleware/origin_lock.py. Setting EDGE_SECRET with ORIGIN_LOCK_MODE
+    #     unset enforces at once, so set ORIGIN_LOCK_MODE=observe first.
     from backend.app.middleware.origin_lock import OriginLockMiddleware
     application.add_middleware(OriginLockMiddleware)
 

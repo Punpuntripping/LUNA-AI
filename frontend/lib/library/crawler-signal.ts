@@ -19,8 +19,9 @@
 
 import "server-only";
 
-import { createHash, timingSafeEqual } from "node:crypto";
 import { headers } from "next/headers";
+
+import { anyValueMatches, splitValues } from "@/lib/edge/secret-match";
 
 /** Set by Cloudflare's Transform Rule from `cf.client.bot` — `0` on every request, `1` for a verified bot. */
 const VERIFIED_BOT_HEADER = "x-verified-bot";
@@ -30,46 +31,6 @@ const EDGE_SECRET_HEADER = "x-edge-secret";
 
 /** Mirrors `public_library._TRUTHY_HEADER_VALUES` — one vocabulary, two layers. */
 const TRUTHY_VALUES = new Set(["1", "true", "yes", "on"]);
-
-/**
- * Split one header slot into its individual values.
- *
- * `Headers.get()` returns DUPLICATE headers comma-joined, and duplicates are the
- * normal case here: Cloudflare *appends* to client-supplied headers on some
- * paths (the same behaviour that makes leftmost `X-Forwarded-For` untrustworthy
- * — plan §3.5). A caller that reads the joined string as a single value gets a
- * forged prefix for free.
- */
-function splitValues(raw: string | null): string[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-/**
- * Constant-time "does any copy of this header equal the expected secret".
- *
- * Digests, not raw values: `timingSafeEqual` throws on length mismatch, which
- * would leak the secret's length and turn a junk header into a 500. Matching ANY
- * copy mirrors `origin_lock._header_matches` on the backend — with Cloudflare
- * appending, a forged value can sit alongside the real one, and taking only the
- * first would reject legitimate proxied traffic. Accepting any match weakens
- * nothing: the attacker still has to produce the secret.
- *
- * No early `break` — every comparison runs, so total work does not depend on
- * which copy matched.
- */
-function anyValueMatches(values: string[], expected: string): boolean {
-  const expectedDigest = createHash("sha256").update(expected, "utf8").digest();
-  let matched = false;
-  for (const value of values) {
-    const digest = createHash("sha256").update(value, "utf8").digest();
-    if (timingSafeEqual(digest, expectedDigest)) matched = true;
-  }
-  return matched;
-}
 
 let warnedAboutMissingProof = false;
 

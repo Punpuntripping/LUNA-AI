@@ -11,8 +11,8 @@ import { SearchFailure } from "@/components/search/SearchFailure";
 import { HubCards } from "@/components/library/hub/HubCards";
 import { searchErrorKind, useHubSearch } from "@/hooks/use-search";
 import {
+  HUB_SEARCH_DEBOUNCE_MS,
   SEARCH_COPY,
-  SEARCH_DEBOUNCE_MS,
   SEARCH_MIN_LENGTH,
   SEARCH_SURFACE_COPY,
   searchResultCount,
@@ -111,7 +111,7 @@ export function HubSearchPanel({
     if (seeded.trim().length > 0) setRawQuery(seeded);
   }, []);
 
-  const query = useDebounce(rawQuery, SEARCH_DEBOUNCE_MS).trim();
+  const query = useDebounce(rawQuery, HUB_SEARCH_DEBOUNCE_MS).trim();
 
   // Mirror the debounced query onto the URL. `replaceState`, not `pushState`:
   // one history entry per keystroke would make the back button unusable.

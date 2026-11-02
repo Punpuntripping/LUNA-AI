@@ -66,6 +66,9 @@ _KEEP_PATHS: set[tuple[str, ...]] = {
     ("attributes", "agent_family"),
     ("attributes", "task_id"),
     ("attributes", "model"),
+    # The phone pattern above matches a digit run inside about 1 UUID in 6, and
+    # the per-user library alerts must group on this id. See guard_signals.py.
+    ("attributes", "library_user_id"),
 }
 
 

@@ -32,6 +32,7 @@ from supabase import Client as SupabaseClient
 
 from backend.app.api.workspace import _to_response as _wi_to_response
 from backend.app.deps import get_current_user, get_supabase, validate_uuid
+from backend.app.middleware import guard_signals
 from backend.app.models.responses import WorkspaceItemResponse
 from backend.app.services import library_item_service
 from backend.app.services.case_service import get_user_id
@@ -123,6 +124,13 @@ async def create_library_item(
     """
     validate_uuid(conversation_id, "معرف المحادثة")
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    # Before the service call, so a run of refused probes counts as well. The type
+    # is client text until proven otherwise, hence the closed vocabulary.
+    page_type = library_item_service.normalize_page_type(body.page_type)
+    guard_signals.report_carrier_call(
+        user_id,
+        page_type if page_type in library_item_service.SUPPORTED_PAGE_TYPES else "other",
+    )
     item, already_attached = await run_db(
         library_item_service.create_library_item,
         supabase,

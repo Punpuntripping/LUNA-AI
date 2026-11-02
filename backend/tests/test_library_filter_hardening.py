@@ -663,8 +663,15 @@ def test_the_edge_bot_header_is_ignored_while_untrusted(stub_hubs) -> None:
     assert body["cap_reached"] is True
 
 
-def test_a_trusted_edge_header_grants_the_exemption(stub_hubs, monkeypatch) -> None:
+def _trust_the_edge(monkeypatch) -> None:
+    """The flag only counts while the origin lock is enforcing."""
     monkeypatch.setenv("TRUST_CF_HEADERS", "true")
+    monkeypatch.setenv("EDGE_SECRET", "test-edge-secret")
+    monkeypatch.setenv("ORIGIN_LOCK_MODE", "enforce")
+
+
+def test_a_trusted_edge_header_grants_the_exemption(stub_hubs, monkeypatch) -> None:
+    _trust_the_edge(monkeypatch)
     body = _body(
         _client().get(
             REG_HUB,
@@ -679,7 +686,7 @@ def test_behind_a_trusted_edge_the_header_is_authoritative(stub_hubs, monkeypatc
     """Once Cloudflare is in front, it has already verified the crawler by
     reverse DNS + published ranges. It said no, so a Googlebot UA is a forgery and
     the spoofable fallback must not get a second vote."""
-    monkeypatch.setenv("TRUST_CF_HEADERS", "true")
+    _trust_the_edge(monkeypatch)
     body = _body(
         _client().get(REG_HUB, params={"page": 9}, headers={"user-agent": GOOGLEBOT_UA})
     )

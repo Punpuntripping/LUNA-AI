@@ -22,6 +22,7 @@ import time
 import typing
 from typing import Any, Dict, List, Optional, Tuple
 
+import jwt as pyjwt
 import pytest
 from fastapi import Depends, FastAPI, Request
 from fastapi.security import HTTPAuthorizationCredentials
@@ -692,6 +693,37 @@ def test_bake_secret_bypasses_hub_list_limit(monkeypatch) -> None:
 
     # The bare unified-hub path (no trailing segment) is part of the bake too.
     assert client.get("/api/v1/public/library", headers=headers).status_code == 200
+
+
+def test_a_non_ascii_bake_secret_is_refused_not_a_crash(monkeypatch) -> None:
+    """``compare_digest`` raises TypeError on non-ASCII ``str``, and this header is
+    attacker-controlled, so it would surface as a 500."""
+    monkeypatch.setenv(rl.ISR_BAKE_SECRET_ENV, _BAKE_SECRET)
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/public/library/regulations",
+            "query_string": b"",
+            "headers": [(rl.ISR_BAKE_HEADER.lower().encode(), "é".encode("latin-1"))],
+        }
+    )
+    assert rl.is_isr_bake_request(request) is False
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER"])
+def test_the_user_key_ignores_the_case_of_the_scheme(scheme: str) -> None:
+    """FastAPI accepts any case, so a case-sensitive check would drop a signed-in
+    caller back to the per-IP key, and per-IP is the one a proxy pool escapes."""
+    token = pyjwt.encode({"sub": "user-a"}, "k" * 32, algorithm="HS256")
+    redis = FakeRedis()
+
+    TestClient(_middleware_app(redis)).get(
+        "/api/v1/public/library/regulations",
+        headers={"Authorization": f"{scheme} {token}"},
+    )
+
+    assert any(k.startswith("ratelimit:user:user-a:") for k in redis.keys_seen)
 
 
 def test_bake_secret_wrong_or_absent_keeps_the_limit(monkeypatch) -> None:

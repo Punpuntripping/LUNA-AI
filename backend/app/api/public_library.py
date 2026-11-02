@@ -937,7 +937,21 @@ def _visible_total_pages(tier: str, real_total: int, *, filtered: bool) -> int:
 #                                DB round-trip)
 #   5. the query
 #   6. CHARGE the yielded ids   (after — never charge for items not served)
+#
+# ⚠ PAGE 1 OF A SEARCH IS NOT METERED (owner, 2026-11-02). Search is navigation:
+# the same call took ``/api/v1/search`` off this budget on 2026-08-30, but the four
+# hub boxes search through the wing endpoint and stayed on it. There each fired
+# search spent up to 9 ids, so 4 of them locked a free reader out for an hour, and
+# one typed word can fire several (every library 429 in the 14 days to 11-02).
+# Search pages past the first stay metered: the UI never asks for them, so only a
+# script walking result pages pays. ``forms`` has no box and stays metered too.
 # ============================================
+
+
+def _hub_is_metered(q: Optional[str], page: int) -> bool:
+    """Does this hub request spend the §2.2 budget? ``q`` must be the value left
+    after ``_search_query``, which is None for an anonymous caller."""
+    return not (q and page == 1)
 
 
 async def _charge_hub_yield(
@@ -1136,7 +1150,8 @@ def _search_text(value: Optional[str]) -> Optional[str]:
 #   2. ENUMERATION. A search box is a FILTER DIMENSION stacked on top of the page
 #      -depth cap, which is exactly the hole ``navigation_enumeration_defence.md``
 #      documents: every distinct ``q`` is a fresh page 1. Requiring an account
-#      puts every search hit on an item budget tied to a real user (§5.4).
+#      ties every search to a real user. Page 1 of a search left the item budget
+#      on 2026-11-02 (see ``_hub_is_metered``); deeper pages stay on it.
 #
 # ⚠ AN ANON ``?q=`` IS DROPPED, NOT REFUSED. A registered user WILL share a
 # search URL, and the anonymous recipient must land on "here is the wing", not on
@@ -2728,8 +2743,7 @@ async def list_regulations(
     purposes, so it reports real counts. Depth caps are untouched.
 
     A signed-in caller's yielded items are metered (§2.2) — 429 past the
-    per-user budget. Search results charge that budget identically to browse
-    results; there is no search exemption (§5.4)."""
+    per-user budget, except page 1 of a search (see ``_hub_is_metered``)."""
     entity = _entity_token(entity)
     doc_type = _vocab_value(doc_type, _DOC_TYPE_VOCAB, MSG_INVALID_DOC_TYPE)
     sector, sector_key = _sector_section(sector_slug, sector)
@@ -2768,7 +2782,9 @@ async def list_regulations(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id, tier)
+    metered = _hub_is_metered(q, page)
+    if metered:
+        await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_regulations_hub,
@@ -2779,7 +2795,8 @@ async def list_regulations(
         sector=sector,
         q=q,
     )
-    await _charge_hub_yield(request, supabase, user_id, "regulations", data["items"], tier)
+    if metered:
+        await _charge_hub_yield(request, supabase, user_id, "regulations", data["items"], tier)
     return RegHubResponse(
         items=[RegHubItem(**it) for it in data["items"]],
         page=data["page"],
@@ -2985,7 +3002,9 @@ async def list_compliance(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id, tier)
+    metered = _hub_is_metered(q, page)
+    if metered:
+        await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_compliance_hub,
@@ -2996,7 +3015,8 @@ async def list_compliance(
         q=q,
         entity=entity,
     )
-    await _charge_hub_yield(request, supabase, user_id, "compliance", data["items"], tier)
+    if metered:
+        await _charge_hub_yield(request, supabase, user_id, "compliance", data["items"], tier)
     return ComplianceHubResponse(
         items=[ComplianceHubItem(**it) for it in data["items"]],
         page=data["page"],
@@ -3180,7 +3200,9 @@ async def list_circulars(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id, tier)
+    metered = _hub_is_metered(q, page)
+    if metered:
+        await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_circulars_hub,
@@ -3190,7 +3212,8 @@ async def list_circulars(
         q=q,
         sector=sector,
     )
-    await _charge_hub_yield(request, supabase, user_id, "circulars", data["items"], tier)
+    if metered:
+        await _charge_hub_yield(request, supabase, user_id, "circulars", data["items"], tier)
     return CircularHubResponse(
         items=[CircularHubItem(**it) for it in data["items"]],
         page=data["page"],
@@ -3334,7 +3357,9 @@ async def list_judgments(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id, tier)
+    metered = _hub_is_metered(q, page)
+    if metered:
+        await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_judgments_hub,
@@ -3345,7 +3370,8 @@ async def list_judgments(
         q=q,
         court_variants=court_variants,
     )
-    await _charge_hub_yield(request, supabase, user_id, "judgments", data["items"], tier)
+    if metered:
+        await _charge_hub_yield(request, supabase, user_id, "judgments", data["items"], tier)
     return JudgmentHubResponse(
         items=[JudgmentHubItem(**it) for it in data["items"]],
         page=data["page"],

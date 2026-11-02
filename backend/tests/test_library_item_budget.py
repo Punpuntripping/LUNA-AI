@@ -377,16 +377,89 @@ def test_two_wings_sharing_a_slug_are_two_items(stub_hubs) -> None:
     assert keys == ["regulations:x", "judgments:x"]
 
 
-def test_distinct_filters_do_move_the_meter(stub_hubs) -> None:
+def test_walking_search_pages_moves_the_meter(stub_hubs) -> None:
     """The §2.1 residue this control exists for: every distinct ``q`` is a fresh
-    page 1 of NEW items, which a request counter would happily allow."""
+    slice of NEW items, which a request counter would happily allow. Page 1 of a
+    search left the meter on 2026-11-02; the UI never asks for page 2, so only a
+    script reaches this."""
     redis = FakeRedis()
     client = _client(user=_User(), redis=redis)
 
     for term in ("نظام", "لائحة", "تنظيم", "قرار"):
-        assert client.get(REG_HUB, params={"q": term}).status_code == 200
+        assert client.get(REG_HUB, params={"q": term, "page": 2}).status_code == 200
 
     assert len(_bucket(redis)) == 4 * PAGE_SIZE
+
+
+# ===========================================================================
+# 2b. Search is navigation (owner, 2026-08-30 for /search, 2026-11-02 for the hubs)
+# ===========================================================================
+
+
+SEARCH_WINGS = ("regulations", "compliance", "circulars", "judgments")
+
+
+def _fill_budget_by_browsing(client: TestClient) -> None:
+    """A free reader browsing three wings to the depth cap: 9 pages, 81 ids."""
+    codes = [
+        client.get(HUBS[section][0], params={"page": page}).status_code
+        for section in ("regulations", "circulars", "judgments")
+        for page in (1, 2, 3)
+    ]
+    assert 429 in codes, codes
+
+
+@pytest.mark.parametrize(
+    ("query", "page", "metered"),
+    [(None, 1, True), (None, 2, True), ("", 1, True), ("نظام", 1, False), ("نظام", 2, True)],
+)
+def test_only_page_one_of_a_search_is_unmetered(query, page, metered) -> None:
+    assert pl._hub_is_metered(query, page) is metered
+
+
+@pytest.mark.parametrize("section", SEARCH_WINGS)
+def test_typing_a_query_spends_nothing_and_is_never_refused(stub_hubs, section) -> None:
+    """The acceptance test: every prefix of a 16-character query fired on its own,
+    which is worse than any real typist, on the tightest row of the ladder."""
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis, plan="free")
+    typed = "الدائرة القضائية"
+
+    codes = {
+        client.get(HUBS[section][0], params={"q": typed[:n].strip()}).status_code
+        for n in range(3, len(typed) + 1)
+    }
+
+    assert codes == {200}
+    assert _bucket(redis) == {}
+
+
+@pytest.mark.parametrize("section", SEARCH_WINGS)
+def test_a_full_budget_does_not_disable_the_search_box(stub_hubs, section) -> None:
+    """The owner's reason, in one test: browsing to the cap must not take search
+    with it. Browsing itself stays refused."""
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis, plan="free")
+    _fill_budget_by_browsing(client)
+
+    assert client.get(HUBS[section][0], params={"q": "نظام العمل"}).status_code == 200
+    assert client.get(REG_HUB).status_code == 429
+
+
+def test_a_search_past_page_one_is_refused_on_a_full_budget(stub_hubs) -> None:
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis, plan="free")
+    _fill_budget_by_browsing(client)
+
+    assert client.get(REG_HUB, params={"q": "نظام العمل", "page": 2}).status_code == 429
+
+
+def test_forms_has_no_search_box_and_stays_metered(stub_hubs) -> None:
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis)
+
+    assert client.get(HUBS["forms"][0], params={"q": "نموذج"}).status_code == 200
+    assert len(_bucket(redis)) == PAGE_SIZE
 
 
 # ===========================================================================
@@ -656,13 +729,8 @@ def test_a_free_caller_is_metered_on_the_free_row(stub_hubs) -> None:
     redis = FakeRedis()
     client = _client(user=_User(), redis=redis, plan="free")
 
-    # Free depth caps at page 3, so breadth is the only way to spend: distinct
-    # filter slices, each a fresh page 1 of 9.
-    codes = [
-        client.get(REG_HUB, params={"q": term}).status_code
-        for term in ("عمل", "تجارة", "شركات", "ضريبة", "تأمين", "عقار")
-    ]
-    assert 429 in codes, codes
+    # Free depth caps at page 3, so breadth is the only way to spend.
+    _fill_budget_by_browsing(client)
     assert len(_bucket(redis)) <= lb.DEFAULT_FREE_ITEM_BUDGET + PAGE_SIZE
 
 

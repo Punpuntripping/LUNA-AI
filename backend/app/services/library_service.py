@@ -56,6 +56,7 @@ from supabase import Client as SupabaseClient
 # module docstring of ``case_summary``. This is that rule applied to the library.
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.middleware import guard_signals
 # The public blog wing owns its own visibility predicate (migrations 153/154);
 # the ``blog-subjects`` sitemap section reuses it rather than restating it.
 # Import-safe: ``public_blog_service`` reaches only ``errors`` + ``blog_service``.
@@ -2046,6 +2047,7 @@ async def resolve_access(
             reason="already_unlocked" if outcome == "conflict" else "ledger_unavailable",
             used=state.used, limit=state.limit, resets_at=state.resets_at,
         )
+    guard_signals.report_unlock_written(str(user_id), ct, cost)
     return AccessDecision(
         may_unlock=True, charged=True, reason="granted", cost=cost,
         used=state.used + cost, limit=state.limit, resets_at=state.resets_at,

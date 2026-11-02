@@ -33,6 +33,11 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from backend.app.middleware import rate_limit as rl
+from backend.app.middleware.origin_lock import (
+    EDGE_SECRET_ENV,
+    MODE_ENFORCE,
+    ORIGIN_LOCK_MODE_ENV,
+)
 from backend.app.middleware.rate_limit import (
     RateLimitMiddleware,
     client_ip_for_rate_limit,
@@ -47,9 +52,13 @@ PEER = "198.51.100.7"
 
 
 @pytest.fixture(autouse=True)
-def _flag_unset(monkeypatch):
-    """Never inherit a developer's shell. Each test sets the flag explicitly."""
+def _flag_unset_and_lock_enforcing(monkeypatch):
+    """Never inherit a developer's shell. Each test sets the flag explicitly, with
+    the origin lock enforcing, because the flag means nothing without it (pinned
+    by the rollback tests in section 1)."""
     monkeypatch.delenv(rl.TRUST_CF_HEADERS_ENV, raising=False)
+    monkeypatch.setenv(EDGE_SECRET_ENV, "test-edge-secret")
+    monkeypatch.setenv(ORIGIN_LOCK_MODE_ENV, MODE_ENFORCE)
     yield
 
 
@@ -99,6 +108,45 @@ def test_flag_is_read_fresh_not_frozen_at_import(monkeypatch) -> None:
     assert trust_cf_headers() is True
     monkeypatch.setenv(rl.TRUST_CF_HEADERS_ENV, "false")
     assert trust_cf_headers() is False
+
+
+@pytest.mark.parametrize("mode", ["observe", "off", "typo", "ENFORCE", ""])
+def test_rolling_the_lock_back_stops_the_trust(monkeypatch, mode: str) -> None:
+    """The rollback is ``ORIGIN_LOCK_MODE=observe`` with the flag still on. Nothing
+    proves a request came through Cloudflare any more, so a forged header must
+    not move a bucket or an audit row."""
+    monkeypatch.setenv(rl.TRUST_CF_HEADERS_ENV, "true")
+    monkeypatch.setenv(ORIGIN_LOCK_MODE_ENV, mode)
+
+    assert trust_cf_headers() is False
+    assert resolve_client_ip(_request({CF: "9.9.9.9", XFF: "203.0.113.9"})) == "203.0.113.9"
+
+
+def test_a_deleted_mode_stops_the_trust(monkeypatch) -> None:
+    monkeypatch.setenv(rl.TRUST_CF_HEADERS_ENV, "true")
+    monkeypatch.delenv(ORIGIN_LOCK_MODE_ENV, raising=False)
+    assert trust_cf_headers() is False
+
+
+@pytest.mark.parametrize("secret", ["", "   "])
+def test_a_blank_secret_stops_the_trust(monkeypatch, secret: str) -> None:
+    monkeypatch.setenv(rl.TRUST_CF_HEADERS_ENV, "true")
+    monkeypatch.setenv(EDGE_SECRET_ENV, secret)
+    assert trust_cf_headers() is False
+
+
+def test_a_deleted_secret_stops_the_trust(monkeypatch) -> None:
+    monkeypatch.setenv(rl.TRUST_CF_HEADERS_ENV, "true")
+    monkeypatch.delenv(EDGE_SECRET_ENV, raising=False)
+    assert trust_cf_headers() is False
+
+
+def test_the_verified_bot_header_stops_with_it(monkeypatch) -> None:
+    """``public_library`` asks the same function, so a rollback also stops a forged
+    ``X-Verified-Bot`` from lifting the anonymous hub cap."""
+    from backend.app.api import public_library
+
+    assert public_library.trust_cf_headers is trust_cf_headers
 
 
 # ===========================================================================

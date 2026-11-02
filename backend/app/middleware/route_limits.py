@@ -105,6 +105,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis.asyncio import Redis as AsyncRedis
 
 from backend.app.errors import ErrorCode, LunaHTTPException
+from backend.app.middleware import guard_signals
 from backend.app.middleware.rate_limit import (
     RATE_LIMIT_MESSAGE,
     client_ip_for_rate_limit,
@@ -346,6 +347,13 @@ class RouteRateLimiter:
                 count,
                 self.limit,
                 backend,
+            )
+            guard_signals.report_refused(
+                guard_signals.LIMITER_ROUTE,
+                request,
+                key_kind=(
+                    guard_signals.KEY_USER if identity.verified else guard_signals.KEY_ANON
+                ),
             )
             raise LunaHTTPException(
                 status_code=429,

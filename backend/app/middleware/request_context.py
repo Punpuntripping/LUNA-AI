@@ -23,6 +23,7 @@ decision keeps living in exactly one place.
 from __future__ import annotations
 
 import contextvars
+import ipaddress
 from typing import Optional
 
 from fastapi import Request
@@ -55,6 +56,26 @@ _APP_CLIENT: contextvars.ContextVar[Optional[dict[str, str]]] = contextvars.Cont
 )
 
 
+def _valid_ip(raw: Optional[str]) -> Optional[str]:
+    """``raw`` in canonical form, or None when it is not an IP address.
+
+    ``audit_logs.ip_address`` is INET, so an invalid value would make Postgres
+    reject the whole INSERT and the audit row would be lost. The resolved IP can
+    be a raw header value, so it is checked here, once, for every reader.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = ipaddress.ip_address(raw.strip())
+    except ValueError:
+        return None
+    # Python accepts an IPv6 zone ("fe80::1%eth0"). It means nothing beyond one
+    # link, and INET has nowhere to keep it.
+    if getattr(parsed, "scope_id", None):
+        return None
+    return str(parsed)
+
+
 def capture_request_context(request: Request) -> None:
     """Publish the caller's IP + User-Agent for the rest of this request.
 
@@ -66,7 +87,7 @@ def capture_request_context(request: Request) -> None:
         # is imported by audit_service, which tests construct standalone.
         from backend.app.middleware.rate_limit import resolve_client_ip
 
-        _CLIENT_IP.set(resolve_client_ip(request))
+        _CLIENT_IP.set(_valid_ip(resolve_client_ip(request)))
     except Exception:  # noqa: BLE001
         _CLIENT_IP.set(None)
 
