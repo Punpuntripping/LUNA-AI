@@ -16,11 +16,23 @@ export const FREE_TRIAL_PLAN_ID = "basic" as const;
 export const FREE_OCR_PAGES = 3;
 export const FREE_TRIAL_OCR_PAGES = 50;
 
+/** The server sets the length per account. This is only the fallback. */
+export const FREE_TRIAL_DEFAULT_DAYS = 7;
+
+/** The wording that changes with the trial's length. */
+export function freeTrialLength(days: number) {
+  const twoWeeks = days >= 14;
+  const span = twoWeeks ? "أسبوعين" : "أسبوع";
+  return {
+    title: `جرّب ريحان مجاناً لمدة ${span}`,
+    badge: twoWeeks ? "أسبوعان مجاناً" : "أسبوع مجاني",
+    period: `لمدة ${span}`,
+    points: twoWeeks ? "74 نقطة استخدام أسبوعياً" : "74 نقطة استخدام طوال الأسبوع",
+  };
+}
+
 export const FREE_TRIAL_COPY = {
-  title: "جرّب ريحان مجاناً لمدة أسبوع",
-  badge: "أسبوع مجاني",
   price: "0",
-  period: "لمدة أسبوع",
   note: "بدون بطاقة، ولا يُخصم منك شيء",
   cta: "احصل على العرض",
   pending: "جارٍ التفعيل…",
@@ -32,7 +44,6 @@ export const FREE_TRIAL_COPY = {
     `عدد صفحات ملفك ${pages}، والباقة المجانية تشمل ${FREE_OCR_PAGES} صفحات.`,
   failed: "تعذّر تفعيل العرض. حاول مرة أخرى.",
   features: [
-    "74 نقطة استخدام طوال الأسبوع",
     "15 نقطة لكل جلسة (5 ساعات)",
     `${FREE_TRIAL_OCR_PAGES} صفحة استخراج نص`,
     "تقارير الباحث ومسودات الكاتب كاملة مع مشاركتها وتصديرها",

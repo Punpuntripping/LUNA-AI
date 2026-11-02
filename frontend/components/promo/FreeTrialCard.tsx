@@ -3,11 +3,16 @@ import { Button } from "@/components/ui/button";
 import { PlanPrice } from "@/components/pricing/PlanPrice";
 import { PromoTermsLink } from "@/components/pricing/PromoTermsLink";
 import type { PricingPlan } from "@/lib/pricing";
-import { FREE_TRIAL_COPY } from "@/components/promo/free-trial-content";
+import {
+  FREE_TRIAL_COPY,
+  freeTrialLength,
+} from "@/components/promo/free-trial-content";
 
 interface FreeTrialCardProps {
   /** The catalog card the week is presented as: name, tagline, list price. */
   plan: PricingPlan;
+  /** How long this account's trial runs. */
+  days: number;
   pending: boolean;
   onClaim: () => void;
 }
@@ -17,14 +22,20 @@ interface FreeTrialCardProps {
  * through beside 0. The button grants the week directly, with no checkout, so
  * this is not a `PlanCheckoutCta`.
  */
-export function FreeTrialCard({ plan, pending, onClaim }: FreeTrialCardProps) {
+export function FreeTrialCard({
+  plan,
+  days,
+  pending,
+  onClaim,
+}: FreeTrialCardProps) {
+  const length = freeTrialLength(days);
   return (
     <div
       className="relative flex flex-col rounded-2xl border border-primary bg-card p-5 shadow-lg"
       data-testid="free-trial-card"
     >
       <span className="absolute -top-3 right-5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground">
-        {FREE_TRIAL_COPY.badge}
+        {length.badge}
       </span>
 
       <h3 className="text-base font-bold text-foreground">{plan.nameAr}</h3>
@@ -33,14 +44,14 @@ export function FreeTrialCard({ plan, pending, onClaim }: FreeTrialCardProps) {
       <PlanPrice
         price={FREE_TRIAL_COPY.price}
         listPrice={plan.price}
-        period={FREE_TRIAL_COPY.period}
+        period={length.period}
         className="mt-4"
       />
       <p className="mt-2 text-xs text-muted-foreground">{FREE_TRIAL_COPY.note}</p>
       <PromoTermsLink className="mt-1.5 text-xs" />
 
       <ul className="mt-5 flex flex-col gap-2.5">
-        {FREE_TRIAL_COPY.features.map((feature) => (
+        {[length.points, ...FREE_TRIAL_COPY.features].map((feature) => (
           <li
             key={feature}
             className="flex items-start gap-2 text-sm text-foreground"

@@ -212,6 +212,18 @@ def _free_trial_eligible_rpc(supabase: SupabaseClient, user_id: str) -> bool:
     return getattr(result, "data", None) is True
 
 
+def _free_trial_days_rpc(supabase: SupabaseClient, user_id: str) -> Optional[int]:
+    """How long the caller's trial runs. Display only: the claim picks the plan
+    itself, so an unreadable answer leaves the dialog at its default length."""
+    try:
+        result = supabase.rpc("free_trial_days", {"p_user_id": user_id}).execute()
+    except Exception as e:  # noqa: BLE001 — a promotion must not break the wall
+        logger.warning("free_trial_days unavailable for user=%s: %s", user_id, e)
+        return None
+    data = getattr(result, "data", None)
+    return data if isinstance(data, int) and not isinstance(data, bool) else None
+
+
 def _claim_free_trial_rpc(supabase: SupabaseClient, user_id: str) -> dict:
     """Call the atomic claim RPC (sync — run via run_db). ``{}`` when it returned
     no row at all; unexpected failures propagate to the generic 500 handler."""
@@ -226,11 +238,13 @@ async def free_trial(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """May the caller claim the free week right now? ``{"eligible": bool}``."""
+    """May the caller claim the free trial, and for how long?
+    ``{"eligible": bool, "days": int | None}``. ``days`` is null when not eligible."""
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     eligible = await run_db(_free_trial_eligible_rpc, supabase, user_id)
+    days = await run_db(_free_trial_days_rpc, supabase, user_id) if eligible else None
     response.headers["Cache-Control"] = _NO_STORE
-    return {"eligible": eligible}
+    return {"eligible": eligible, "days": days}
 
 
 @router.post("/plans/free-trial/claim")

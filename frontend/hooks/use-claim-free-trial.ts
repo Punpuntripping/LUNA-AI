@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { plansApi, authApi, ApiClientError } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
+import { useIntroOfferStore } from "@/stores/intro-offer-store";
 import { usageKeys } from "@/hooks/use-usage";
 import type { FreeTrialClaimResponse } from "@/types";
 
@@ -24,6 +25,8 @@ export function useClaimFreeTrial() {
           // Non-fatal: the plan is applied, the next page load reflects it.
         });
       queryClient.invalidateQueries({ queryKey: usageKeys.all });
+      // The claim changes the Pro quote, so a cached offer is now out of date.
+      void useIntroOfferStore.getState().refresh();
     },
   });
 }

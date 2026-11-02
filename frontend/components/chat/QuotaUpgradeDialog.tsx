@@ -37,6 +37,7 @@ import {
   FREE_TRIAL_COPY,
   FREE_TRIAL_OCR_PAGES,
   FREE_TRIAL_PLAN_ID,
+  freeTrialLength,
 } from "@/components/promo/free-trial-content";
 import {
   INTRO_OFFER_COPY,
@@ -173,6 +174,7 @@ export function QuotaUpgradeDialog({
   const pdfOffer = documentPages !== undefined;
   const trialSurface = blocked || pdfOffer;
   const trialEligible = useFreeTrialStore((s) => s.eligible);
+  const trialDays = useFreeTrialStore((s) => s.days);
   useEffect(() => {
     if (open && trialSurface) void useFreeTrialStore.getState().refresh();
   }, [open, trialSurface]);
@@ -235,7 +237,7 @@ export function QuotaUpgradeDialog({
     ocrPagesNeeded <= FREE_TRIAL_OCR_PAGES;
 
   const title = showFreeTrial
-    ? FREE_TRIAL_COPY.title
+    ? freeTrialLength(trialDays).title
     : gate
       ? DEEP_SEARCH_GATE_COPY.title[gate.reason]
       : notIncluded
@@ -298,8 +300,9 @@ export function QuotaUpgradeDialog({
       offers: trialOffers,
       group: trialGroup,
       trigger: trialTrigger,
+      days: trialDays,
     });
-  }, [open, showFreeTrial, trialOffers, trialGroup, trialTrigger]);
+  }, [open, showFreeTrial, trialOffers, trialGroup, trialTrigger, trialDays]);
 
   const handleClaimFreeTrial = () => {
     claim.mutate(undefined, {
@@ -308,6 +311,7 @@ export function QuotaUpgradeDialog({
           offers: trialOffers,
           group: trialGroup,
           trigger: trialTrigger,
+          days: trialDays,
         });
         onFreeTrialClaimed?.();
         useFreeTrialStore.getState().markClaimed();
@@ -470,6 +474,7 @@ export function QuotaUpgradeDialog({
           {showFreeTrial && freeTrialPlan && (
             <FreeTrialCard
               plan={freeTrialPlan}
+              days={trialDays}
               pending={claim.isPending}
               onClaim={handleClaimFreeTrial}
             />

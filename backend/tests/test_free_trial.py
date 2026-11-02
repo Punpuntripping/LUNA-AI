@@ -32,12 +32,16 @@ USER_ID = "aaaaaaaa-0000-0000-0000-000000000001"
 
 
 class _Rpc:
-    def __init__(self, fake: "FakeSupabase") -> None:
-        self._fake = fake
+    def __init__(self, fake: "FakeSupabase", name: str) -> None:
+        self._fake, self._name = fake, name
 
     def execute(self) -> Any:
         if self._fake.fail:
             raise RuntimeError("db down")
+        if self._name == "free_trial_days":
+            if self._fake.days == "fail":
+                raise RuntimeError("db down")
+            return SimpleNamespace(data=self._fake.days)
         return SimpleNamespace(data=self._fake.data)
 
 
@@ -45,11 +49,12 @@ class FakeSupabase:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.data: Any = None
+        self.days: Any = 7
         self.fail = False
 
     def rpc(self, name: str, params: dict) -> _Rpc:
         self.calls.append((name, params))
-        return _Rpc(self)
+        return _Rpc(self, name)
 
 
 @pytest.fixture
@@ -74,22 +79,40 @@ def test_eligible_answer_is_passed_through_uncached(client: TestClient, fake: Fa
     res = client.get("/api/v1/plans/free-trial")
 
     assert res.status_code == 200
-    assert res.json() == {"eligible": True}
+    assert res.json() == {"eligible": True, "days": 7}
     assert res.headers["cache-control"] == "no-store"
-    assert fake.calls == [("free_trial_eligible", {"p_user_id": USER_ID})]
+    assert fake.calls == [
+        ("free_trial_eligible", {"p_user_id": USER_ID}),
+        ("free_trial_days", {"p_user_id": USER_ID}),
+    ]
+
+
+def test_professions_are_told_two_weeks(client: TestClient, fake: FakeSupabase) -> None:
+    fake.data = True
+    fake.days = 14
+
+    assert client.get("/api/v1/plans/free-trial").json() == {"eligible": True, "days": 14}
+
+
+def test_an_unreadable_length_keeps_the_offer(client: TestClient, fake: FakeSupabase) -> None:
+    fake.data = True
+    fake.days = "fail"
+
+    assert client.get("/api/v1/plans/free-trial").json() == {"eligible": True, "days": None}
 
 
 def test_not_eligible(client: TestClient, fake: FakeSupabase) -> None:
     fake.data = False
 
-    assert client.get("/api/v1/plans/free-trial").json() == {"eligible": False}
+    assert client.get("/api/v1/plans/free-trial").json() == {"eligible": False, "days": None}
+    assert [name for name, _ in fake.calls] == ["free_trial_eligible"]
 
 
 @pytest.mark.parametrize("data", [None, "true", 1, [True]])
 def test_anything_but_true_is_not_eligible(client: TestClient, fake: FakeSupabase, data: Any) -> None:
     fake.data = data
 
-    assert client.get("/api/v1/plans/free-trial").json() == {"eligible": False}
+    assert client.get("/api/v1/plans/free-trial").json() == {"eligible": False, "days": None}
 
 
 def test_unreadable_answer_fails_closed_not_500(client: TestClient, fake: FakeSupabase) -> None:
@@ -98,7 +121,7 @@ def test_unreadable_answer_fails_closed_not_500(client: TestClient, fake: FakeSu
     res = client.get("/api/v1/plans/free-trial")
 
     assert res.status_code == 200
-    assert res.json() == {"eligible": False}
+    assert res.json() == {"eligible": False, "days": None}
 
 
 def test_claim_returns_the_grant(client: TestClient, fake: FakeSupabase) -> None:

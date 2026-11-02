@@ -382,6 +382,8 @@ export interface RedeemCodeResponse {
 /** `GET /plans/free-trial`: may the caller claim the free week right now? */
 export interface FreeTrialState {
   eligible: boolean;
+  /** How long the caller's trial runs. Null when not eligible. */
+  days?: number | null;
 }
 
 /** `POST /plans/free-trial/claim`: the same shape as a redeemed code. */

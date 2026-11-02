@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { plansApi } from "@/lib/api";
+import { FREE_TRIAL_DEFAULT_DAYS } from "@/components/promo/free-trial-content";
 
 /**
  * الأسبوع المجاني (migration 205): the SERVER's answer to "may this account claim
@@ -13,6 +14,8 @@ import { plansApi } from "@/lib/api";
 
 interface FreeTrialStore {
   eligible: boolean;
+  /** How long this account's trial runs. Only meaningful while eligible. */
+  days: number;
   /** Re-ask the server. Concurrent callers share one request. */
   refresh: () => Promise<boolean>;
   /** The week was just granted: stop offering it without another round trip. */
@@ -28,19 +31,23 @@ let generation = 0;
 
 export const useFreeTrialStore = create<FreeTrialStore>((set) => ({
   eligible: false,
+  days: FREE_TRIAL_DEFAULT_DAYS,
 
   refresh: () => {
     if (inflight) return inflight;
     const gen = generation;
     const request = (async () => {
       let eligible = false;
+      let days = FREE_TRIAL_DEFAULT_DAYS;
       try {
-        eligible = (await plansApi.freeTrial()).eligible === true;
+        const answer = await plansApi.freeTrial();
+        eligible = answer.eligible === true;
+        days = answer.days ?? FREE_TRIAL_DEFAULT_DAYS;
       } catch {
         eligible = false;
       }
       if (gen !== generation) return false;
-      set({ eligible });
+      set({ eligible, days });
       return eligible;
     })();
     inflight = request;
