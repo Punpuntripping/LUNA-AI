@@ -1364,10 +1364,13 @@ async def _resume_major_agent_inner(
     # sink too — without it a resumed run would show no progress at all. The
     # queue is drained by the bridge around the _run_deep_search call below; if
     # the decider pauses again we return early and the queue is simply dropped.
+    # The tracker itself is painted only once the decider has accepted the reply
+    # (below): a hand-back must not start one, or the client seals a deep_search
+    # chip onto whatever the router answers. Until then the client shows its
+    # generic indicator.
     ds_t0 = perf_counter()
     progress_q: asyncio.Queue[dict] = asyncio.Queue()
     total_sources = 0
-    yield _make_progress("planning", "استئناف البحث وتحليل الردّ")
 
     try:
         import httpx as _httpx
@@ -1474,6 +1477,7 @@ async def _resume_major_agent_inner(
             run_id, exc, exc_info=True,
         )
         _resolve_pause_loud(supabase, run_id, where="planner_resume_failed")
+        yield {"type": "agent_run_finished", "agent_family": "deep_search"}
         _release_agent_answer_tag(supabase, user_message_id)
         async for ev in _route(
             question=user_reply,
@@ -1512,10 +1516,14 @@ async def _resume_major_agent_inner(
     # ── PlannerDecision.aborted — give up on deep_search, re-route fresh ────
     if isinstance(planner_output, PlannerDecision) and planner_output.aborted:
         logger.info(
-            "_resume_major_agent: planner aborted run_id=%s; re-routing via router",
-            run_id,
+            "_resume_major_agent: planner handed off run_id=%s to the router "
+            "(reason=%s)",
+            run_id, (planner_output.rationale or "")[:160] or "unspecified",
         )
         _resolve_pause_loud(supabase, run_id, where="planner_aborted")
+        # Same order as the writer's hand-off: the client sees this run closed
+        # before whatever family the router picks opens its own.
+        yield {"type": "agent_run_finished", "agent_family": "deep_search"}
         _release_agent_answer_tag(supabase, user_message_id)
         async for ev in _route(
             question=user_reply,
@@ -1539,6 +1547,9 @@ async def _resume_major_agent_inner(
         yield {"type": "token", "text": "حدث خطأ أثناء استئناف البحث. يرجى المحاولة مرة أخرى."}
         yield {"type": "done", "usage": _zero_usage("error")}
         return
+
+    # The reply was an answer: this turn is a search, so the tracker can start.
+    yield _make_progress("planning", "استئناف البحث وتحليل الردّ")
 
     t0 = perf_counter()
     run_result: SpecialistResult | None = None
