@@ -1,10 +1,15 @@
-"""Plan activation codes API — /api/v1/plans/redeem.
+"""Plan activation API — /api/v1/plans/redeem and /api/v1/plans/free-trial.
 
 A user redeems a single-use activation code to get a subscription plan (the
 marketing_lawyer / marketing_individual launch offers). The atomic claim +
 plan grant lives in the redeem_plan_code() Postgres RPC (migration 069); this
 route adds the per-user brute-force wall and maps the RPC's raised errors to
 Arabic HTTP responses.
+
+الأسبوع المجاني (migration 205) lives here too: the same kind of grant with no
+code. ``GET /plans/free-trial`` says whether the caller may claim it, and
+``POST /plans/free-trial/claim`` grants it. Both ask SQL, which owns the rule
+(``free_trial_eligible``), so the claim never trusts what the dialog was shown.
 
 Two throttle layers protect the endpoint:
   - 5 requests/min per user+IP — the rate-limit middleware (burst control).
@@ -19,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
@@ -46,6 +51,10 @@ CODE_INVALID_AR = "الرمز غير صالح أو مُستخدَم من قبل.
 CODE_ALREADY_REDEEMED_AR = "لقد فعّلت هذا الرمز من قبل."
 PLAN_ACTIVE_AR = "لديك اشتراك فعّال بالفعل، ولا يمكن استبداله برمز ترويجي."
 REDEEM_LOCKED_AR = "لقد تجاوزت عدد المحاولات المسموح بها. حاول مرة أخرى لاحقًا."
+FREE_TRIAL_UNAVAILABLE_AR = "هذا العرض غير متاح لحسابك."
+
+# Per-user money-adjacent answer: a cache must never hand it to someone else.
+_NO_STORE = "no-store"
 
 
 # ── RPC domain errors (local) ────────────────────────────────────────────────
@@ -185,4 +194,71 @@ async def redeem_plan_code(
         "plan_id": row.get("plan_id"),
         "name_ar": row.get("name_ar"),
         "expires_at": row.get("expires_at"),
+    }
+
+
+# ── الأسبوع المجاني (migration 205) ──────────────────────────────────────────
+
+def _free_trial_eligible_rpc(supabase: SupabaseClient, user_id: str) -> bool:
+    """Fail closed: an answer we cannot read is "no offer", never an error, so
+    the limit dialog falls back to the ordinary plans."""
+    try:
+        result = supabase.rpc(
+            "free_trial_eligible", {"p_user_id": user_id}
+        ).execute()
+    except Exception as e:  # noqa: BLE001 — a promotion must not break the wall
+        logger.warning("free_trial_eligible unavailable for user=%s: %s", user_id, e)
+        return False
+    return getattr(result, "data", None) is True
+
+
+def _claim_free_trial_rpc(supabase: SupabaseClient, user_id: str) -> dict:
+    """Call the atomic claim RPC (sync — run via run_db). ``{}`` when it returned
+    no row at all; unexpected failures propagate to the generic 500 handler."""
+    result = supabase.rpc("claim_free_trial", {"p_user_id": user_id}).execute()
+    rows = getattr(result, "data", None) or []
+    return rows[0] if rows else {}
+
+
+@router.get("/plans/free-trial")
+async def free_trial(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """May the caller claim the free week right now? ``{"eligible": bool}``."""
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    eligible = await run_db(_free_trial_eligible_rpc, supabase, user_id)
+    response.headers["Cache-Control"] = _NO_STORE
+    return {"eligible": eligible}
+
+
+@router.post("/plans/free-trial/claim")
+async def claim_free_trial(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Grant the caller the free week.
+
+    Returns ``{plan_id, name_ar, expires_at}``. Raises 409
+    FREE_TRIAL_UNAVAILABLE when the caller may not claim it, which covers an
+    offer that closed, a second claim, and a concurrent claim that lost the race.
+    """
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    row = await run_db(_claim_free_trial_rpc, supabase, user_id)
+    response.headers["Cache-Control"] = _NO_STORE
+
+    if row.get("action") != "claimed":
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.FREE_TRIAL_UNAVAILABLE,
+            detail=FREE_TRIAL_UNAVAILABLE_AR,
+        )
+
+    logger.info("free trial claimed: user=%s plan=%s", user_id, row.get("trial_plan_id"))
+    return {
+        "plan_id": row.get("trial_plan_id"),
+        "name_ar": row.get("trial_name_ar"),
+        "expires_at": row.get("trial_expires_at"),
     }

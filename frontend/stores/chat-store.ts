@@ -303,6 +303,12 @@ interface ChatState {
     nonce: number;
     conversationId?: string;
   } | null;
+  // Asks ONE conversation's mounted ChatInput to send what it holds, through its
+  // own submit path. Set when the free week is claimed: a refused send left its
+  // text and chips in the composer, and this finishes that send. One-shot:
+  // ChatInput clears it whether or not there was anything to send, so it can
+  // never fire later on text the user types.
+  composerSendRequest: { conversationId: string; nonce: number } | null;
   /**
    * next_step_suggestions plan §3.8: the next-step chip whose prompt was last
    * pasted into the composer, so the NEXT send can report `next_step_sent
@@ -432,6 +438,8 @@ interface ChatState {
   setPendingComposerDraft: (text: string | null) => void;
   /** Put ``text`` into the live composer textarea (does NOT send). */
   injectComposerText: (text: string, conversationId?: string) => void;
+  requestComposerSend: (conversationId: string) => void;
+  clearComposerSendRequest: () => void;
   clearComposerInjection: () => void;
   /**
    * Next-step chip click (D4): paste ``step.prompt`` into the live composer —
@@ -603,6 +611,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingAttachFiles: [],
   pendingComposerDraft: null,
   composerInjection: null,
+  composerSendRequest: null,
   pastedNextStep: null,
   pendingMessage: null,
   pendingBlogs: [],
@@ -800,6 +809,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })),
 
   clearComposerInjection: () => set({ composerInjection: null }),
+
+  requestComposerSend: (conversationId) =>
+    set((state) => ({
+      composerSendRequest: {
+        conversationId,
+        nonce: (state.composerSendRequest?.nonce ?? 0) + 1,
+      },
+    })),
+
+  clearComposerSendRequest: () => set({ composerSendRequest: null }),
 
   pasteNextStep: (step) => {
     set({ pastedNextStep: { kind: step.kind, text: step.prompt } });
@@ -1210,6 +1229,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingAttachFiles: [],
       pendingComposerDraft: null,
       composerInjection: null,
+      composerSendRequest: null,
       pastedNextStep: null,
       pendingMessage: null,
       pendingBlogs: [],

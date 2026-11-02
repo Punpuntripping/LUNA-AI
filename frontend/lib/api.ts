@@ -34,6 +34,8 @@ import type {
   TemplateListResponse,
   UsageReport,
   RedeemCodeResponse,
+  FreeTrialState,
+  FreeTrialClaimResponse,
   ShareDraftResponse,
   ShareArtifactResponse,
   PublicBlogListResponse,
@@ -1136,6 +1138,9 @@ export const announcementsApi = {
 export const plansApi = {
   redeem: (code: string) =>
     api.post<RedeemCodeResponse>("/plans/redeem", { code }),
+  freeTrial: () => api.get<FreeTrialState>("/plans/free-trial"),
+  claimFreeTrial: () =>
+    api.post<FreeTrialClaimResponse>("/plans/free-trial/claim"),
 };
 
 // -----------------------------------------------

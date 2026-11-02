@@ -64,6 +64,10 @@ PUBLIC_EVENT_NAMES = frozenset(
         # from payment_transactions.intro_offer_group, never from these.
         "intro_offer_shown",  # offer surfaced: props.trigger profession|quota, props.group
         "intro_offer_cta",    # «اشترك الآن» tapped on the offer
+        # الأسبوع المجاني (migration 205). Claims are counted from
+        # free_trial_claims, never from these.
+        "free_trial_shown",    # limit dialog offered the week: props.offers, props.group
+        "free_trial_claimed",  # the week was granted: props.offers, props.group
     }
 )
 

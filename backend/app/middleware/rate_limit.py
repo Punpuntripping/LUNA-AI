@@ -486,7 +486,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             max_requests = MESSAGE_SEND_RATE_LIMIT
             window = MESSAGE_SEND_WINDOW_SECONDS
         elif (
-            request.url.path.endswith("/plans/redeem")
+            (
+                request.url.path.endswith("/plans/redeem")
+                or request.url.path.endswith("/plans/free-trial/claim")
+            )
             and request.method == "POST"
         ):
             max_requests = REDEEM_RATE_LIMIT

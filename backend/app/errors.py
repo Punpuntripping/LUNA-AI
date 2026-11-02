@@ -76,6 +76,7 @@ class ErrorCode(str, Enum):
     CODE_INVALID = "CODE_INVALID"                # unknown / used / expired / capacity-full code
     CODE_ALREADY_REDEEMED = "CODE_ALREADY_REDEEMED"  # caller already redeemed THIS code
     PLAN_ALREADY_ACTIVE = "PLAN_ALREADY_ACTIVE"  # active paid plan can't be overwritten
+    FREE_TRIAL_UNAVAILABLE = "FREE_TRIAL_UNAVAILABLE"  # the free week can't be claimed
     REDEEM_LOCKED = "REDEEM_LOCKED"              # too many failed attempts (24h wall)
 
     # Payments (Moyasar one-time checkout — moyasar_payments.md Phase C)

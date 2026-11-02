@@ -61,6 +61,7 @@ export type ErrorCode =
   | "CODE_INVALID"
   | "CODE_ALREADY_REDEEMED"
   | "PLAN_ALREADY_ACTIVE"
+  | "FREE_TRIAL_UNAVAILABLE"
   | "REDEEM_LOCKED"
   // Payments (web checkout only — never surfaced by the native app)
   | "PAYMENT_PLAN_NOT_PURCHASABLE"

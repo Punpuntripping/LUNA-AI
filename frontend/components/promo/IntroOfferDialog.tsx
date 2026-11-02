@@ -14,6 +14,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { useIntroOfferStore } from "@/stores/intro-offer-store";
+import { useFreeTrialStore } from "@/stores/free-trial-store";
 import { findPricingPlan } from "@/lib/pricing";
 import { track } from "@/lib/analytics/client";
 import { cn } from "@/lib/utils";
@@ -52,9 +53,12 @@ export function IntroOfferDialog() {
   useEffect(() => {
     if (!userId) {
       useIntroOfferStore.getState().reset();
+      useFreeTrialStore.getState().reset();
       return;
     }
     void useIntroOfferStore.getState().refresh();
+    // Loaded here so the limit dialog opens with the right cards at once.
+    void useFreeTrialStore.getState().refresh();
   }, [userId]);
 
   const visible = isOpen && !onboardingOpen && offer !== null;

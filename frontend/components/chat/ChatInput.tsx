@@ -411,6 +411,21 @@ export function ChatInput({
     setPendingTemplate,
   ]);
 
+  // The free week was claimed from a refused send: finish that send through the
+  // normal path, so its text, chips and analytics are exactly what Enter would
+  // have sent. One-shot by design (see `composerSendRequest`).
+  const composerSendRequest = useChatStore((s) => s.composerSendRequest);
+  useEffect(() => {
+    if (
+      !composerSendRequest ||
+      composerSendRequest.conversationId !== conversationId
+    ) {
+      return;
+    }
+    useChatStore.getState().clearComposerSendRequest();
+    if (canSend) handleSend();
+  }, [composerSendRequest, conversationId, canSend, handleSend]);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       // Touch keyboards: Enter inserts a newline (default action, not

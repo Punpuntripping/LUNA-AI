@@ -12,7 +12,7 @@ import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { MessageList } from "@/components/chat/MessageList";
 import { ConversationNotFound } from "@/components/chat/ConversationNotFound";
 import { ChatInput } from "@/components/chat/ChatInput";
-import { QuotaBanner } from "@/components/chat/QuotaBanner";
+import { QuotaBanner, type FreeTrialBlock } from "@/components/chat/QuotaBanner";
 import { ConversationHeaderMenu } from "@/components/chat/ConversationHeaderMenu";
 
 interface ChatContainerProps {
@@ -21,7 +21,14 @@ interface ChatContainerProps {
 }
 
 export function ChatContainer({ conversationId, className }: ChatContainerProps) {
-  const { sendMessage, stopStreaming, regenerateMessage, editAndResend, retryMessage } = useSendMessage();
+  const {
+    sendMessage,
+    stopStreaming,
+    regenerateMessage,
+    editAndResend,
+    retryMessage,
+    resendLastUserMessage,
+  } = useSendMessage();
   // Per-conversation: an error from a stream running in another conversation
   // must not surface here.
   const error = useChatStore(
@@ -83,6 +90,20 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
     [retryMessage, conversationId, caseId]
   );
 
+  // The free week was claimed at a limit: carry on with what was refused. A
+  // points block saved nothing, so the message is still in the composer. A
+  // deep-search refusal saved the turn, so the message is in the thread.
+  const handleFreeTrialClaimed = useCallback(
+    (block: FreeTrialBlock) => {
+      if (block === "quota") {
+        useChatStore.getState().requestComposerSend(conversationId);
+        return;
+      }
+      void resendLastUserMessage({ conversationId, caseId });
+    },
+    [resendLastUserMessage, conversationId, caseId]
+  );
+
   // A «المحادثة غير موجودة» left over from a send that 404'd is redundant
   // with the panel below, which says it better.
   useEffect(() => {
@@ -129,7 +150,10 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         </Button>
       </div>
 
-      <QuotaBanner conversationId={conversationId} />
+      <QuotaBanner
+        conversationId={conversationId}
+        onFreeTrialClaimed={handleFreeTrialClaimed}
+      />
 
       {error && (
         <div

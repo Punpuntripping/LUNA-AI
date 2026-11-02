@@ -80,6 +80,7 @@ jobs:
             backend/tests/test_announcements.py \
             backend/tests/test_subscription_renewal.py \
             backend/tests/test_deep_search_gate.py \
+            backend/tests/test_free_trial.py \
             backend/tests/test_wi_preview_lock.py \
             backend/tests/test_origin_lock.py \
             backend/tests/test_client_ip_resolution.py \

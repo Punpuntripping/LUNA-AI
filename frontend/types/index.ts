@@ -377,6 +377,14 @@ export interface RedeemCodeResponse {
   expires_at: string | null;
 }
 
+/** `GET /plans/free-trial`: may the caller claim the free week right now? */
+export interface FreeTrialState {
+  eligible: boolean;
+}
+
+/** `POST /plans/free-trial/claim`: the same shape as a redeemed code. */
+export type FreeTrialClaimResponse = RedeemCodeResponse;
+
 export type {
   SSEDone,
 } from "@/lib/contracts";

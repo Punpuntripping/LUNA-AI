@@ -29,11 +29,19 @@ import { formatReset } from "@/lib/quota-reset";
 import { track } from "@/lib/analytics/client";
 import { useEarlyAdopterStore } from "@/stores/early-adopter-store";
 import { useIntroOfferStore } from "@/stores/intro-offer-store";
+import { useFreeTrialStore } from "@/stores/free-trial-store";
+import { useClaimFreeTrial } from "@/hooks/use-claim-free-trial";
 import { IntroOfferSummary } from "@/components/promo/IntroOfferSummary";
+import { FreeTrialCard } from "@/components/promo/FreeTrialCard";
+import {
+  FREE_TRIAL_COPY,
+  FREE_TRIAL_PLAN_ID,
+} from "@/components/promo/free-trial-content";
 import {
   INTRO_OFFER_COPY,
   INTRO_OFFER_PLAN_ID,
 } from "@/components/promo/intro-offer-content";
+import { ApiClientError } from "@/lib/api";
 import type { SSEDeepSearchGated, SSEQuotaExceeded } from "@/types";
 
 /**
@@ -77,6 +85,12 @@ interface QuotaUpgradeDialogProps {
    * catalog by price (`"free"` → the whole catalog — the WiPreviewWall surface).
    */
   currentPlanId?: string | null;
+  /**
+   * The free week was granted from this dialog. The offer appears only where a
+   * caller passes this, because only the chat's limit dialog has a refused
+   * message to carry on with.
+   */
+  onFreeTrialClaimed?: () => void;
 }
 
 /**
@@ -110,6 +124,7 @@ export function QuotaUpgradeDialog({
   info,
   deepSearchGate: gate,
   currentPlanId,
+  onFreeTrialClaimed,
 }: QuotaUpgradeDialogProps) {
   const [now, setNow] = useState<number>(() => Date.now());
 
@@ -147,6 +162,18 @@ export function QuotaUpgradeDialog({
   const blocked = Boolean(info || gate);
   const ladder = info?.upgrade_options ?? gate?.upgrade_options;
 
+  // الأسبوع المجاني (migration 205). Fail-closed like the offers above: until
+  // the server says eligible, this dialog shows the ordinary plans.
+  const trialEligible = useFreeTrialStore((s) => s.eligible);
+  useEffect(() => {
+    if (open && blocked) void useFreeTrialStore.getState().refresh();
+  }, [open, blocked]);
+  const claim = useClaimFreeTrial();
+  const { reset: resetClaim } = claim;
+  useEffect(() => {
+    if (!open) resetClaim();
+  }, [open, resetClaim]);
+
   const plans = useMemo<PricingPlan[]>(() => {
     // No block → Settings. Derived by LIST price (the plan rank), since there
     // is no blocking window to ask the server about. Promo prices are batch
@@ -183,17 +210,30 @@ export function QuotaUpgradeDialog({
   const onPaidPlan = Boolean(planId) && planId !== "free";
   const planNameAr = planId ? findPricingPlan(planId)?.nameAr : undefined;
 
-  const title = gate
-    ? DEEP_SEARCH_GATE_COPY.title[gate.reason]
-    : notIncluded
-      ? "هذه الميزة غير متاحة في الباقة المجانية"
-      : !info
-        ? "ترقية الباقة"
-        : onPaidPlan
-          ? planNameAr
-            ? `انتهت نقاط باقتك — ${planNameAr}`
-            : "انتهت نقاط باقتك"
-          : "انتهى حدّ الاستخدام المجاني";
+  // Offered only where Basic itself would clear this block: the week has about
+  // Basic's limits, so a block Basic cannot lift is one the week cannot lift.
+  const freeTrialPlan = findPricingPlan(FREE_TRIAL_PLAN_ID);
+  const showFreeTrial =
+    blocked &&
+    !onPaidPlan &&
+    trialEligible &&
+    onFreeTrialClaimed !== undefined &&
+    freeTrialPlan !== undefined &&
+    (!ladder || ladder.includes(FREE_TRIAL_PLAN_ID));
+
+  const title = showFreeTrial
+    ? FREE_TRIAL_COPY.title
+    : gate
+      ? DEEP_SEARCH_GATE_COPY.title[gate.reason]
+      : notIncluded
+        ? "هذه الميزة غير متاحة في الباقة المجانية"
+        : !info
+          ? "ترقية الباقة"
+          : onPaidPlan
+            ? planNameAr
+              ? `انتهت نقاط باقتك — ${planNameAr}`
+              : "انتهت نقاط باقتك"
+            : "انتهى حدّ الاستخدام المجاني";
 
   // The one true thing worth saying out loud, and the reason this dialog beats
   // waiting: an upgrade takes effect at once.
@@ -205,17 +245,59 @@ export function QuotaUpgradeDialog({
   // different, far larger window. Both branches promise «فوراً»; only the paid
   // one promises a reset. DEPENDS ON migration 131 — do not ship this copy
   // ahead of it.
-  const unblockLine = notIncluded
-    ? "الاشتراك يفعّل هذه الميزة فوراً."
-    : onPaidPlan
-      ? "الترقية تصفّر استهلاكك الحالي وتعيدك للعمل فوراً."
-      : "الاشتراك يرفع حدودك ويعيدك للعمل فوراً.";
+  const unblockLine = showFreeTrial
+    ? FREE_TRIAL_COPY.unblock
+    : notIncluded
+      ? "الاشتراك يفعّل هذه الميزة فوراً."
+      : onPaidPlan
+        ? "الترقية تصفّر استهلاكك الحالي وتعيدك للعمل فوراً."
+        : "الاشتراك يرفع حدودك ويعيدك للعمل فوراً.";
 
   // The intro offer replaces the Pro card's price block — only when the server
   // says eligible AND the ladder actually holds Pro. Ranking and the card list
   // are untouched: the offer price never enters `PRICING_PLANS`.
   const offerOnCard =
     introOffer !== null && plans.some((plan) => plan.id === INTRO_OFFER_PLAN_ID);
+
+  // While the week is on offer the dialog shows only the offers: the week alone,
+  // or the week and the profession's Pro price. The rest are behind the
+  // «عرض جميع تفاصيل الباقات» link until the week has been used.
+  const shownPlans = showFreeTrial
+    ? plans.filter((plan) => offerOnCard && plan.id === INTRO_OFFER_PLAN_ID)
+    : plans;
+
+  const trialOffers = shownPlans.length + 1;
+  const trialGroup = introOffer?.profession_group ?? null;
+
+  // One `free_trial_shown` per opening.
+  const trialTrackedRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      trialTrackedRef.current = false;
+      return;
+    }
+    if (!showFreeTrial || trialTrackedRef.current) return;
+    trialTrackedRef.current = true;
+    track("free_trial_shown", { offers: trialOffers, group: trialGroup });
+  }, [open, showFreeTrial, trialOffers, trialGroup]);
+
+  const handleClaimFreeTrial = () => {
+    claim.mutate(undefined, {
+      onSuccess: () => {
+        track("free_trial_claimed", { offers: trialOffers, group: trialGroup });
+        onFreeTrialClaimed?.();
+        useFreeTrialStore.getState().markClaimed();
+      },
+      // The offer on screen was out of date: show what the server would honour.
+      onError: () => void useFreeTrialStore.getState().refresh(),
+    });
+  };
+
+  const claimError = claim.error
+    ? claim.error instanceof ApiClientError && claim.error.status === 409
+      ? claim.error.message
+      : FREE_TRIAL_COPY.failed
+    : null;
 
   // One `intro_offer_shown` per opening of the BLOCK path (the quota wall); the
   // Settings path shows the same card but is not the wall being measured.
@@ -238,7 +320,8 @@ export function QuotaUpgradeDialog({
   // cheapest plan next to a card set that excludes it would be a lie. Hidden
   // under the intro offer too, which would otherwise sit below a «ابتداءً من»
   // figure higher than the price on its own card.
-  const showFromPrice = plans.length === PRICING_PLANS.length && !offerOnCard;
+  const showFromPrice =
+    plans.length === PRICING_PLANS.length && !offerOnCard && !showFreeTrial;
   // Cheapest by the DISPLAYED price — the server's promo where one applies,
   // whatever batch is open right now — and quoted at the same price its own
   // card shows: the list figure would undersell the offer by naming a number
@@ -248,24 +331,28 @@ export function QuotaUpgradeDialog({
 
   // Cards priced against the campaign — resolved once, so the badge and the
   // prices can never disagree about whether an offer is running.
-  const cards = plans.map((plan) => ({
+  const cards = shownPlans.map((plan) => ({
     plan,
     pricing: resolvePlanPricing(plan, campaign),
   }));
-  const campaignVisible = cards.some((card) => card.pricing.isPromo);
+  // Not beside the week: the Pro card carries its own seats note and terms link,
+  // and on a phone every line above the offers pushes «احصل على العرض» off screen.
+  const campaignVisible =
+    !showFreeTrial && cards.some((card) => card.pricing.isPromo);
 
   // One card in a 4xl modal under a 3-column grid looks broken. Both the shell
   // and the grid follow the count.
+  const cardCount = cards.length + (showFreeTrial ? 1 : 0);
   const widthClass =
-    plans.length >= 3
+    cardCount >= 3
       ? "max-w-4xl"
-      : plans.length === 2
+      : cardCount === 2
         ? "max-w-2xl"
         : "max-w-md";
   const gridClass =
-    plans.length >= 3
+    cardCount >= 3
       ? "md:grid-cols-3"
-      : plans.length === 2
+      : cardCount === 2
         ? "md:grid-cols-2"
         : "md:grid-cols-1";
 
@@ -293,7 +380,7 @@ export function QuotaUpgradeDialog({
 
         {/* Both ways out, waiting first: the user is not cornered, and saying
             so is what makes the upgrade line credible. */}
-        {resetText && (
+        {resetText && !showFreeTrial && (
           <p className="text-sm leading-relaxed text-foreground">
             {gate?.reason === "free_limit"
               ? DEEP_SEARCH_GATE_COPY.countBack
@@ -341,9 +428,26 @@ export function QuotaUpgradeDialog({
           </p>
         )}
 
+        {claimError && (
+          <p
+            role="alert"
+            className="text-sm text-destructive"
+            data-testid="free-trial-error"
+          >
+            {claimError}
+          </p>
+        )}
+
         {/* Plan cards — same structure as app/pricing/page.tsx, tightened one
             step (p-5, text-base heading) to fit three across inside a modal. */}
         <div className={`mt-2 grid gap-4 ${gridClass}`}>
+          {showFreeTrial && freeTrialPlan && (
+            <FreeTrialCard
+              plan={freeTrialPlan}
+              pending={claim.isPending}
+              onClaim={handleClaimFreeTrial}
+            />
+          )}
           {cards.map(({ plan, pricing }) => {
             const offer =
               offerOnCard && plan.id === INTRO_OFFER_PLAN_ID ? introOffer : null;
@@ -430,10 +534,13 @@ export function QuotaUpgradeDialog({
         </div>
 
         <div className="mt-2 flex flex-col items-center gap-3 text-center">
-          <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
-            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
-            <span>{PAYMENT_TRUST_NOTE}</span>
-          </p>
+          {/* No card on screen takes a payment when the week is the only offer. */}
+          {cards.length > 0 && (
+            <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+              <span>{PAYMENT_TRUST_NOTE}</span>
+            </p>
+          )}
           {/* An exit that isn't "buy" and isn't "dismiss" — /pricing carries the
               full terms this modal deliberately keeps short. */}
           <Link

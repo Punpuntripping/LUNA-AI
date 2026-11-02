@@ -472,7 +472,7 @@ async def subscription(
           "plan_id": "pro",                     # null when there is no row
           "plan_name_ar": "الاحترافية",
           "expires_at": "2026-09-02T…",         # null for a non-expiring grant
-          "source": "payment",                  # payment|code|manual|signup
+          "source": "payment",                  # payment|code|manual|signup|trial
           "cancellable": true,                  # a PAID term still running
           "renewal_cancelled_at": null,         # set = already opted out
           "renewal_grace_until": null,          # 196: set ONLY while a declined

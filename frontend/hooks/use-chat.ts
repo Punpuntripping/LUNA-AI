@@ -81,6 +81,32 @@ interface RetryParams {
   caseId?: string | null;
 }
 
+interface ResendLastParams {
+  conversationId: string;
+  caseId?: string | null;
+}
+
+/** Resolves once this conversation has no live stream (or after `timeoutMs`). */
+function waitForStreamEnd(
+  conversationId: string,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const streaming = () =>
+    useChatStore.getState().streams[conversationId]?.isStreaming ?? false;
+  if (!streaming()) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    const unsubscribe = useChatStore.subscribe(() => {
+      if (!streaming()) finish();
+    });
+  });
+}
+
 interface UseSendMessageReturn {
   sendMessage: (params: SendMessageParams) => Promise<void>;
   /** Stop THIS conversation's stream (other conversations keep streaming). */
@@ -91,6 +117,8 @@ interface UseSendMessageReturn {
   editAndResend: (params: EditAndResendParams) => Promise<void>;
   /** Re-sends a failed message using its original content */
   retryMessage: (params: RetryParams) => Promise<void>;
+  /** Re-sends the conversation's latest user message as a new turn */
+  resendLastUserMessage: (params: ResendLastParams) => Promise<void>;
 }
 
 /**
@@ -1087,7 +1115,39 @@ export function useSendMessage(): UseSendMessageReturn {
     [sendMessage, getMessagesFromCache, qc]
   );
 
-  return { sendMessage, stopStreaming, regenerateMessage, editAndResend, retryMessage };
+  /**
+   * Resend after a deep-search refusal. Unlike a points block, that turn was
+   * saved and answered, so the message is in the thread and not in the composer.
+   * Waits out the refusal's stream, because a fast tap can land before `done`
+   * and the backend absorbs a send while a run is live. Same shape as
+   * `regenerateMessage`: the earlier turn stays in history.
+   */
+  const resendLastUserMessage = useCallback(
+    async ({ conversationId, caseId }: ResendLastParams) => {
+      await waitForStreamEnd(conversationId);
+      const messages = getMessagesFromCache(conversationId);
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          await sendMessage({
+            conversationId,
+            content: messages[i].content,
+            caseId,
+          });
+          return;
+        }
+      }
+    },
+    [sendMessage, getMessagesFromCache]
+  );
+
+  return {
+    sendMessage,
+    stopStreaming,
+    regenerateMessage,
+    editAndResend,
+    retryMessage,
+    resendLastUserMessage,
+  };
 }
 
 // -----------------------------------------------

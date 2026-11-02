@@ -117,7 +117,13 @@ export type AnalyticsEventName =
    *  not from here. */
   | "intro_offer_shown"
   /** «اشترك الآن» on the offer. Props: `trigger`, `group`. */
-  | "intro_offer_cta";
+  | "intro_offer_cta"
+  // ---- free week — migration 205 -------------------------------------------
+  /** The limit dialog offered the week. Props: `offers` (1 | 2), `group`.
+   *  Claims are read from `free_trial_claims`, not from here. */
+  | "free_trial_shown"
+  /** The server granted the week. Props: `offers`, `group`. */
+  | "free_trial_claimed";
 
 /**
  * The real conversion surfaces, so the funnel can tell them apart (§3). The

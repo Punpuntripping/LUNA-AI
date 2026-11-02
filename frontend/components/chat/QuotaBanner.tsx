@@ -50,9 +50,14 @@ function shouldAutoOpen(info: OfferInfo | null): boolean {
   return shouldOfferUpgrade(info) && info?.plan_id === "free";
 }
 
+/** Which refusal the free week was claimed from: they resume differently. */
+export type FreeTrialBlock = "quota" | "deep_search_gated";
+
 interface QuotaBannerProps {
   /** The banner shows only refusals of sends made in THIS conversation. */
   conversationId: string;
+  /** The free week was granted from this banner's dialog. */
+  onFreeTrialClaimed?: (block: FreeTrialBlock) => void;
 }
 
 /**
@@ -70,7 +75,10 @@ interface QuotaBannerProps {
  *   turn was answered (the refusal is the reply in the thread); this is the
  *   same countdown + ladder treatment as a spent window.
  */
-export function QuotaBanner({ conversationId }: QuotaBannerProps) {
+export function QuotaBanner({
+  conversationId,
+  onFreeTrialClaimed,
+}: QuotaBannerProps) {
   const notice = useChatStore(
     (s) => s.noticeByConversation[conversationId] ?? null,
   );
@@ -120,6 +128,11 @@ export function QuotaBanner({ conversationId }: QuotaBannerProps) {
     [setNotice, conversationId],
   );
   const handleReopen = useCallback(() => setDialogOpen(true), []);
+  const handleFreeTrialClaimed = useCallback(() => {
+    setDialogOpen(false);
+    setNotice(conversationId, null);
+    onFreeTrialClaimed?.(gateInfo ? "deep_search_gated" : "quota");
+  }, [setNotice, conversationId, onFreeTrialClaimed, gateInfo]);
 
   if (!notice) return null;
 
@@ -198,6 +211,7 @@ export function QuotaBanner({ conversationId }: QuotaBannerProps) {
           open={dialogOpen}
           onOpenChange={setDialogOpen}
           info={quotaInfo}
+          onFreeTrialClaimed={handleFreeTrialClaimed}
         />
       )}
       {offersUpgrade && gateInfo && (
@@ -205,6 +219,7 @@ export function QuotaBanner({ conversationId }: QuotaBannerProps) {
           open={dialogOpen}
           onOpenChange={setDialogOpen}
           deepSearchGate={gateInfo}
+          onFreeTrialClaimed={handleFreeTrialClaimed}
         />
       )}
     </>
