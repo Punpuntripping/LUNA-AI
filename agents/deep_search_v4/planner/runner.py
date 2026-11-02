@@ -47,6 +47,7 @@ from .logger import (
 )
 from .models import PinnedPlan, PlannerDecision, PlannerResponse
 from .prompts import (
+    LONG_MESSAGE_REVIEW_MIN_CHARS,
     build_decider_user_message,
     build_responder_user_message,
     render_responder_context,
@@ -431,6 +432,11 @@ async def _run_planner_turn(
         from pydantic_ai import DeferredToolRequests  # lazy — pydantic_ai dep
 
         t0 = time.perf_counter()
+        # Not on a headless run: nobody is there to answer the review.
+        deps.review_required = (
+            len(query.strip()) >= LONG_MESSAGE_REVIEW_MIN_CHARS
+            and (pinned is None or not pinned.headless)
+        )
         try:
             decider = create_planner_decider(model_override=deps.model_override)
             # Phase C: decider's deps_type flipped from None → PlannerDeps.

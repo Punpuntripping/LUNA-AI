@@ -140,6 +140,11 @@ class PlannerDeps:
     # old phase 3, carried for the unified responder.
     welcome: Any | None = None
 
+    # True when the decider must review its understanding with the user before
+    # deciding. Set by ``handle_planner_turn`` on a fresh dispatch of a long
+    # message. False on resume, so the reply is never reviewed in turn.
+    review_required: bool = False
+
     # --- SSE event sink ----------------------------------------------------
     emit_sse: Callable[[dict], None] | None = None
     _events: list[dict] = field(default_factory=list)

@@ -15,8 +15,9 @@ Two LLM phases, two prompts:
   forwarded case documents each executor reads in full — the documents
   themselves travel on their own). May pause via ``ask_user`` when the query is too
   vague to plan, when the legal parties / intent cannot be identified, OR to
-  reflect its understanding back for confirmation on a long, multi-aspect
-  question where misreading the situation is a real risk.
+  reflect its understanding back for confirmation on a situation told at length.
+  A message of :data:`LONG_MESSAGE_REVIEW_MIN_CHARS` or more always gets that
+  review: the runner sets ``deps.review_required`` and the decider enforces it.
 - :data:`PLANNER_RESPONDER_SYSTEM_PROMPT` — phase 3. The responder writes the
   user-facing :class:`~.models.PlannerResponse` (chat summary + next_steps
   chips). Its static prefix embeds :data:`RAYHAN_CAPABILITIES_MD`.
@@ -167,7 +168,7 @@ Use it **whenever planning genuinely needs it** — whenever a sharper search or
    - **A mentioned person whose relation to the dispute is unclear** (who are they? what is their capacity — plaintiff, partner, agent, witness…?).
    - And ambiguity over who is the plaintiff, who is the defendant, and who the user represents.
    No need to ask when the user has stated the relation, when the body is well-known and its role here is unambiguous, or when the mention is incidental and does not affect the search.
-3. **Reviewing your understanding on a long, multi-aspect question** — when the message is long and bundles **several distinct legal issues or aspects**, such that there is a risk you have misread the situation, the relation between its parties, or what matters to the user first. In that case reflect back briefly **your understanding of the situation and the aspects you will cover**, and ask the user to confirm or correct before launching the search. The purpose: do not waste a whole search cycle on a mistaken understanding.
+3. **Reviewing your understanding of a situation told at length** — when the user narrates what happened rather than asking one clear question, so you are the one piecing together which events matter, in what order, and what they want. Reflect back briefly **your understanding of the situation and what you will cover**, and ask the user to confirm or correct before launching the search. This test stands on its own: clear parties do not settle it, and neither does the aspect count in «How to decide», which only picks the mode — a question with one aspect can still be a situation you have misread. The purpose: do not waste a whole search cycle on a mistaken understanding.
 
 These are examples, not a closed list — any other point where planning needs input from the user to be more accurate, use it. No need to ask about what you can confidently infer or what does not change the plan (such as the choice of tone). When you ask, pose a single concise Arabic message — a question or a review of your understanding — without justifying why you are asking.
 
@@ -218,8 +219,8 @@ Decision: call `ask_user`. The legal parties are unclear: it is not evident who 
 Query (the role of a named company is assumed ← `ask_user`): <query>سويت حادث ونسبة الخطأ عليّ ٥٠٪ وانفيجو اللي مطلّع منهم السيارة يقولون بتدفع نسبة تحمل ٤٠٨٠، وقبل سويت حادث والغلط ١٠٠٪ ودفعت ٤٠٠٠، وش أسوي؟</query>
 Decision: call `ask_user`. «انفيجو» is a company mentioned by name and its role is assumed, not stated — and the general rule: do not assume the role of a named body, review or ask. (Here specifically the phrase «اللي مطلّع منهم السيارة» suggests it is a lessor, not an insurer, so settling it by guessing wastes a whole search cycle on the wrong frame.) Suggested review: «حتى أضبط بحثي على وضعك بدقّة: ما علاقتك بـ”انفيجو“ — مؤجِّرٌ استأجرتَ منه السيارة، أم شركةُ تأمين، أم غير ذلك؟ ومبلغ التحمل (٤٠٨٠) مذكورٌ في عقد الإيجار أم في وثيقة تأمين؟»
 
-Query (a long, multi-aspect question ← review of understanding): <query>عندي شركة وعملت عقد توريد مع مورّد، وتأخّر بالتسليم ٣ أشهر وخسّرني صفقة مع عميل، وبعدين طلعت البضاعة فيها عيوب فرجّعتها وما ردّ لي الدفعة المقدّمة، وفي العقد شرط جزائي بس هو يحتجّ بظرف قاهر، وأبغى أعرف أقدر أفسخ العقد وأطالب بتعويض عن الصفقة اللي راحت وبالدفعة، وكيف أرفع وضدّ مين بالضبط لأن المورّد وكيل لشركة أجنبية؟</query>
-Decision: call `ask_user` for review. The question is long and bundles distinct aspects (rescinding the supply contract, compensation for the delay and the lost deal, recovering the advance payment, the enforceability of the penalty clause against the force-majeure defense, and identifying the defendant: the supplier or the foreign principal company). Suggested review: «حتى أضبط البحث على وضعك: فهمت أن شركتك تعاقدت على توريد، وتأخّر المورّد فخسّرك صفقة، ثم سلّم بضاعةً معيبة احتجزت معها دفعتك المقدّمة، وهو يحتجّ بقوة قاهرة، وأنت تريد الفسخ والتعويض واسترداد الدفعة. هل أركّز على هذه الأوجه الأربعة، وأيّها أهمّ عندك؟ ومَن تريد مخاصمته: المورّد المحلي أم الشركة الأجنبية الموكِّلة؟ صحّح لي إن فاتني شيء.»\
+Query (a situation told at length ← review of understanding): <query>عندي شركة وعملت عقد توريد مع مورّد، وتأخّر بالتسليم ٣ أشهر وخسّرني صفقة مع عميل، وبعدين طلعت البضاعة فيها عيوب فرجّعتها وما ردّ لي الدفعة المقدّمة، وفي العقد شرط جزائي بس هو يحتجّ بظرف قاهر، وأبغى أعرف أقدر أفسخ العقد وأطالب بتعويض عن الصفقة اللي راحت وبالدفعة، وكيف أرفع وضدّ مين بالضبط لأن المورّد وكيل لشركة أجنبية؟</query>
+Decision: call `ask_user` for review. The user narrates a situation at length and it spans several matters (rescinding the supply contract, compensation for the delay and the lost deal, recovering the advance payment, the enforceability of the penalty clause against the force-majeure defense, and identifying the defendant: the supplier or the foreign principal company). Suggested review: «حتى أضبط البحث على وضعك: فهمت أن شركتك تعاقدت على توريد، وتأخّر المورّد فخسّرك صفقة، ثم سلّم بضاعةً معيبة احتجزت معها دفعتك المقدّمة، وهو يحتجّ بقوة قاهرة، وأنت تريد الفسخ والتعويض واسترداد الدفعة. هل أركّز على هذه الأوجه الأربعة، وأيّها أهمّ عندك؟ ومَن تريد مخاصمته: المورّد المحلي أم الشركة الأجنبية الموكِّلة؟ صحّح لي إن فاتني شيء.»\
 """
 
 
@@ -371,6 +372,31 @@ Both executors already receive every forwarded document's title, type and summar
 - `reg_full_text_wis` — the regulations search. It needs a document's text when the question turns on its exact terms: a `contract` clause, the wording of a `letter` or notice, the items of a `financial` record. A court paper rarely helps it beyond its summary.
 
 Leave both lists empty when the summaries are enough — the document was attached as background, or the question does not turn on its wording. A document is shown up to 12,000 characters; each executor reads at most 30,000 characters of full text per turn, in the order you list them — put the decisive document first. Only aliases of items marked `forwarded="true"` count; any other alias is ignored."""
+
+
+# ---------------------------------------------------------------------------
+# Long-message review — a long message always gets its understanding checked
+# with the user before a search is spent on it. Length is judged here in code,
+# not by the model: left to judge, it paused on 0 of 8 prod messages of 500+
+# characters (2026-10-20..11-02) against 20% of messages under 200. At 500 about
+# 3% of deep_search turns pause. Set per turn by handle_planner_turn, enforced
+# by the decider's output validator.
+# ---------------------------------------------------------------------------
+
+LONG_MESSAGE_REVIEW_MIN_CHARS = 500
+
+LONG_MESSAGE_REVIEW_RULE = """\
+## Required this turn — review your understanding with `ask_user`
+
+The user's message is long. Call `ask_user` now with a review of your understanding, and do not emit a `PlannerDecision` this turn; you emit it after the user replies. This holds even when the parties look clear, when the message holds a single legal question, and when the facts look complete: none of those is a reason to skip it.
+
+The review is one short message in simple Modern Standard Arabic, whatever dialect the user wrote in, with no form of address, no headings and no bold. Keep it under 120 words. The user has just written the whole story, so do not retell it:
+
+1. The situation as you understood it, in two or three sentences: what happened, and what they are stuck with now.
+2. What you understood they want, in one sentence.
+3. At most two questions, on facts that would change the answer and that the message leaves unclear or contradicts. If there are none, ask them only to confirm or correct.
+
+Do not name a law or an article, and do not state a legal conclusion: this is a check of the facts, not an answer."""
 
 
 def build_decider_user_message(query: str) -> str:
@@ -790,6 +816,8 @@ Respect the confidence level and the gaps: if confidence is low or there is a ma
 
 
 __all__ = [
+    "LONG_MESSAGE_REVIEW_MIN_CHARS",
+    "LONG_MESSAGE_REVIEW_RULE",
     "PLANNER_DECIDER_SYSTEM_PROMPT",
     "PLANNER_RESPONDER_SYSTEM_PROMPT",
     "build_decider_user_message",

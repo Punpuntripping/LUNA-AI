@@ -36,6 +36,7 @@ from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from .deps import PlannerDeps
 from .models import PlannerDecision, PlannerResponse
 from .prompts import (
+    LONG_MESSAGE_REVIEW_RULE,
     PLANNER_DECIDER_SYSTEM_PROMPT,
     PLANNER_RESPONDER_SYSTEM_PROMPT,
     build_decider_instructions,
@@ -93,6 +94,10 @@ PLANNER_RESPONDER_LIMITS = UsageLimits(
     request_limit=4,
 )
 
+# Times a long message's decision is sent back before the turn goes ahead
+# without the review. Below the decider's output_retries, which would fail the run.
+_REVIEW_RETRIES = 2
+
 
 def create_planner_decider(
     model_override: ModelPolicy | str | None = None,
@@ -130,6 +135,36 @@ def create_planner_decider(
         """Inject the per-turn comprehension blocks (case_brief / messages / …)."""
         return build_decider_instructions(ctx.deps)
 
+    @agent.instructions
+    def _long_message_review(ctx: RunContext[PlannerDeps]) -> str:
+        """Require the understanding review on a long message."""
+        return LONG_MESSAGE_REVIEW_RULE if ctx.deps.review_required else ""
+
+    @agent.output_validator
+    def _hold_decision_for_review(
+        ctx: RunContext[PlannerDeps],
+        value: PlannerDecision | DeferredToolRequests,
+    ) -> PlannerDecision | DeferredToolRequests:
+        """Send a long message's decision back until the model asks the user.
+
+        Only a decision reaches this validator: pydantic-ai ends a deferred
+        ``ask_user`` call without running output validators. The review is worth
+        a retry, never the turn, so after ``_REVIEW_RETRIES`` the decision stands.
+        """
+        if not ctx.deps.review_required:
+            return value
+        if ctx.retry < _REVIEW_RETRIES:
+            raise ModelRetry(
+                "This message is long, so a decision is not accepted yet. Call "
+                "`ask_user` with a review of your understanding, as the section "
+                "«Required this turn» says."
+            )
+        logger.warning(
+            "planner_decider: decided without the long-message review after "
+            "%d retries", _REVIEW_RETRIES,
+        )
+        return value
+
     @agent.tool_plain
     async def ask_user(question: str) -> str:  # noqa: RUF029
         """Ask one clarifying question — or reflect your understanding back for
@@ -151,11 +186,12 @@ def create_planner_decider(
              ambiguity. Skip only when the relation is stated, the body is
              well-known and unambiguous here, or the mention is incidental and
              doesn't affect the search.
-          3. The message is long and bundles several distinct legal aspects
-             such that there is risk you have misread the situation — reflect a
-             brief restatement of your understanding and the aspects you will
-             cover, and ask the user to confirm or correct before launching a
-             full search.
+          3. The user narrates a situation at length rather than asking one
+             clear question, so you are the one piecing together what happened
+             and what they want — reflect a brief restatement of your
+             understanding and what you will cover, and ask the user to confirm
+             or correct before launching a full search. Clear parties do not
+             settle this, and neither does the aspect count that picks the mode.
         These are examples, not a closed list — any other point where planning
         needs user input to be more accurate is fair game. No need to ask about
         things you can confidently infer or that don't change the plan (e.g.

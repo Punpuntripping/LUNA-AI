@@ -13,7 +13,7 @@ The planner is a **two-phase** agent:
   ``shared/case_documents.py``). The decider may instead pause via the
   ``ask_user`` deferred tool when the query is too vague to plan, when the
   parties / intent are unclear, or to reflect its understanding back for
-  confirmation on a long, multi-aspect question.
+  confirmation on a situation told at length.
   Sectors moved out in Wave B (2026-05-24): the dedicated
   :mod:`~agents.deep_search_v4.sector_picker` agent runs in parallel with the
   executors and emits a 2–5 sector AND-filter. The picker has visibility
