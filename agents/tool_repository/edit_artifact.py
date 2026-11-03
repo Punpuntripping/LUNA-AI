@@ -218,12 +218,8 @@ def register_edit_artifact(agent: Agent) -> None:
         # ``agents.artifact_editor.run_artifact_editor``.
         from agents.artifact_editor import run_artifact_editor
 
-        # Read here, not at dispatch, so an update batched in the same response
-        # is already in it. Pydantic AI starts a response's calls in order, so
-        # with this call first the update has not run yet. Its body is
-        # synchronous, so one yield lets it finish. Passed only when there is
-        # one: a conversation with no memory makes the same call as before.
-        await asyncio.sleep(0)
+        # Passed only when there is one: a conversation with no memory makes the
+        # same call as before.
         memory_md = render_conversation_memory(
             getattr(ctx.deps, "conversation_memory", None)
         )

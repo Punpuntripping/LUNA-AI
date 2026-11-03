@@ -33,7 +33,7 @@ search/
   planner/        planner decider + responder + mode framings
   aggregator/     synthesis prompts (shared role, citation rules, mode/only variants)
 writers/          writer (role + subtypes + output contract) + writer_planner
-memory/           artifact_summarizer + artifact_editor
+memory/           artifact_summarizer + artifact_editor + convo_memory_writer
 template/         template_ingester
 router/           router system prompt
 ```
@@ -60,6 +60,7 @@ The `<agent>` prefix is kept so a file is self-describing even if moved.
 | artifact_summarizer | `system`, `attachment` | Arabic — pending |
 | template_ingester | `system` | Arabic — pending |
 | artifact_editor | `system`, `retry_msg`, `reason` | Arabic — pending |
+| convo_memory_writer | `system` | **English** (entries come out in Arabic) |
 | router | `system` | Arabic — pending |
 | populate_sectors | `system` | Arabic (offline data tool, not in request path) |
 
@@ -73,5 +74,13 @@ The `<agent>` prefix is kept so a file is self-describing even if moved.
   `sector_picker__system`.
 - `*_retry_msg` and `artifact_editor__reason` are short model-facing strings
   (ModelRetry text), included for completeness.
+- `aggregator__memory_conflict_note` is printed under the conversation-memory
+  block, only when there is one. It is in English and is not part of the mode
+  prompts.
+- `memory/convo_memory_writer__system` is kept by hand: the extractor has no
+  target for it, and a blanket run rewrites unrelated files.
+- The router has no memory tool. What it reads about memory is `_ROUTER_NOTE` in
+  `agents/utils/conversation_memory.py`, printed last, for users the feature is on
+  for. It is in English and is not part of `router/router__system`.
 - The verbatim **Arabic backup** (pre-migration, with code) lives separately in
   `agents_reports/AR_prompts/`.

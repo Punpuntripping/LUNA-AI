@@ -815,13 +815,16 @@ def _render_transitions(
 # agent that does not write the chat reply to flag a legal conflict "in your
 # output", but the responder reads only the head and the tail of `synthesis_md`
 # (1,500 + 500 chars; the old responder reads the head alone), so a flag left in
-# the middle never reaches the chat, and the router's `insisted` rule depends on
-# the user having seen that warning. The insisted label is a different string,
-# so this does not ask for a repeat warning on an insisted entry.
+# the middle never reaches the chat, and the memory agent's `insisted` rule depends
+# on the user having seen that warning. An insisted entry is excluded by name: its
+# label contains the plain one, and the live aggregator applied this note to it
+# and warned again (conversation_memory_helper.md D7).
 _MEMORY_CONFLICT_NOTE = (
     "If `<references>` contradict a `[رأي قانوني]` entry, say so in the opening of "
     "`synthesis_md`, right after the direct answer: the chat reply is written from "
-    "the opening and the close of the answer only."
+    "the opening and the close of the answer only. This never applies to a "
+    "`[رأي قانوني — أصرّ عليه المستخدم]` entry: write the answer on that basis, with "
+    "no warning and no contrary statement."
 )
 
 

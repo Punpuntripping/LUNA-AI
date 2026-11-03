@@ -584,13 +584,32 @@ def test_every_mode_prompt_carries_the_static_bullet(key):
     assert agg_prompts.get_aggregator_prompt(key).count(_STATIC_BULLET) == 1
 
 
-def test_conflict_note_names_the_legal_label_and_not_the_insisted_one():
-    """Its label must match the rendered entries byte for byte, and an insisted
-    entry must not match it, or the aggregator would be told to warn again."""
+def test_conflict_note_names_both_labels_byte_for_byte():
+    """Both must match the rendered entries exactly, or the rule misses them."""
+    note = agg_prompts._MEMORY_CONFLICT_NOTE
     label = cm._KIND_LABELS[cm.KIND_LEGAL_POSITION]
-    assert f"[{label}]" in agg_prompts._MEMORY_CONFLICT_NOTE
-    assert f"[{cm._INSISTED_LABEL}]" not in agg_prompts._MEMORY_CONFLICT_NOTE
+    assert note.count(f"`[{label}]`") == 1
+    assert note.count(f"`[{cm._INSISTED_LABEL}]`") == 1
     assert f"[{label}]" not in f"[{cm._INSISTED_LABEL}]"
+
+
+def test_conflict_note_rules_out_the_insisted_entry():
+    """Live testing: the old note left the insisted label out, relying on it
+    being a different string, and the aggregator warned again anyway."""
+    head, tail = agg_prompts._MEMORY_CONFLICT_NOTE.split(f"`[{cm._INSISTED_LABEL}]`")
+    assert head.endswith("This never applies to a ")
+    assert tail == (
+        " entry: write the answer on that basis, with no warning and no contrary "
+        "statement."
+    )
+
+
+def test_conflict_note_names_the_label_an_insisted_entry_renders_with():
+    rendered = render_conversation_memory(
+        [MemoryEntry(1, cm.KIND_LEGAL_POSITION, "x", insisted=True)]
+    )
+    kind = rendered.split('<entry id="M-1" kind="')[1].split('"')[0]
+    assert f"`[{kind}]`" in agg_prompts._MEMORY_CONFLICT_NOTE
 
 
 def test_an_uncited_sentence_passes_the_post_validator():

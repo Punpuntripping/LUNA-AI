@@ -244,6 +244,169 @@ def test_exact_fake_decodes_no_tripwire():
 
 
 # ---------------------------------------------------------------------------
+# decode honours dates the way encode does
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "real",
+    [
+        pytest.param("القضية 4471234 12/3/1446", id="before-a-slash-date"),
+        pytest.param("القضية 12/3/1446 4471234", id="after-a-slash-date"),
+        pytest.param("القضية 4471234 12-3-1446", id="before-a-dash-date"),
+        pytest.param("القضية 12-3-1446 4471234", id="after-a-dash-date"),
+        pytest.param("القضية 4471234 2024-05-12", id="before-a-gregorian-date"),
+        pytest.param("القضية 4471234-12-3-1446", id="dashed-onto-a-date"),
+        pytest.param("بين 4471234 12/3/1446 4471999", id="between-two-numbers"),
+        pytest.param("القضية 4471234 12/3/1446 ثم 4471999 1/4/1446", id="two-of-each"),
+    ],
+)
+def test_fake_beside_a_date_round_trips(real):
+    codec = PrivacyCodec(rng=random.Random(7))
+    encoded = codec.encode(real)
+    assert encoded != real
+    out = codec.decode(encoded)
+    assert out.text == real
+    assert out.restored_count == len(codec.new_mappings)
+    assert out.tripwires == []
+
+
+def test_separated_fake_beside_a_date_collapses_to_real():
+    codec = PrivacyCodec(rng=random.Random(7))
+    encoded = codec.encode("الجوال 0551-234-567 12/3/1446")
+    assert codec.decode(encoded).text == "الجوال 0551234567 12/3/1446"
+
+
+def test_arabic_indic_date_beside_a_fake_stays_as_written():
+    codec = PrivacyCodec(rng=random.Random(7))
+    encoded = codec.encode("القضية 4471234 ١٢/٣/١٤٤٦")
+    assert codec.decode(encoded).text == "القضية 4471234 ١٢/٣/١٤٤٦"
+
+
+def test_a_fake_shaped_like_a_date_still_decodes():
+    """``15-9-1500`` is no date, so it masks, and its random tail can make the fake
+    look like one. The date barrier comes second, or this stays a fake."""
+    codec = PrivacyCodec(
+        real_to_fake={"1591500": "1591446"}, fake_to_real={"1591446": "1591500"}
+    )
+    assert codec.decode("الرقم 15-9-1446").text == "الرقم 1591500"
+
+
+def test_text_with_no_fake_is_byte_identical_beside_a_date():
+    codec = PrivacyCodec(
+        real_to_fake={"4471234": "4479876"}, fake_to_real={"4479876": "4471234"}
+    )
+    text = "حكم 12/3/1446 7654321 و 12-3-1446 9998887 2020-2021 1/4/1446"
+    out = codec.decode(text)
+    assert out.text == text
+    assert out.restored_count == 0
+
+
+def test_a_mangled_fake_beside_a_date_is_not_decoded_by_prefix():
+    codec = PrivacyCodec(
+        real_to_fake={"4471234": "4479876"}, fake_to_real={"4479876": "4471234"}
+    )
+    text = "القضية 4479870 12/3/1446"
+    assert codec.decode(text).text == text
+
+
+# ---------------------------------------------------------------------------
+# leaves_fake: the check before a store-real write
+# ---------------------------------------------------------------------------
+
+_ONE_NUMBER = {"real_to_fake": {"4471234": "4479876"}, "fake_to_real": {"4479876": "4471234"}}
+
+
+def test_leaves_fake_is_false_on_all_that_decode_restores():
+    codec = PrivacyCodec(rng=random.Random(7))
+    encoded = codec.encode("القضية 4471234 12/3/1446 والبريد a.b@client.sa والهوية 1023456789")
+    assert not codec.leaves_fake(encoded, encoded)
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param("القضية 4479876 25 يوماً", id="a-small-number-after-it"),
+        pytest.param("البند 5 4479876", id="a-small-number-before-it"),
+        pytest.param("القضية 4479876 9999999", id="another-number-after-it"),
+        pytest.param("القضية 4479876 5000 ريال", id="joined-to-an-amount"),
+    ],
+)
+def test_leaves_fake_finds_a_fake_with_digits_joined_to_it(written):
+    assert PrivacyCodec(**_ONE_NUMBER).leaves_fake(written)
+
+
+def test_leaves_fake_finds_the_pieces_of_a_run_masked_as_one():
+    """Two numbers a space apart are one run to encode, so one fake. Written apart,
+    neither piece decodes."""
+    codec = PrivacyCodec(rng=random.Random(7))
+    source = codec.encode("القضيتان 4471234 4471235")
+    first, second = source.split()[-2:]
+
+    assert codec.leaves_fake(f"القضية {first} والقضية {second}", source)
+    assert codec.leaves_fake(f"القضية {second}", source)
+    assert not codec.leaves_fake(f"القضيتان {first} {second}", source)
+
+
+def test_leaves_fake_finds_a_damaged_tail():
+    codec = PrivacyCodec(**_ONE_NUMBER)
+    assert codec.leaves_fake("القضية 4479870", "القضية 4479876")
+
+
+def test_leaves_fake_finds_a_damaged_fake_email():
+    codec = PrivacyCodec(rng=random.Random(7))
+    source = codec.encode("البريد a.b@client.sa")
+    assert codec.leaves_fake("البريد wrong123@example.com", source)
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param("المبلغ 4475000 ريال", id="an-amount-of-a-fakes-shape"),
+        pytest.param("دفع 4475000 ر.س", id="the-short-currency-mark"),
+        pytest.param("تسلّم 4,475,000 ريال", id="a-grouped-amount"),
+        pytest.param("تسلّم 4,475,000", id="a-grouped-amount-with-no-currency"),
+        pytest.param("مبلغ ٤٤٧٥٠٠٠ ريال", id="arabic-indic-digits"),
+        pytest.param("بتاريخ 12/3/1446", id="a-hijri-date"),
+        pytest.param("بتاريخ 15-9-1446", id="a-dash-date"),
+        pytest.param("بتاريخ 2024-05-12", id="a-gregorian-date"),
+        pytest.param("سنة 1446 الموافق 2024", id="bare-years"),
+        pytest.param("المادة 77 من النظام", id="an-article"),
+        pytest.param("نسبة 15% من 2000", id="small-figures"),
+        pytest.param("الرقم 1234567", id="an-unrelated-long-number"),
+    ],
+)
+def test_leaves_fake_refuses_no_ordinary_figure(written):
+    assert not PrivacyCodec(**_ONE_NUMBER).leaves_fake(written)
+
+
+def test_leaves_fake_never_refuses_a_known_real_value():
+    """A real shares its fake's kept prefix and length, and it would otherwise read
+    as a damaged fake once decoded."""
+    codec = PrivacyCodec(**_ONE_NUMBER)
+    assert not codec.leaves_fake("الرقم 4471234")
+    assert not codec.leaves_fake("الرقم 4479876")
+
+
+def test_leaves_fake_lets_a_number_copied_from_the_input_through():
+    """It was unmasked next to «ريال», and the model dropped the word. The shape
+    alone would refuse it, which is why the check reads what the model read."""
+    codec = PrivacyCodec(**_ONE_NUMBER)
+    assert codec.leaves_fake("قيمة العقد 4475000")
+    assert not codec.leaves_fake("قيمة العقد 4475000", "الثمن 4475000 ريال")
+
+
+def test_leaves_fake_ignores_short_pieces_of_a_masked_run():
+    """An IBAN's groups are ordinary numbers on their own."""
+    codec = PrivacyCodec(rng=random.Random(7))
+    source = codec.encode("الآيبان SA03 8000 0000 6080 1016 7519")
+    piece = source.split()[-1]
+    assert len(piece) == 4
+    assert not codec.leaves_fake(f"دفع {piece} ريال", source)
+    assert not codec.leaves_fake(f"البند {piece}", source)
+
+
+# ---------------------------------------------------------------------------
 # audit() helper (Layer 4 detector-as-auditor)
 # ---------------------------------------------------------------------------
 

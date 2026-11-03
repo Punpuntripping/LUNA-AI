@@ -1,1 +1,0 @@
-System note, not from the user. Your last update_conversation_memory call was not saved: {failure} Your reply has already reached the user, so do not write a new one. In one response, call update_conversation_memory once with corrected arguments, and emit ChatResponse with the message "done", which is discarded.

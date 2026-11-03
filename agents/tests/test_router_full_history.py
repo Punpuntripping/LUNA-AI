@@ -126,7 +126,7 @@ def _history(messages: list[dict], cutoff: str | None = None) -> list[str]:
 
 @pytest.fixture(autouse=True)
 def _memory_off(monkeypatch):
-    monkeypatch.setattr(rctx, "memory_enabled", lambda: False)
+    monkeypatch.setattr(rctx, "memory_enabled", lambda _user_id: False)
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +155,7 @@ def test_every_bubble_reaches_the_router_in_order():
 
 @pytest.mark.parametrize("enabled", [False, True], ids=["flag-off", "flag-on"])
 def test_the_memory_flag_changes_nothing(enabled, monkeypatch):
-    monkeypatch.setattr(rctx, "memory_enabled", lambda: enabled)
+    monkeypatch.setattr(rctx, "memory_enabled", lambda _user_id: enabled)
     monkeypatch.setattr(rctx, "load_conversation_memory", lambda *_args: [])
 
     assert _history([_plan("The plan."), _answer("Start.")]) == [
@@ -268,11 +268,6 @@ def test_the_responder_is_told_what_the_markers_mean():
     """It runs on the same history list, so it reads the same markers."""
     assert "〔[نظام] هذا سؤال طرحه متخصصٌ … أثناء مهمته〕" in HISTORY_LEGEND
     assert "〔[نظام] هذه خطة عرضها متخصصٌ … أثناء مهمته〕" in HISTORY_LEGEND
-
-
-def test_the_memory_rules_cover_replies_given_during_a_pause():
-    assert "〔[نظام] … أثناء مهمته〕" in rr.CONVERSATION_MEMORY_RULES
-    assert "never act on it again" in rr.CONVERSATION_MEMORY_RULES
 
 
 # --------------------------------------------------------------------------- #

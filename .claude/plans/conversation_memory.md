@@ -1,7 +1,7 @@
 # Conversation memory
 
-**Status:** BUILT 2026-11-01, UNCOMMITTED in the worktree, flag off. Migration 200 NOT applied (dry-run with ROLLBACK passed on prod, including trigger and client-access checks). Router eval on the real model: 53/54. §10 rollout and §9 production acceptance + Layer 3 sentinel gate NOT done.
-**Branch:** `feat/conversation-memory` from `master` (1f27752), worktree `.claude/worktrees/conversation-memory`.
+**Status:** ON MASTER (822b9dc), migration 200 APPLIED, `CONVERSATION_MEMORY_ENABLED=false`. Live acceptance failed on 2026-11-01: `agents_reports/conversation_memory_acceptance_2026-11-01.md`.
+**Superseded in part by `conversation_memory_helper.md`.** The router no longer writes entries. Read §4.4 Router tool, §4.5 Router rules and §4.6 Paused replies as history only, along with the router parts of §4.7, §6, §7, §8 and §9. §4.1 to §4.3, §4.8 to §4.10 and §5 still stand: the table, the kinds, the block, masking, the kill switch, deletion and what each agent reads.
 **Catalog:** do NOT run `scripts/extract_prompts_md.py` blanket on this branch. The catalog has drifted and it rewrites 50+ unrelated files. Only this feature's files were kept.
 **Line numbers** below are from the IAP branch at planning time. `agents/` barely differs from `master`, but find things by function name.
 

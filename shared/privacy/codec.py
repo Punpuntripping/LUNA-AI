@@ -352,6 +352,12 @@ def _find_number_runs(
     return runs
 
 
+def _runs_around_dates(norm: str) -> list[tuple[int, int, str]]:
+    """Number runs as encode forms them: emails and dates are barriers."""
+    emails = [(s, e) for (s, e, _a) in _find_email_spans(norm)]
+    return _find_number_runs(norm, emails + _find_date_spans(norm, emails))
+
+
 def _is_money_context(norm: str, start: int, end: int) -> bool:
     pre = norm[max(0, start - _MONEY_WINDOW):start]
     post = norm[end:end + _MONEY_WINDOW]
@@ -541,6 +547,11 @@ class PrivacyCodec:
         fake table is the sole decode criterion. A run that matches a known
         fake's kept prefix + length but differs in the tail raises a tripwire
         (never decoded by prefix).
+
+        Encode never joins a run across a date, so a fake beside a date only
+        reads whole with the date taken out. That is tried second, on a run that
+        missed: a separated fake can itself look like a date (``15-9-1446``), so
+        the date barrier must never outrank an exact match.
         """
         norm = normalize_digits(text)
         repls: list[tuple[int, int, str]] = []
@@ -557,19 +568,86 @@ class PrivacyCodec:
 
         # Numbers: join runs with NO date/money exclusion, skipping email spans.
         email_spans = [(s, e) for (s, e, _a) in email_spans_raw]
+        beside_dates: list[tuple[int, int, str]] | None = None
         for (s, e, digits) in _find_number_runs(norm, email_spans):
             if len(digits) < 5:
                 continue
-            real = self.fake_to_real.get(digits)
-            if real is not None and "@" not in real:
+            real = self._real_number(digits)
+            if real is not None:
                 repls.append((s, e, real))
                 restored += 1
-            else:
-                tw = self._tripwire_for_number(digits)
-                if tw is not None:
-                    tripwires.append(tw)
+                continue
+            if beside_dates is None:
+                beside_dates = _runs_around_dates(norm)
+            inside = [
+                (a, b, self._real_number(found))
+                for (a, b, found) in beside_dates
+                if s <= a and b <= e
+            ]
+            hits = [(a, b, value) for (a, b, value) in inside if value is not None]
+            if hits:
+                repls.extend(hits)
+                restored += len(hits)
+                continue
+            tw = self._tripwire_for_number(digits)
+            if tw is not None:
+                tripwires.append(tw)
 
         return DecodeResult(_apply(text, repls), tripwires, restored)
+
+    def _real_number(self, digits: str) -> str | None:
+        real = self.fake_to_real.get(digits)
+        return real if real is not None and "@" not in real else None
+
+    def leaves_fake(self, text: str, source: str = "") -> bool:
+        """Whether a fake would survive :meth:`decode` of ``text``, whole or damaged.
+
+        For a write that must store real text. ``source`` is the encoded text the
+        model read. A true result refuses the write, and a false refusal of an
+        ordinary figure is worse than the bug, so only what ties to this table
+        counts:
+
+        * an exact fake that did not decode, with other digits joined to it;
+        * a group of a fake that encode masked across separators, written apart
+          from the rest of that fake, so no part of it decodes. Only groups of 5+
+          digits: shorter ones are ordinary numbers;
+        * a fake's length and kept prefix with another tail, which is the
+          tripwire. Not in a money context, where encode masks nothing, and not a
+          number the model read unmasked, which it copied;
+        * an address at the fake domain that is no known value.
+
+        A known real value is never refused: it shares its fake's kept prefix and
+        length. Not caught: a fake with a digit added or dropped, a changed kept
+        prefix, or commas written into it.
+        """
+        norm = normalize_digits(self.decode(text).text)
+        for (_s, _e, addr) in _find_email_spans(norm):
+            if addr.endswith(f"@{_FAKE_EMAIL_DOMAIN}") and addr not in self.real_to_fake:
+                return True
+
+        read = normalize_digits(source)
+        unmasked: set[str] = set()
+        pieces: set[str] = set()
+        for (s, e, digits) in _runs_around_dates(read):
+            groups = _DIGIT_GROUP_RE.findall(read[s:e])
+            if digits not in self.fake_to_real:
+                unmasked.update(groups, [digits])
+            elif len(groups) > 1:
+                pieces.update(g for g in groups if len(g) >= 5)
+
+        for (s, e, digits) in _runs_around_dates(norm):
+            if digits in self.real_to_fake:
+                continue
+            groups = _DIGIT_GROUP_RE.findall(norm[s:e])
+            if any(g in self.fake_to_real or g in pieces for g in groups):
+                return True
+            if (
+                digits not in unmasked
+                and not _is_money_context(norm, s, e)
+                and self._tripwire_for_number(digits) is not None
+            ):
+                return True
+        return False
 
     def _tripwire_for_number(self, digits: str) -> TripwireEvent | None:
         if digits in self.fake_to_real:  # exact fake → not a tripwire (decoded)

@@ -315,6 +315,11 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # over a long noisy span (what is the user actually after?), not extraction —
     # but it does not warrant max-effort latency in a pre-router hook.
     "convo_compactor":            _FLASH_MEDIUM,
+    # Tier_2 DeepSeek-primary — Layer-4 memory agent, one run per user message.
+    # Turns what the user said into add/update/remove ops on the hidden
+    # conversation memory. A task waits for it (60s ceiling), so plain _FLASH.
+    # See .claude/plans/conversation_memory_agent.md.
+    "convo_memory_writer":        _FLASH,
     # Tier_2 DeepSeek-primary — Layer-4 transformer that cleans ONE raw legal
     # document into a reusable, placeholder'd, uniquely-titled template saved to
     # user_templates. One LLM call per ingestion; deepseek-flash can emit the

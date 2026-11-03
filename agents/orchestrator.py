@@ -5,6 +5,9 @@ Wave 9 rewrite (Task 7):
 - agents.state imports → gone.
 - Full specialist body NEVER streamed to chat; only chat_summary + key_findings.
 - Pre-router memory hook: resummarize_dirty_items + compact_conversation.
+- Memory agent: _start_memory_writer runs on every user message, beside the router
+  or ahead of a resume. The task is handed down, and a dispatch or a resume leg
+  waits for it before reading memory. A chat reply never does.
 - Cap pre-flight: refuse deep_search / writing dispatch when workspace_items >= 15.
 - Deep-search plan gate (migration 197): every deep_search entry point asks
   _check_deep_search_gate first; a refusal is streamed + saved as the reply,
@@ -64,6 +67,10 @@ if TYPE_CHECKING:  # annotation only — the helpers are imported where used.
     from shared.quota import DeepSearchGate, DeepSearchGated
 
 import agents.memory.agent as memory
+from agents.memory.convo_memory_writer import (
+    build_memory_writer_input,
+    schedule_memory_writer,
+)
 from agents.memory.ocr_extractor import run_ocr_extraction
 from agents.memory.summarize import summarize_workspace_item
 from agents.deep_search_v4.planner.logger import (
@@ -94,6 +101,7 @@ from agents.paused_runs import (
     record_pause,
     resolve_pause,
 )
+from agents.utils.conversation_memory import memory_enabled
 from agents.utils.usage_sink import bind_run_id, collect_llm_calls, record_call
 from shared.observability import get_logfire
 
@@ -111,6 +119,14 @@ _RECENT_MESSAGES_N = 5
 # Over-fetch buffer so empty placeholder rows (the assistant row inserted before
 # the agent runs) can be dropped without shrinking the real window below N.
 _RECENT_MESSAGES_BUFFER = 5
+
+# How long a task waits for the memory agent (conversation_memory_agent.md §4). A
+# failure guard, so a dead provider cannot hang a task: normal runs end in seconds
+# and the wait ends with them. A full-length message took about 30 seconds in the
+# eval, and the owner's rule is that the task waits for it, so this stays above
+# that. Past this the task goes on with the old memory and the entry lands for the
+# next turn.
+MEMORY_WRITER_CEILING_S = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +472,7 @@ def _load_recent_messages(
         append_next_steps_note,
         build_provenance_tag,
         build_user_attachment_tag,
+        neutralize_system_brackets,
     )
     from backend.app.services.masking_service import active_codec, persist_new_mappings
 
@@ -509,7 +526,8 @@ def _load_recent_messages(
         role = row.get("role") or "user"
         if role not in ("user", "assistant"):
             role = "user"
-        content = row.get("content") or ""
+        # The body first: from here on, a system line is one the app added.
+        content = neutralize_system_brackets(row.get("content") or "")
         if role == "assistant" and wi_provenance:
             artifact_ids = row.get("artifact_ids") or []
             if artifact_ids:
@@ -674,8 +692,9 @@ def _load_conversation_memory(
     """The rendered ``<conversation_memory>`` block, encoded, or ``None``.
 
     **RESUME PATHS ONLY**, like ``_load_compaction_summary`` and for the same
-    reason: a fresh dispatch gets the block from ``_route``, as this turn's
-    router left it. The resume legs skip the router, so they load it here.
+    reason: a fresh dispatch gets the block from ``_route``, with what the memory
+    agent wrote this turn. The resume legs skip the router, so they wait for the
+    memory agent and load it here.
 
     Same contract too. Owner-scoped (``load_conversation_memory`` filters on
     both ids: this client is ``service_role`` and the text lands in system
@@ -1002,6 +1021,7 @@ async def _resume_major_agent(
     case_id: str | None,
     user_message_id: str | None,
     assistant_message_id: str | None = None,
+    memory_task: "asyncio.Task | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Resume a paused agent run — binds the original run's id so the resume
     leg's LLM calls share it (migration 061), then delegates to the body."""
@@ -1015,6 +1035,7 @@ async def _resume_major_agent(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            memory_task=memory_task,
         ):
             yield ev
 
@@ -1028,6 +1049,7 @@ async def _resume_major_agent_inner(
     case_id: str | None,
     user_message_id: str | None,
     assistant_message_id: str | None = None,
+    memory_task: "asyncio.Task | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Resume a paused agent run after the user has replied to an ask_user question.
 
@@ -1041,6 +1063,10 @@ async def _resume_major_agent_inner(
     for THIS resume turn (a new placeholder is created on every user reply
     by message_service.py). Threaded to the downstream publish step so the
     artifact produced on resume carries ``workspace_items.message_id``.
+
+    ``memory_task`` is this message's memory agent run. Each of the three legs
+    waits for it before it reads memory. Every re-route hands it on, so the turn
+    never starts a second run for one message.
     """
     import base64
 
@@ -1081,6 +1107,7 @@ async def _resume_major_agent_inner(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            memory_task=memory_task,
         ):
             yield ev
         return
@@ -1102,6 +1129,7 @@ async def _resume_major_agent_inner(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            memory_task=memory_task,
         ):
             yield ev
         return
@@ -1148,6 +1176,7 @@ async def _resume_major_agent_inner(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            memory_task=memory_task,
         ):
             yield ev
         return
@@ -1189,6 +1218,9 @@ async def _resume_major_agent_inner(
             resumed_task_label = (
                 (pending.get("task_label") or "").strip() or "متابعة المحادثة"
             )
+            # Memory first. The planner and the writer run inside one call, so
+            # there is no later point to wait in.
+            await _settle_memory_writer(memory_task, conversation_id)
             major_input = MajorAgentInput(
                 describe_query=user_reply,
                 task_label=resumed_task_label,
@@ -1324,6 +1356,7 @@ async def _resume_major_agent_inner(
                 case_id=case_id,
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,
+                memory_task=memory_task,
             ):
                 yield ev
         return
@@ -1407,7 +1440,9 @@ async def _resume_major_agent_inner(
         _resume_compaction_summary = _load_compaction_summary(
             supabase, conversation_id, user_id
         )
-        # Same for the memory: one read for this leg, reused below.
+        # Same for the memory, once the memory agent is done with this reply: one
+        # read for this leg, reused below.
+        await _settle_memory_writer(memory_task, conversation_id)
         _resume_conversation_memory = _load_conversation_memory(
             supabase, conversation_id, user_id
         )
@@ -1487,6 +1522,7 @@ async def _resume_major_agent_inner(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            memory_task=memory_task,
         ):
             yield ev
         return
@@ -1533,6 +1569,7 @@ async def _resume_major_agent_inner(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            memory_task=memory_task,
         ):
             yield ev
         return
@@ -1768,6 +1805,7 @@ async def _resume_simple_search_leg(
     case_id: str | None,
     user_message_id: str | None,
     assistant_message_id: str | None = None,
+    memory_task: "asyncio.Task | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Resume a paused ``simple_search`` run with the user's reply (§13l.4).
 
@@ -1812,6 +1850,7 @@ async def _resume_simple_search_leg(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            memory_task=memory_task,
         ):
             yield ev
         return
@@ -1821,7 +1860,9 @@ async def _resume_simple_search_leg(
     # `_rewrote_pause`, and for the same reason: resolving would delete the row
     # the next turn has to resume.
     _keep_pause = False
-    # Resume skips the router. One read for this leg, reused by the hand-off.
+    # Resume skips the router. Memory first, then one read for this leg, reused by
+    # the hand-off.
+    await _settle_memory_writer(memory_task, conversation_id)
     conversation_memory_md = _load_conversation_memory(
         supabase, conversation_id, user_id
     )
@@ -2595,6 +2636,20 @@ async def _handle_message_inner(
         except Exception:
             logger.warning("inline summarize failed for %s", _ocr_item_id, exc_info=True)
 
+    # The memory agent starts here, the one start point for a user message. The
+    # router path and the resume path both pass through, and the pinned plan has
+    # already returned. The task is handed down rather than looked up: a lookup
+    # finds nothing for a run that already finished, and the turn would then keep
+    # the entries it read before that run.
+    memory_task = _start_memory_writer(
+        question=question,
+        supabase=supabase,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        case_id=case_id,
+        user_message_id=user_message_id,
+    )
+
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
     # Defensive stale check: a pause whose resolve DELETE silently failed (or
@@ -2633,6 +2688,7 @@ async def _handle_message_inner(
                 case_id=case_id,
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,
+                memory_task=memory_task,
             ):
                 yield ev
             return
@@ -2652,6 +2708,7 @@ async def _handle_message_inner(
         case_id=case_id,
         user_message_id=user_message_id,
         assistant_message_id=assistant_message_id,
+        memory_task=memory_task,
     ):
         yield ev
 
@@ -2722,6 +2779,90 @@ def _record_follow_up_status(
         return None
 
 
+def _start_memory_writer(
+    *,
+    question: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+) -> "asyncio.Task | None":
+    """Start the memory agent on this message. ``None`` when it did not start.
+
+    It does not run for a user the feature is off for, or for a message with no
+    text. Never raises: a failure here costs an entry, never the turn. The window
+    is read here because the runner cannot import from this module, and the read
+    stays on the event loop because it encodes with the codec the turn shares.
+    ``question`` is already encoded. Spec: conversation_memory_agent.md §4, §5.
+    """
+    if not question.strip() or not memory_enabled(user_id):
+        return None
+    try:
+        return schedule_memory_writer(
+            build_memory_writer_input(
+                rows=_load_recent_messages(supabase, conversation_id, user_id=user_id),
+                question=question,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                message_id=user_message_id,
+                case_id=case_id,
+            ),
+            supabase,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "convo_memory_writer not started: conversation_id=%s error=%s",
+            conversation_id, type(exc).__name__,
+        )
+        return None
+
+
+async def _settle_memory_writer(task: "asyncio.Task | None", conversation_id: str) -> bool:
+    """Wait for this message's memory agent, up to the ceiling. True when it ended
+    cleanly. False with no wait when it never started.
+
+    ``asyncio.wait``, never ``wait_for``, which would cancel the run: past the
+    ceiling it keeps running and its entry lands for the next turn. Never raises
+    for the run's sake: a run that failed leaves the memory as it was.
+    """
+    if task is None:
+        return False
+    done, _ = await asyncio.wait({task}, timeout=MEMORY_WRITER_CEILING_S)
+    if not done:
+        _logfire.info("convo_memory_writer.past_ceiling", conversation_id=conversation_id)
+        return False
+    if task.cancelled() or task.exception() is not None:
+        logger.warning("convo_memory_writer ended early: conversation_id=%s", conversation_id)
+        return False
+    return True
+
+
+async def _wait_for_memory_writer(
+    ctx: Any, task: "asyncio.Task | None", conversation_id: str
+) -> None:
+    """Hold a dispatch until this message's memory agent ends, up to the ceiling.
+
+    Agents read the memory when they start, so without this the search on the
+    very turn the user corrected something would start without the correction
+    (conversation_memory_agent.md §4). ``ctx`` travels on as ``router_context``,
+    so the responder reads what the specialist reads.
+
+    Any run that read the rows updates ``ctx``, even if it changed nothing or its
+    model failed: it read them after any run ahead of it in the queue, and the
+    router's context may have been loaded before that one finished. Only a failed
+    read leaves ``ctx`` alone, because its ``entries`` are empty.
+    """
+    from agents.utils.conversation_memory import render_conversation_memory
+
+    if not await _settle_memory_writer(task, conversation_id):
+        return
+    output = task.result()
+    if output.read_ok:
+        ctx.conversation_memory = output.entries
+        ctx.conversation_memory_md = render_conversation_memory(output.entries)
+
+
 async def _route(
     question: str,
     supabase: SupabaseClient,
@@ -2730,8 +2871,14 @@ async def _route(
     case_id: str | None,
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
+    memory_task: "asyncio.Task | None" = None,
 ) -> AsyncGenerator[dict, None]:
-    """Run the router LLM; on ChatResponse stream tokens; on DispatchAgent call _dispatch."""
+    """Run the router LLM; on ChatResponse stream tokens; on DispatchAgent call _dispatch.
+
+    ``memory_task`` is this message's memory agent run, started by
+    ``_handle_message_inner`` and running beside the router. Only a dispatch waits
+    for it. ``_route`` never starts one, so a re-route cannot run it twice.
+    """
     from agents.router.context import load_router_context
     from agents.router.router import run_router
     from agents.utils.welcome import mark_welcomed, resolve_welcome
@@ -2782,11 +2929,6 @@ async def _route(
         conversation_memory=ctx.conversation_memory,
     )
 
-    # The block as this run left it, before anything is dispatched: agents read
-    # the ``conversation_memory_md`` passed below, and ``ctx`` travels with them,
-    # so it must not keep the pre-run block.
-    ctx.conversation_memory_md = router_result.conversation_memory_md
-
     # Drain any save_memo side effects FIRST so the pinned-memo chip appears
     # whether the router answered directly or dispatched. force_attach holds the
     # memo item_id(s) to merge into a dispatch's attached items below.
@@ -2818,6 +2960,10 @@ async def _route(
 
     if isinstance(result, DispatchAgent):
         yield {"type": "agent_selected", "agent_family": result.agent_family}
+        # Memory first, then the task. A chat reply never reaches this: no agent
+        # follows it, and nothing may wait for the run after ``done``.
+        # ``agents/memory/convo_memory_writer/runner.py`` says why.
+        await _wait_for_memory_writer(ctx, memory_task, conversation_id)
         # Merge any save_memo force-attach id(s) into the LLM-selected attachments
         # (deduped) so the specialist always sees the pinned core message even if
         # the LLM forgot to attach it. The memo is included unconditionally — it's
@@ -3065,10 +3211,11 @@ async def _dispatch(
     family runners, consumed only by families on RESPONDER_UNIFIED_FAMILIES.
     ``None`` for pinned / headless dispatches (no router ran).
 
-    ``conversation_memory_md`` is the rendered memory block as the router left it
-    this turn, already encoded. It rides ``MajorAgentInput`` to the planners and
-    goes straight to ``run_simple_search``. ``None`` for pinned / headless
-    dispatches, which have no chat to remember.
+    ``conversation_memory_md`` is the rendered memory block as it stands once
+    ``_route`` has waited for the memory agent, already encoded. It rides
+    ``MajorAgentInput`` to the planners and goes straight to
+    ``run_simple_search``. ``None`` for pinned / headless dispatches, which have
+    no chat to remember.
     """
     # ── Ownership gate on the router-emitted target ─────────────────────
     if target_item_id is not None and not _owned_item_exists(

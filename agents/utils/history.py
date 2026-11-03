@@ -34,6 +34,29 @@ _KIND_LABEL_AR: dict[str, str] = {
 }
 
 
+#: Prompts say a 〔[نظام] …〕 line comes from the app, and nothing else may write one.
+#: The small forms read the same to a model.
+_SYSTEM_LINE_BRACKETS = str.maketrans("〔〕﹝﹞", "()()")
+#: A title sits in «…» inside such a line, so a title's own » would let the rest of
+#: it read as the app's words.
+_TITLE_QUOTES = str.maketrans("«»", '""')
+
+
+def neutralize_system_brackets(text: str) -> str:
+    """``text`` unable to open or close a system line. Otherwise unchanged.
+
+    For everything the app did not write itself: message bodies, pasted text and
+    file names reach prompts inside or beside those lines. Call it BEFORE the app's
+    own tag is added, which is why it lives with the tag builders.
+    """
+    return text.translate(_SYSTEM_LINE_BRACKETS)
+
+
+def _tag_title(title: str | None) -> str:
+    """A title as it goes inside a system line. A file name is raw user input."""
+    return neutralize_system_brackets((title or "").strip()).translate(_TITLE_QUOTES)
+
+
 def build_user_attachment_tag(
     document_ids: list[str],
     wi_provenance: dict[str, tuple[int | None, str, str]],
@@ -61,7 +84,7 @@ def build_user_attachment_tag(
             continue
         alias = f"WI-{int(wi_seq)}"
         label = _KIND_LABEL_AR.get(str(kind or ""))
-        name = (title or "").strip()
+        name = _tag_title(title)
         part = f"{alias} «{name}»" if name else alias
         if label:
             part = f"{part} ({label})"
@@ -100,7 +123,7 @@ def build_provenance_tag(
         wi_seq, kind, title = prov
         if wi_seq is None:
             continue
-        entries.append((f"WI-{int(wi_seq)}", (title or "").strip()))
+        entries.append((f"WI-{int(wi_seq)}", _tag_title(title)))
         fam = _KIND_TO_FAMILY.get(str(kind or ""))
         if fam:
             families.add(fam)
@@ -148,7 +171,7 @@ def build_next_steps_note(next_steps: list[dict] | None) -> str | None:
             labels.append(label)
     if not labels:
         return None
-    return f"〔[نظام] اقتُرح على المستخدم: {' · '.join(labels)}〕"
+    return f"〔[نظام] اقتُرح على المستخدم: {neutralize_system_brackets(' · '.join(labels))}〕"
 
 
 def _row_next_steps(row: dict) -> list[dict] | None:
@@ -180,7 +203,7 @@ def build_follow_up_note(question: str | None) -> str | None:
         return None
     if len(text) > FOLLOW_UP_NOTE_MAX:
         text = text[:FOLLOW_UP_NOTE_MAX].rstrip() + "…"
-    return f"〔[نظام] سُئل المستخدم: {text}〕"
+    return f"〔[نظام] سُئل المستخدم: {neutralize_system_brackets(text)}〕"
 
 
 def _row_follow_up_question(row: dict) -> str | None:
@@ -308,6 +331,7 @@ def messages_to_history(
         content = row.get("content", "")
         if not content:
             continue
+        content = neutralize_system_brackets(content)
 
         if role == "user":
             text = content

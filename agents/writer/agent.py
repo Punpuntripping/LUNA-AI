@@ -85,8 +85,10 @@ _MEMORY_DRAFTING_NOTE = """\
 How this memory applies to your draft:
 - A value stated in it is given, not missing: use it to fill `[…]` placeholders and missing details, exactly as you would a value from the package.
 - A fact entry outranks everything in `<package>`, including `<parties>`, `<plan>`, `<sources>`, `<facts>` and `<prior_draft>`, unless `<user_request>` or `<plan>` says the user corrected that value afterwards. State it plainly, without `(n)`.
+- A fact entry that changes an amount the document claims or totals changes it everywhere: every total and the relief requested, in any rewrite, even one that only asks for a shorter text. Mention the new amount in `key_findings`, after any conflict from the rule below.
 - The rule against the value a fact entry replaced covers everything you write: the body, each exhibit's `label_ar`, the exhibits list, `chat_summary`, `key_findings` and `notes_ar`.
 - A position the user insisted on is stated without `(n)`. The rule to cite only what appears in `<references>` or `<sources>` limits citations; it does not stop you stating it.
+- A [طلب] or [رأي قانوني] entry that bears on this document survives every rewrite, even if `<prior_draft>` left it out and even when the rewrite must be shorter, unless `<user_request>` drops it. Keep the user's argument with its reasoning, not only its conclusion. A law entry your sources contradict follows the next rule.
 - A conflict between your sources and a law entry never goes in the document. Your reply to the user about it is the FIRST item of `key_findings`, which the user always reads in the chat; `chat_summary` and `notes_ar` may not reach them."""
 
 

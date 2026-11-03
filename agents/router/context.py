@@ -137,11 +137,12 @@ class RouterContext:
     # ``None`` = no pending question · ``"answered"`` · ``"unanswered"``.
     pending_follow_up: PendingFollowUp | None = None
     follow_up_status: str | None = None
-    # Conversation memory (plan conversation_memory.md §4.7). ``conversation_memory``
-    # holds the ENCODED entries for the router's tool; ``conversation_memory_md``
-    # is the rendered block, overwritten by ``orchestrator._route`` after the
-    # router runs, so this object never carries a stale one. Both empty while the
-    # feature is off.
+    # Conversation memory (plan conversation_memory.md §4.7).
+    # ``conversation_memory`` holds the ENCODED entries, for the router's
+    # instruction; ``conversation_memory_md`` is the full block for the other
+    # agents. ``orchestrator._route`` replaces both when the memory agent ends
+    # before a dispatch, so the responder reads what the specialist read.
+    # Both empty while the feature is off for this user.
     conversation_memory: list[MemoryEntry] = field(default_factory=list)
     conversation_memory_md: str | None = None
 
@@ -581,9 +582,9 @@ def load_router_context(
 
     # Conversation memory (plan §4.7): stored real, encoded here, same as the
     # surfaces above. Fakes minted here go out with the caller's persist, before
-    # the router reads them. No query while the feature is off.
+    # the router reads them. No query while the feature is off for this user.
     conversation_memory: list[MemoryEntry] = []
-    if memory_enabled():
+    if memory_enabled(user_id):
         conversation_memory = encode_entries(
             load_conversation_memory(supabase, conversation_id, user_id)
         )

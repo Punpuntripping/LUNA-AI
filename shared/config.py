@@ -24,6 +24,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",  # Ignore unknown env vars
+        # A validation error otherwise prints the whole environment dict, secrets
+        # included, into logs and terminals.
+        hide_input_in_errors=True,
     )
 
     # ========================================
@@ -463,13 +466,17 @@ class Settings(BaseSettings):
         return v
 
     # ── Conversation memory — .claude/plans/conversation_memory.md ──────────
-    # Kill switch for the hidden per-conversation memory the router writes and
-    # the agents read. OFF: load returns nothing, the router tool is hidden and
-    # its rules are absent, so prompts stay as they are. Migration 200 must be
-    # applied before this goes on. Env var name == field name (no
+    # Kill switch for the hidden per-conversation memory the memory agent writes
+    # and the agents read. OFF: load returns nothing, the memory agent does not
+    # run and the router's rules are absent, so prompts stay as they are. Migration
+    # 200 must be applied before this goes on. Env var name == field name (no
     # validation_alias). Settings is lru_cache'd, so a change needs the redeploy
     # Railway does on every variable edit anyway.
     CONVERSATION_MEMORY_ENABLED: bool = False
+    # Comma-separated users.user_id values. Set, it limits the feature to those
+    # users while the flag is on, so a live retest reaches nobody else. Unset,
+    # the flag alone decides. Plan conversation_memory_helper.md §4.
+    CONVERSATION_MEMORY_USER_IDS: Optional[str] = None
 
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
