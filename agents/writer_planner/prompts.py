@@ -27,6 +27,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from agents.models import ChatMessageSnapshot, WorkspaceItemSnapshot
+from agents.utils.reply_guard import NO_INTERNALS_RULE
 from agents.utils.today import today_line
 from backend.app.services.writer_planner_context import ArtifactSummaryView
 
@@ -351,6 +352,8 @@ aggressively. The executor is expensive; only feed it what actually helps.
 # ---------------------------------------------------------------------------
 # Dynamic per-turn instructions
 # ---------------------------------------------------------------------------
+
+WRITER_PLANNER_SYSTEM_PROMPT = f"{WRITER_PLANNER_SYSTEM_PROMPT.rstrip()}\n\n{NO_INTERNALS_RULE}"
 
 #: Printed under the <conversation_memory> block, never without it: the static
 #: prompt above stays unchanged when a conversation has no memory.

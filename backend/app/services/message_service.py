@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from fastapi import HTTPException, Request
 from supabase import Client as SupabaseClient
@@ -602,6 +602,17 @@ def _update_message_content(
     supabase.table("messages").update(update_data).eq("message_id", message_id).execute()
 
 
+def _decoded_strings(codec: Any, value: Any) -> Any:
+    """Every string in a JSON-shaped value, decoded: DB rows hold no fakes."""
+    if isinstance(value, str):
+        return decode_text(codec, value, emit=False)
+    if isinstance(value, list):
+        return [_decoded_strings(codec, v) for v in value]
+    if isinstance(value, dict):
+        return {k: _decoded_strings(codec, v) for k, v in value.items()}
+    return value
+
+
 def _merged_message_metadata(
     supabase: SupabaseClient,
     message_id: str,
@@ -1030,6 +1041,9 @@ async def send_message_stream(
     # drafted nothing; [] = a draft built without a template (still persisted,
     # so the chat line can say «لم يُستخدم قالب» after a reload).
     captured_templates_used: list[dict] | None = None
+    # Server-only `reply_metadata` (artifact_analyzer): merged into
+    # messages.metadata at `done`, decoded, never sent to the client.
+    captured_reply_metadata: dict = {}
 
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
@@ -1202,6 +1216,11 @@ async def send_message_stream(
                             "suggestions": event.get("suggestions", []),
                         }))
 
+                    elif event_type == "reply_metadata":
+                        captured_reply_metadata.update(
+                            _decoded_strings(codec, event.get("metadata") or {})
+                        )
+
                     elif event_type == "next_steps":
                         # وضع السرية: chips were generated from ENCODED input and
                         # can carry fakes in label/prompt — decode before the SSE
@@ -1337,6 +1356,7 @@ async def send_message_stream(
                                     meta_patch.update(captured_follow_up)
                                 if captured_templates_used is not None:
                                     meta_patch["templates_used"] = captured_templates_used
+                                meta_patch.update(captured_reply_metadata)
                                 if meta_patch:
                                     try:
                                         update_data["metadata"] = await run_db(

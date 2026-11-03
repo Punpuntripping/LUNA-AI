@@ -79,6 +79,13 @@ class DispatchAgent(BaseModel):
             "rephrases of the same question."
         ),
     )
+    accepts_search_offer: bool = Field(
+        default=False,
+        description=(
+            "True only when the last reply offered to search and this message "
+            "accepts that offer."
+        ),
+    )
     # NOTE: the router no longer paraphrases the query into a ``describe_query``
     # field. The specialist receives the raw user message via
     # ``MajorAgentInput.describe_query`` (filled by the orchestrator from the
@@ -134,6 +141,57 @@ class DispatchAgent(BaseModel):
 
 
 # ── Tier-2 input contract ─────────────────────────────────────────────────
+
+class CheckPriorReports(BaseModel):
+    """Router asks whether prior search reports already answer this message.
+
+    An output, not a mid-run tool: it ends the router's run, because whatever the
+    verdict the router has nothing left to do. The orchestrator runs the
+    artifact_analyzer, the responder writes any reply, and insufficient goes
+    straight to deep search (plan artifact_analyzer.md §4.5).
+    """
+
+    type: Literal["check_reports"] = "check_reports"
+    task_label: str = Field(
+        max_length=80,
+        description=(
+            "Same rules as DispatchAgent.task_label. Becomes the card title if a "
+            "search runs."
+        ),
+    )
+    target_wi: str | None = Field(
+        default=None,
+        description='Alias of the report this message follows up on (e.g. "WI-3").',
+    )
+    attached_wis: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_ATTACHED_ITEMS,
+        description=(
+            "With more than 3 prior reports: the ones most likely to hold the "
+            "answer. Otherwise empty."
+        ),
+    )
+    target_item_id: str | None = Field(
+        default=None,
+        description="Resolved by the output validator from target_wi. Do not emit.",
+    )
+    attached_item_ids: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_ATTACHED_ITEMS,
+        description="Resolved by the output validator from attached_wis. Do not emit.",
+    )
+
+    def to_dispatch(self) -> DispatchAgent:
+        """The dispatch this stands for when the analyzer does not run."""
+        return DispatchAgent(
+            agent_family="deep_search",
+            task_label=self.task_label,
+            target_wi=self.target_wi,
+            attached_wis=self.attached_wis,
+            target_item_id=self.target_item_id,
+            attached_item_ids=self.attached_item_ids,
+        )
+
 
 class ChatMessageSnapshot(BaseModel):
     """A single chat message frozen at dispatch time."""
@@ -246,6 +304,12 @@ class MajorAgentInput(BaseModel):
     # the family is on ``RESPONDER_UNIFIED_FAMILIES``. ``exclude=True`` +
     # ``repr=False``: it holds the whole message history and must never be
     # dumped into a span, a log line or a serialized payload.
+    # What the artifact_analyzer established and what is missing, as a plain dict
+    # so it survives a pause in paused_runs (plan artifact_analyzer.md §4.7).
+    analyzer_handoff: dict | None = None
+    # True once the analyzer ran this turn, or when it is off. The planner may
+    # only revert while this is False, which is what makes a loop impossible.
+    analyzer_checked: bool = False
     router_context: Any = Field(default=None, exclude=True, repr=False)
     # The turn's ``WelcomeState`` (``agents/utils/welcome.py``) — the state
     # behind ``welcome_instruction``. Lets a flagged family's failure fallback

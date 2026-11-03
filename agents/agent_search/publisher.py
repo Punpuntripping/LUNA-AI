@@ -35,6 +35,11 @@ _logfire = get_logfire()
 _FALLBACK_TITLE = "إجابة البحث العميق"
 _TITLE_MAX = 80
 
+# Aggregator gap entries that describe a failed run, not something the report
+# could not find. The artifact_analyzer reads metadata.gaps as the report's own
+# statement of what it lacks, so these must not reach it.
+_NON_REPORT_GAPS = frozenset({"no_references_after_reranker"})
+
 
 def _build_title(input: SearchPublishInput) -> str:
     # Router-emitted task_label is the preferred title source (content-derived
@@ -56,6 +61,26 @@ def _build_content_md(input: SearchPublishInput) -> str:
     return getattr(input.agg_output, "synthesis_md", "") or ""
 
 
+def _gaps_for_metadata(agg_output: object) -> list[str]:
+    """The aggregator's gaps as they should be stored on the report.
+
+    ``AggregatorOutput.gaps`` otherwise dies with the turn. Read from the agg
+    output rather than the built artifact, because the aggregator builds the
+    artifact before ``_enrich_gaps`` runs. Decoded like ``content_md``: DB rows
+    never hold masked fakes.
+    """
+    # Lazy: the runner is a heavy import this adapter otherwise does not need.
+    from agents.deep_search_v4.aggregator.runner import _MODEL_FAILURE_GAP_AR
+
+    gaps: list[str] = []
+    for raw in getattr(agg_output, "gaps", None) or []:
+        gap = str(raw or "").strip()
+        if not gap or gap in _NON_REPORT_GAPS or gap == _MODEL_FAILURE_GAP_AR:
+            continue
+        gaps.append(decode_for_persist(gap))
+    return gaps
+
+
 def _build_metadata(input: SearchPublishInput) -> dict:
     """Merge artifact metadata (if any) with the deep_search-specific keys
     the frontend needs for chip color and forensic joins.
@@ -67,6 +92,9 @@ def _build_metadata(input: SearchPublishInput) -> dict:
     Migration 049: the ``references`` key is NO LONGER written here. The
     reference list lives in the ``workspace_item_references`` table, fetched
     by ``backend.app.services.references_service.fetch_item_references``.
+
+    ``gaps`` is what the report says it could not establish. Later turns need
+    it (plan artifact_analyzer.md §4.9), and it exists nowhere else.
     """
     artifact = getattr(input.agg_output, "artifact", None)
     metadata: dict = (
@@ -78,6 +106,7 @@ def _build_metadata(input: SearchPublishInput) -> dict:
             "confidence": getattr(input.agg_output, "confidence", None),
             "detail_level": input.detail_level,
             "ura_log_id": getattr(input.agg_output, "log_id", "") or "",
+            "gaps": _gaps_for_metadata(input.agg_output),
         }
     )
     return metadata

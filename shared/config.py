@@ -478,6 +478,12 @@ class Settings(BaseSettings):
     # the flag alone decides. Plan conversation_memory_helper.md §4.
     CONVERSATION_MEMORY_USER_IDS: Optional[str] = None
 
+    # artifact_analyzer (plan artifact_analyzer.md §4.11). Off: the router's
+    # CheckPriorReports becomes the deep_search dispatch it would have been.
+    # ARTIFACT_ANALYZER_USERS: comma-separated users.user_id; empty = everyone.
+    ARTIFACT_ANALYZER_ENABLED: bool = False
+    ARTIFACT_ANALYZER_USERS: Optional[str] = None
+
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
     # OpenRouter Decisions API per sub-query, falling back down the

@@ -139,6 +139,9 @@ _FIELDS: dict[ResponderMode, str] = {
         "chat_summary_md, next_steps, follow_up_question, question_basis, cards"
     ),
     "writing": "chat_summary_md, next_steps, follow_up_question, question_basis",
+    "prior_report": (
+        "chat_summary_md, next_steps, follow_up_question, question_basis, search_offer"
+    ),
 }
 
 

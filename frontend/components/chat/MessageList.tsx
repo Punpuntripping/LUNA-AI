@@ -111,7 +111,6 @@ export function MessageList({
   const openWorkspaceItemAtReference = useChatStore(
     (s) => s.openWorkspaceItemAtReference,
   );
-  const highlightWorkspaceItem = useChatStore((s) => s.highlightWorkspaceItem);
   // Phase E (§9 O5): item ids the planner referenced for each assistant
   // message in this conversation. Reading the whole map is cheap (keyed by
   // message_id, sparse) and means a new SSE event causes an O(1) selector
@@ -143,15 +142,6 @@ export function MessageList({
       openWorkspaceItem(conversationId, itemId);
     },
     [openWorkspaceItem, conversationId],
-  );
-
-  // Phase E (§9 O5): chip-click handler — opens the workspace pane and
-  // briefly rings the matching card.
-  const handleJumpToReferencedItem = useCallback(
-    (itemId: string) => {
-      highlightWorkspaceItem(conversationId, itemId);
-    },
-    [highlightWorkspaceItem, conversationId],
   );
 
   // Citation clicks always target the message's first agent_search artifact.
@@ -570,7 +560,6 @@ export function MessageList({
                 )}
                 onCitationNavigate={handleCitationNavigate}
                 referencedItemIds={referencedIds}
-                onJumpToReferencedItem={handleJumpToReferencedItem}
                 templatesUsed={templatesUsedById[msg.message_id]}
                 isLatestAssistant={msg.message_id === latestAssistantId}
                 nextSteps={

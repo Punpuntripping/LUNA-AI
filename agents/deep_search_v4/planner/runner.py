@@ -74,6 +74,8 @@ class PlannerTurnResult:
     - ``kind="completed"`` — phases 2–3 ran. ``response`` / ``decision`` /
       ``agg_output`` are set; the orchestrator publishes the artifact and maps
       ``response`` onto a ``SpecialistResult``.
+    - ``kind="reverted"`` — phase 1 found the answer already held, and the
+      artifact_analyzer had not checked. No search ran.
     - ``kind="paused"`` — phase 1 called ``ask_user``. ``planner_result`` (the
       raw ``AgentRunResult``) and ``deferred`` carry the pause state for the
       orchestrator's ``_record_deferred``.
@@ -83,7 +85,7 @@ class PlannerTurnResult:
     before ``handle_planner_turn`` is called.
     """
 
-    kind: Literal["completed", "paused"]
+    kind: Literal["completed", "paused", "reverted"]
     # completed
     response: PlannerResponse | None = None
     decision: PlannerDecision | None = None
@@ -395,6 +397,20 @@ def _ask_user_was_invoked(events: list[dict]) -> bool:
     return any(e.get("event") == EVENT_PAUSED for e in events)
 
 
+def may_revert(decision: Any, deps: Any, pinned: Any = None) -> bool:
+    """Plan artifact_analyzer.md D14: only when the analyzer did not check.
+
+    ``analyzer_checked`` is what keeps a turn from bouncing: once the analyzer has
+    said insufficient, this run searches whatever the decider thinks.
+    """
+    return bool(
+        getattr(decision, "already_covered", False)
+        and not getattr(deps, "analyzer_checked", False)
+        and getattr(deps, "prior_searches", None)
+        and pinned is None
+    )
+
+
 async def _run_planner_turn(
     describe_query: str,
     deps: PlannerDeps,
@@ -523,6 +539,10 @@ async def _run_planner_turn(
                 # One statute_package workspace item per search: flush the
                 # articles accumulated by fetch_article during this decider phase.
                 flush_statute_package(deps)
+                if may_revert(decision, deps, pinned):
+                    _emit_planner_ledger(result)
+                    logger.info("planner: answer already held, reverting to the analyzer")
+                    return PlannerTurnResult(kind="reverted", decision=decision)
                 _decided_payload = {
                     "event": EVENT_DECIDED,
                     "mode": decision.mode,

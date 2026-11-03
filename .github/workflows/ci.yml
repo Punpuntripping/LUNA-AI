@@ -90,7 +90,12 @@ jobs:
             backend/tests/test_library_item_budget.py \
             agents/tests/test_conversation_memory*.py \
             agents/tests/test_router_full_history.py \
-            agents/tests/test_today_context.py
+            agents/tests/test_today_context.py \
+            agents/tests/test_search_publish_gaps.py \
+            agents/tests/test_artifact_analyzer.py \
+            agents/tests/test_reply_guard.py \
+            agents/tests/test_prior_report_reply.py \
+            agents/tests/test_prior_check_flow.py
 
   frontend:
     name: Frontend

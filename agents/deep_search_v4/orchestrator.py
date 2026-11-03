@@ -74,6 +74,7 @@ from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
 from agents.deep_search_v4.sector_picker import run_sector_picker
 from agents.utils.agent_models import usage_by_model
 from agents.utils.conversation_memory import CONVERSATION_MEMORY_LABEL
+from agents.utils.prior_coverage import PRIOR_COVERAGE_LABEL, render_prior_coverage
 from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
@@ -1131,6 +1132,15 @@ def _build_candidate_context_blocks(
             persistence="conversation",
         )
 
+    # prior_coverage — what the artifact_analyzer established and what is missing.
+    handoff = getattr(deps, "analyzer_handoff", None)
+    if handoff:
+        candidates[PRIOR_COVERAGE_LABEL] = ContextBlock(
+            label=PRIOR_COVERAGE_LABEL,
+            body=render_prior_coverage(handoff),
+            persistence="turn",
+        )
+
     # NOTE: attachments are NOT candidates here. Uploaded case papers reach the
     # expanders + aggregator as ``case_document`` blocks built per recipient in
     # ``run_retrieval`` (case_documents_forwarding.md §3.2) — kept out of this
@@ -1165,10 +1175,14 @@ def _build_candidate_context_blocks(
 # ``case_brief`` (see ``_with_case_documents``) changes nothing.
 _CANONICAL_LABEL_ORDER = (
     CONVERSATION_MEMORY_LABEL,
-    "case_brief", "statute_articles", "planner_brief", "prior_search_lessons",
+    "case_brief", "statute_articles", PRIOR_COVERAGE_LABEL, "planner_brief",
+    "prior_search_lessons",
 )
 _FORCE_FORWARD_LABELS = frozenset(
-    {CONVERSATION_MEMORY_LABEL, "case_brief", "statute_articles", "planner_brief"}
+    {
+        CONVERSATION_MEMORY_LABEL, "case_brief", "statute_articles", "planner_brief",
+        PRIOR_COVERAGE_LABEL,
+    }
 )
 
 

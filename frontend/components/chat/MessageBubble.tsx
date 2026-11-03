@@ -14,7 +14,6 @@ import {
   ThumbsUp,
   ThumbsDown,
   HelpCircle,
-  CornerUpLeft,
 } from "lucide-react";
 import { memo, useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
@@ -95,16 +94,13 @@ interface MessageBubbleProps {
   /** Navigate to reference ``n`` inside ``artifactId`` (identity-stable). */
   onCitationNavigate?: (artifactId: string, n: number) => void;
   /**
-   * Phase E (full_redesign §9 O5): workspace_item ids the planner flagged
-   * as "already covers this question" for this assistant message. When
-   * non-empty a chip renders below the model badge ("راجع البطاقة
-   * السابقة") that jumps to the existing card in the workspace pane.
-   * Sourced from ``chat-store.referencedItemsByMessage`` so it survives
-   * the messages-cache invalidate at stream completion.
+   * Earlier workspace_items this reply leans on without publishing a new
+   * card (a reply built from a prior report). They open through the same
+   * «افتح …» button as the turn's own cards, so every answer with a source
+   * looks the same. Persisted ``messages.referenced_item_ids``, or the live
+   * ``chat-store.referencedItemsByMessage`` entry before a reload.
    */
   referencedItemIds?: string[];
-  /** Open + highlight a referenced workspace_item (chip click). */
-  onJumpToReferencedItem?: (itemId: string) => void;
   /**
    * «القوالب المستخدمة في الكتابة»: the templates this answer's draft was built
    * on (persisted ``metadata.templates_used`` or the live SSE fallback).
@@ -138,7 +134,6 @@ export const MessageBubble = memo(function MessageBubble({
   citationArtifactId,
   onCitationNavigate,
   referencedItemIds,
-  onJumpToReferencedItem,
   templatesUsed,
   isLatestAssistant,
   nextSteps,
@@ -168,14 +163,17 @@ export const MessageBubble = memo(function MessageBubble({
     !isAgentQuestion &&
     Array.isArray(artifactIds) &&
     artifactIds.length > 0;
-  // Phase E (§9 O5): planner referenced a prior artifact instead of
-  // publishing a new card; render a "go to prior card" chip below the
-  // bubble body.
-  const hasReferencedItems =
-    !isUser &&
-    !isAgentQuestion &&
-    Array.isArray(referencedItemIds) &&
-    referencedItemIds.length > 0;
+  // The cards the «افتح …» button opens: this turn's own, then earlier ones
+  // the reply leans on. One button for both (owner, 2026-11-03): a reply
+  // built from a prior report gets the same green CTA as a search reply.
+  // ``hasArtifacts`` stays own-cards-only — citations resolve against it.
+  const referencedOnly =
+    !isUser && !isAgentQuestion && Array.isArray(referencedItemIds)
+      ? referencedItemIds.filter((id) => !artifactIds?.includes(id))
+      : [];
+  const openIds = hasArtifacts
+    ? [...artifactIds!, ...referencedOnly]
+    : referencedOnly;
   // «القوالب المستخدمة في الكتابة»: any settled assistant answer whose turn
   // drafted something — never mid-stream, never on a failed row or the
   // agent_question callout.
@@ -521,33 +519,20 @@ export const MessageBubble = memo(function MessageBubble({
             />
           )}
 
-          {/* Sources + referenced prior cards — one always-visible row: for a
-              legal answer, source presence is content, not chrome, so it
-              never hides behind hover. Both stay hidden
-              during streaming — their SSE events attach to the assistant
-              message_id and the bubble re-renders with them once settled. */}
-          {!isCurrentlyStreaming &&
-            (hasArtifacts || hasReferencedItems) && (
-              <div className="flex flex-wrap items-center gap-1.5 mt-3">
-                {hasArtifacts && (
-                  <ArtifactChip
-                    artifactIds={artifactIds!}
-                    artifactLookup={artifactLookup}
-                    onOpenArtifact={onOpenArtifact}
-                  />
-                )}
-                {hasReferencedItems &&
-                  referencedItemIds!.map((id) => (
-                    <ReferencedItemChip
-                      key={id}
-                      itemId={id}
-                      label={artifactLookup?.[id]?.title}
-                      seq={artifactLookup?.[id]?.wi_seq}
-                      onJump={onJumpToReferencedItem}
-                    />
-                  ))}
-              </div>
-            )}
+          {/* Sources — one always-visible row: for a legal answer, source
+              presence is content, not chrome, so it never hides behind
+              hover. Hidden during streaming — the SSE events attach to the
+              assistant message_id and the bubble re-renders with them once
+              settled. */}
+          {!isCurrentlyStreaming && openIds.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 mt-3">
+              <ArtifactChip
+                artifactIds={openIds}
+                artifactLookup={artifactLookup}
+                onOpenArtifact={onOpenArtifact}
+              />
+            </div>
+          )}
 
           {/* Templates the draft was built on — every settled writing turn. */}
           {hasTemplatesUsed && (
@@ -859,55 +844,6 @@ function ArtifactChip({
         })}
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-// ============================================================================
-// Referenced item chip (Phase E — full_redesign §9 O5)
-// ============================================================================
-
-interface ReferencedItemChipProps {
-  itemId: string;
-  /** Optional resolved title from the workspace list cache. */
-  label?: string;
-  /** ``wi_seq`` of the referenced card — the alias the reply may have cited. */
-  seq?: number | null;
-  onJump?: (itemId: string) => void;
-}
-
-/**
- * "راجع البطاقة السابقة" chip — rendered on an assistant bubble when the
- * planner's responder set ``build_artifact=False`` + ``referenced_item_id``
- * (no new card published). Clicking jumps to and highlights the referenced
- * card in the workspace pane.
- *
- * Subtle outline style — distinct from the inline ``ArtifactChip`` so the
- * user can tell at a glance that "this conversation re-used a prior card"
- * vs "this turn produced its own card".
- */
-function ReferencedItemChip({
-  itemId,
-  label,
-  seq,
-  onJump,
-}: ReferencedItemChipProps) {
-  const labelText = label ? `راجع: ${label}` : "راجع البطاقة السابقة";
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      className={cn(
-        "h-7 gap-1.5 px-2.5 text-xs",
-        "rounded-full border-border/70 text-muted-foreground hover:text-foreground",
-        "hover:bg-accent/40 transition-colors",
-      )}
-      onClick={() => onJump?.(itemId)}
-      aria-label="فتح البطاقة السابقة"
-    >
-      <CornerUpLeft className="h-3 w-3" />
-      <span className="truncate max-w-[280px]">{labelText}</span>
-      <WiBadge seq={seq} />
-    </Button>
   );
 }
 

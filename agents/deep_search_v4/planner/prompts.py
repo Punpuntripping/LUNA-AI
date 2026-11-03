@@ -43,6 +43,8 @@ import html
 
 from agents.deep_search_v4.shared.case_documents import forwardable_documents
 from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
+from agents.utils.prior_coverage import render_prior_coverage
+from agents.utils.reply_guard import NO_INTERNALS_RULE
 from agents.utils.today import today_line
 from shared.library.supersession import RESPONDER_VERSION_RULE
 
@@ -386,6 +388,20 @@ Leave both lists empty when the summaries are enough — the document was attach
 
 LONG_MESSAGE_REVIEW_MIN_CHARS = 500
 
+ALREADY_COVERED_RULE = (
+    "## When the answer already exists\n"
+    "If <prior_searches> or <attached_items> already answer this message, set "
+    "`already_covered` to true: the turn then goes to a check of what we hold. "
+    "Leave it false when the user explicitly asks to search or to repeat a search, "
+    "when the message raises anything the prior work did not treat, or when "
+    "<prior_coverage> is present: that block means the check already ran and a "
+    "search is required."
+)
+
+PLANNER_DECIDER_SYSTEM_PROMPT = (
+    f"{PLANNER_DECIDER_SYSTEM_PROMPT.rstrip()}\n\n{ALREADY_COVERED_RULE}\n\n{NO_INTERNALS_RULE}"
+)
+
 LONG_MESSAGE_REVIEW_RULE = """\
 ## Required this turn — review your understanding with `ask_user`
 
@@ -645,6 +661,11 @@ def build_decider_instructions(deps) -> str:
     attached_block = _render_attached_items(getattr(deps, "attached_items", None))
     if attached_block is not None:
         blocks.append(attached_block)
+    handoff = getattr(deps, "analyzer_handoff", None)
+    if handoff:
+        blocks.append(
+            f"<prior_coverage>\n{_esc(render_prior_coverage(handoff))}\n</prior_coverage>"
+        )
 
     if not blocks:
         # Nothing to render — return a header-only stub so the LLM knows the

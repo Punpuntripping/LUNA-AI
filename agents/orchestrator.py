@@ -81,6 +81,7 @@ from agents.deep_search_v4.planner.logger import (
 from agents.deep_search_v4.planner.models import PriorSearchSummary
 from agents.models import (
     ChatResponse,
+    CheckPriorReports,
     DispatchAgent,
     MajorAgentInput,
     ChatMessageSnapshot,
@@ -88,6 +89,7 @@ from agents.models import (
     WorkspaceItemSnapshot,
     SpecialistResult,
 )
+from agents.deep_search_v4.planner.runner import may_revert
 from agents.simple_search.runner import (
     FALLBACK_RUNNER_ERROR as _SS_FALLBACK_RUNNER_ERROR,
     fallback_result as _ss_fallback_result,
@@ -102,6 +104,8 @@ from agents.paused_runs import (
     resolve_pause,
 )
 from agents.utils.conversation_memory import memory_enabled
+from agents.utils.prior_coverage import analyzer_enabled
+from agents.utils.reply_guard import ReplyGuard, scrub_reply
 from agents.utils.usage_sink import bind_run_id, collect_llm_calls, record_call
 from shared.observability import get_logfire
 
@@ -119,6 +123,8 @@ _RECENT_MESSAGES_N = 5
 # Over-fetch buffer so empty placeholder rows (the assistant row inserted before
 # the agent runs) can be dropped without shrinking the real window below N.
 _RECENT_MESSAGES_BUFFER = 5
+# The artifact_analyzer reads 6 rows before the current message (owner decision).
+_ANALYZER_RECENT_ROWS = 7
 
 # How long a task waits for the memory agent (conversation_memory_agent.md §4). A
 # failure guard, so a dead provider cannot hang a task: normal runs end in seconds
@@ -471,6 +477,7 @@ def _load_recent_messages(
     from agents.utils.history import (  # pure utils — no import cycle
         append_next_steps_note,
         build_provenance_tag,
+        provenance_item_ids,
         build_user_attachment_tag,
         neutralize_system_brackets,
     )
@@ -481,7 +488,7 @@ def _load_recent_messages(
     try:
         result = (
             supabase.table("messages")
-            .select("message_id, role, content, artifact_ids, metadata, created_at")
+            .select("message_id, role, content, artifact_ids, referenced_item_ids, metadata, created_at")
             .eq("conversation_id", conversation_id)
             .order("created_at", desc=True)
             .limit(n + _RECENT_MESSAGES_BUFFER)
@@ -529,9 +536,9 @@ def _load_recent_messages(
         # The body first: from here on, a system line is one the app added.
         content = neutralize_system_brackets(row.get("content") or "")
         if role == "assistant" and wi_provenance:
-            artifact_ids = row.get("artifact_ids") or []
+            artifact_ids = provenance_item_ids(row)
             if artifact_ids:
-                tag = build_provenance_tag(list(artifact_ids), wi_provenance)
+                tag = build_provenance_tag(artifact_ids, wi_provenance)
                 if tag:
                     content = f"{tag}\n{content}"
         if role == "assistant":
@@ -1447,6 +1454,8 @@ async def _resume_major_agent_inner(
             supabase, conversation_id, user_id
         )
         _resume_settings = _get_settings()
+        _resume_analyzer = ((pending or {}).get("deferred_payload") or {}).get("analyzer") or {}
+        _resume_checked = bool(_resume_analyzer.get("checked")) or not analyzer_enabled(user_id)
 
         # Rebuild the WI alias map on resume — PlannerDeps is never persisted
         # across pause, so the map has to be reconstructed from the same
@@ -1491,6 +1500,8 @@ async def _resume_major_agent_inner(
                 wi_alias_map=_resume_alias_map,
                 # Live progress sink — drained by the bridge below.
                 emit_sse=progress_q.put_nowait,
+                analyzer_handoff=_resume_analyzer.get("handoff"),
+                analyzer_checked=_resume_checked,
             )
 
             planner_decider = create_planner_decider()
@@ -1542,6 +1553,7 @@ async def _resume_major_agent_inner(
             # Inherit the original task_label from the paused row so the chained
             # pause carries the same label forward (router did not re-run here).
             task_label=(pending.get("task_label") if pending else None),
+            analyzer=_resume_analyzer or None,
         )
         # Close out the previous run row (it's superseded by the new one).
         _resolve_pause_loud(supabase, run_id, where="ds_chained_pause_supersede")
@@ -1570,6 +1582,34 @@ async def _resume_major_agent_inner(
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
             memory_task=memory_task,
+        ):
+            yield ev
+        return
+
+    # ── PlannerDecision.already_covered — check what we hold, do not search ─
+    # A reply to a planner question never passes the router, so this is the one
+    # place such a turn can reach the analyzer (plan artifact_analyzer.md D14).
+    if (
+        isinstance(planner_output, PlannerDecision)
+        and may_revert(planner_output, _resume_deps)
+    ):
+        _resolve_pause_loud(supabase, run_id, where="planner_reverted")
+        yield {"type": "agent_run_finished", "agent_family": "deep_search"}
+        _release_agent_answer_tag(supabase, user_message_id)
+        async for ev in _run_prior_check(
+            question=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            task_label=(pending or {}).get("task_label") or user_reply[:80],
+            target_item_id=None,
+            attached_item_ids=[],
+            compaction_summary_md=_resume_compaction_summary,
+            conversation_memory_md=_resume_conversation_memory,
+            after_revert=True,
         ):
             yield ev
         return
@@ -1621,6 +1661,8 @@ async def _resume_major_agent_inner(
             user_id=user_id,
             conversation_id=conversation_id,
             case_id=case_id,
+            analyzer_handoff=_resume_analyzer.get("handoff"),
+            analyzer_checked=_resume_checked,
         )
 
         # Phases 2–3 run via the same convergence point as fresh dispatch.
@@ -2148,6 +2190,7 @@ def _record_deferred(
     task_label: str | None = None,
     pause_reason: str = "clarify",
     run_id: str | None = None,
+    analyzer: dict | None = None,
 ) -> tuple[str, str | None]:
     """Persist pause state for a DeferredToolRequests planner output.
 
@@ -2195,6 +2238,9 @@ def _record_deferred(
                 "tool_name": pending_call.tool_name,
                 "args": pending_args,
                 "partial_output": None,
+                # Deps do not survive a pause. Losing this state across one is
+                # what got the old item_analyzer removed (2026-06-08).
+                "analyzer": analyzer,
             },
             question_text=question,
             asked_at=now,
@@ -2211,7 +2257,8 @@ def _record_deferred(
     # sites decode so the streamed and reloaded views stay consistent. emit=False
     # here (message_service emits the decode counters for the same text).
     from backend.app.services.masking_service import active_codec as _active_codec, decode_text as _decode_text
-    stored_question = _decode_text(_active_codec(), question, emit=False)
+    # Saved before the event reaches ReplyGuard, so it is cleaned here too.
+    stored_question = scrub_reply(_decode_text(_active_codec(), question, emit=False))
     try:
         supabase.table("messages").insert({
             "message_id": str(uuid.uuid4()),
@@ -2233,6 +2280,10 @@ def _record_deferred(
 
 # Needed for _record_deferred type annotation
 from typing import Any, Callable  # noqa: E402 — after class definitions
+
+
+class _RevertToAnalyzer(Exception):
+    """Raised in _dispatch when the planner finds the answer already held."""
 
 
 class _SkipRunRecord(Exception):
@@ -2388,7 +2439,7 @@ def _persist_paused_delivery(
         _insert_assistant_message(
             supabase,
             conversation_id=conversation_id,
-            content=question,
+            content=scrub_reply(question),
             metadata={
                 "kind": "agent_question",
                 "run_id": run_id,
@@ -2494,6 +2545,7 @@ async def handle_message(
             message_id=user_message_id,
             case_id=case_id,
         ):
+            guard = ReplyGuard(conversation_id)
             async for ev in _handle_message_inner(
                 question=question,
                 user_id=user_id,
@@ -2505,7 +2557,7 @@ async def handle_message(
                 codec=codec,
                 pinned_plan=pinned_plan,
             ):
-                yield ev
+                yield guard.check(ev)
     finally:
         _quota.reset_deep_search_gate(_gate_token)
         reset_active_codec(_codec_token)
@@ -2739,7 +2791,7 @@ def _classify_follow_up(pending: Any, decision: Any) -> str | None:
     if pending is None:
         return None
     item_ids = {str(i) for i in (getattr(pending, "item_ids", None) or []) if i}
-    if isinstance(decision, DispatchAgent) and item_ids:
+    if isinstance(decision, (DispatchAgent, CheckPriorReports)) and item_ids:
         target = getattr(decision, "target_item_id", None)
         if target and str(target) in item_ids:
             return "answered"
@@ -2863,6 +2915,145 @@ async def _wait_for_memory_writer(
         ctx.conversation_memory_md = render_conversation_memory(output.entries)
 
 
+def _has_prior_report(ctx: Any) -> bool:
+    return any(
+        s.get("kind") == "agent_search"
+        for s in getattr(ctx, "workspace_item_summaries", None) or []
+    )
+
+
+async def _delivery_events(
+    run_result: SpecialistResult,
+    agent_family: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    welcome: "WelcomeState | None",
+) -> AsyncGenerator[dict, None]:
+    """Stream a finished result: queued events, bubble, question, chips, done."""
+    # Skip events already streamed LIVE via the progress queue (executor topic
+    # lines tagged `streamed`): they stay on `_events` for forensic dumps, but
+    # re-yielding here would double-send them.
+    for ev in run_result.sse_events:
+        if ev.get("streamed"):
+            continue
+        yield ev
+
+    # chat_summary to chat (the full body stays in the workspace item), then
+    # key_findings as a single bullet block, then (unified responder only) the
+    # follow-up question as the last paragraph.
+    for i, text in enumerate(_bubble_tokens(run_result)):
+        yield {"type": "token", "text": text}
+        if i == 0 and run_result.chat_summary:
+            # The reply, welcome and all, reached the user. A turn that only
+            # ASKED leaves the welcome unspent for the next one: every paused
+            # branch of the callers either raised before here or cleared it.
+            from agents.utils.welcome import mark_welcomed
+
+            mark_welcomed(supabase, user_id, welcome)
+
+    if (fu_ev := _follow_up_event(run_result)) is not None:
+        yield fu_ev
+    if (ns_ev := _next_steps_event(run_result.next_steps)) is not None:
+        yield ns_ev
+
+    yield {
+        "type": "done",
+        "usage": {
+            "prompt_tokens": run_result.tokens_in or 0,
+            "completion_tokens": run_result.tokens_out or 0,
+            "model": run_result.model_used or agent_family,
+        },
+    }
+
+
+async def _run_prior_check(
+    *,
+    question: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+    assistant_message_id: str | None,
+    task_label: str,
+    target_item_id: str | None,
+    attached_item_ids: list[str],
+    compaction_summary_md: str | None = None,
+    conversation_memory_md: str | None = None,
+    welcome: "WelcomeState | None" = None,
+    router_context: Any = None,
+    after_revert: bool = False,
+) -> AsyncGenerator[dict, None]:
+    """Answer from what we hold, or start the search (plan artifact_analyzer.md).
+
+    Runs before ``_dispatch``, so it is not behind the deep-search gate: a free
+    user at their limit still gets an answer from their own report, and meets the
+    gate only when a real search is needed. A failed analyzer comes back
+    insufficient, so the turn searches as it would have without it.
+    """
+    from agents.memory.artifact_analyzer import AnalyzerCall, analyze
+    from agents.responder.prior_report import write_prior_report_reply
+
+    result = await analyze(
+        AnalyzerCall(
+            question=question,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            recent_messages=_load_recent_messages(
+                supabase, conversation_id, _ANALYZER_RECENT_ROWS, user_id=user_id,
+            ),
+            picked_item_ids=attached_item_ids,
+            after_revert=after_revert,
+        ),
+        supabase,
+    )
+    handoff = result.handoff()
+    handoff_dict = handoff.model_dump() if handoff is not None else None
+
+    if result.verdict == "insufficient":
+        yield {"type": "agent_selected", "agent_family": "deep_search"}
+        async for ev in _dispatch(
+            agent_family="deep_search",
+            describe_query=question,
+            task_label=task_label,
+            target_item_id=target_item_id,
+            attached_item_ids=attached_item_ids,
+            subtype=None,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            compaction_summary_md=compaction_summary_md,
+            conversation_memory_md=conversation_memory_md,
+            welcome=welcome,
+            router_context=router_context,
+            analyzer_handoff=handoff_dict,
+            analyzer_checked=True,
+        ):
+            yield ev
+        return
+
+    reply = await write_prior_report_reply(
+        result,
+        supabase=supabase,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        case_id=case_id,
+        router_context=router_context,
+        conversation_memory_md=conversation_memory_md,
+    )
+    metadata: dict = {"prior_report": True}
+    if result.verdict == "partial":
+        # Read back next turn if the user accepts the offer to search.
+        metadata["analyzer_handoff"] = handoff_dict
+    yield {"type": "reply_metadata", "metadata": metadata}
+    async for ev in _delivery_events(reply, "prior_report", supabase, user_id, welcome):
+        yield ev
+
+
 async def _route(
     question: str,
     supabase: SupabaseClient,
@@ -2941,6 +3132,33 @@ async def _route(
     # responder (which receives ctx verbatim) does not nag on "unanswered".
     _record_follow_up_status(ctx, result, conversation_id)
 
+    if isinstance(result, CheckPriorReports):
+        if analyzer_enabled(user_id) and _has_prior_report(ctx):
+            # A task like a dispatch: it may start the search, and its reply
+            # reads the memory, so a correction in this message must land first.
+            await _wait_for_memory_writer(ctx, memory_task, conversation_id)
+            async for ev in _run_prior_check(
+                question=question,
+                supabase=supabase,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                case_id=case_id,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+                task_label=result.task_label,
+                target_item_id=result.target_item_id,
+                attached_item_ids=list(
+                    dict.fromkeys([*result.attached_item_ids, *force_attach_item_ids])
+                ),
+                compaction_summary_md=ctx.compaction_summary_md,
+                conversation_memory_md=ctx.conversation_memory_md,
+                welcome=welcome,
+                router_context=ctx,
+            ):
+                yield ev
+            return
+        result = result.to_dispatch()
+
     if isinstance(result, ChatResponse):
         # Fake-stream word-by-word — no agent_runs row for direct chat responses.
         words = result.message.split(" ")
@@ -2973,6 +3191,9 @@ async def _route(
         for _iid in force_attach_item_ids:
             if _iid and _iid not in attached_item_ids:
                 attached_item_ids.append(_iid)
+        # «نعم، ابحث» after a partial verdict: search what the analyzer found
+        # missing, and do not ask it again.
+        handoff = ctx.pending_handoff if result.accepts_search_offer else None
         async for ev in _dispatch(
             agent_family=result.agent_family,
             # The router no longer paraphrases the query; the specialist gets
@@ -2999,6 +3220,8 @@ async def _route(
             # RouterContext object the router just read — encoded once above,
             # never reloaded. Consumed only by flagged families.
             router_context=ctx,
+            analyzer_handoff=handoff,
+            analyzer_checked=handoff is not None,
         ):
             yield ev
         return
@@ -3172,6 +3395,8 @@ async def _dispatch(
     pinned_plan: "PinnedPlan | None" = None,
     router_context: "Any | None" = None,
     conversation_memory_md: str | None = None,
+    analyzer_handoff: dict | None = None,
+    analyzer_checked: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -3265,6 +3490,9 @@ async def _dispatch(
     run_result: SpecialistResult | None = None
     err_payload: dict | None = None
     status = "ok"
+    reverted = False
+    # With the analyzer off, the planner has nothing to revert to.
+    analyzer_checked = analyzer_checked or not analyzer_enabled(user_id)
 
     # One logical run id for this dispatch. Allocated up front so every LLM call
     # in the run — and, if it pauses, the paused_runs row + the resume leg —
@@ -3330,6 +3558,8 @@ async def _dispatch(
                 case_id=case_id,
                 router_context=router_context,
                 welcome=welcome,
+                analyzer_handoff=analyzer_handoff,
+                analyzer_checked=analyzer_checked,
             )
 
             if agent_family == "deep_search":
@@ -3397,6 +3627,8 @@ async def _dispatch(
                     if not ds_task.done():
                         ds_task.cancel()
 
+                if ds_outcome.kind == "reverted":
+                    raise _RevertToAnalyzer()
                 if ds_outcome.kind == "paused":
                     # The pause-triggering decider's cost is emitted by
                     # handle_planner_turn (phase-1 pause path → deep_search.planner).
@@ -3415,6 +3647,7 @@ async def _dispatch(
                         describe_query=describe_query,
                         task_label=task_label,
                         run_id=run_id,
+                        analyzer={"handoff": analyzer_handoff, "checked": analyzer_checked},
                     )
                     raise _SkipRunRecord()
                 run_result = ds_outcome.result
@@ -3706,53 +3939,13 @@ async def _dispatch(
                 yield {"type": "done", "usage": _zero_usage("error")}
                 return
 
-            # Forward queued SSE events (workspace_item_created / workspace_item_updated / etc.)
-            # Skip events already streamed LIVE via the progress queue (executor
-            # topic lines tagged `streamed`) — they are still on `_events` for
-            # forensic dumps, but re-yielding here would double-send them.
-            for ev in run_result.sse_events:
-                if ev.get("streamed"):
-                    continue
+            async for ev in _delivery_events(
+                run_result, agent_family, supabase, user_id, welcome,
+            ):
                 yield ev
 
-            # Stream chat_summary to chat — full body stays in workspace item
-            # only — then key_findings as a single bullet block, then (unified
-            # responder only) the follow-up question as the last paragraph.
-            # `_bubble_tokens` keeps the historical two-token shape when there
-            # is no question.
-            for _i, _text in enumerate(_bubble_tokens(run_result)):
-                yield {"type": "token", "text": _text}
-                if _i == 0 and run_result.chat_summary:
-                    # The specialist wrote this turn's reply, welcome and all,
-                    # and it reached the user. Every paused branch above either
-                    # raised _SkipRunRecord before here (having marked the
-                    # welcome itself iff it delivered an answer) or, on
-                    # simple_search's question-as-text path, cleared `welcome`
-                    # when the turn produced nothing but a question. Either way
-                    # the invariant holds: a turn that only ASKED leaves the
-                    # welcome unspent for the next one.
-                    from agents.utils.welcome import mark_welcomed
-
-                    mark_welcomed(supabase, user_id, welcome)
-
-            # Follow-up question capture event (unified responder only) —
-            # after the last token, before the chips.
-            if (fu_ev := _follow_up_event(run_result)) is not None:
-                yield fu_ev
-
-            # Next-step chips (deep_search / simple_search; empty elsewhere) —
-            # after the last token, before done. Paused branches never get here.
-            if (ns_ev := _next_steps_event(run_result.next_steps)) is not None:
-                yield ns_ev
-
-            yield {
-                "type": "done",
-                "usage": {
-                    "prompt_tokens": run_result.tokens_in or 0,
-                    "completion_tokens": run_result.tokens_out or 0,
-                    "model": run_result.model_used or agent_family,
-                },
-            }
+        except _RevertToAnalyzer:
+            reverted = True
 
         except _SkipRunRecord as skip:
             # Phase-1 ask_user pause — _run_deep_search returned kind="paused"
@@ -3837,6 +4030,27 @@ async def _dispatch(
 
     yield {"type": "agent_run_finished", "agent_family": agent_family}
 
+    if reverted:
+        # After the close above: the client must see this run end before the reply.
+        async for ev in _run_prior_check(
+            question=describe_query,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            task_label=task_label,
+            target_item_id=target_item_id,
+            attached_item_ids=attached_item_ids,
+            compaction_summary_md=compaction_summary_md,
+            conversation_memory_md=conversation_memory_md,
+            welcome=welcome,
+            router_context=router_context,
+            after_revert=True,
+        ):
+            yield ev
+
 
 # ---------------------------------------------------------------------------
 # Specialist runners
@@ -3849,11 +4063,13 @@ class _DeepSearchOutcome:
 
     - ``kind="completed"`` — the planner ran phases 2–3; ``result`` is the
       ``SpecialistResult`` to stream.
+    - ``kind="reverted"`` — the planner found the answer already held. No search
+      ran; the caller runs the artifact_analyzer.
     - ``kind="paused"`` — phase 1 called ``ask_user``; ``planner_result`` +
       ``deferred`` carry the pause state for :func:`_record_deferred`.
     """
 
-    kind: str  # "completed" | "paused"
+    kind: str  # "completed" | "paused" | "reverted"
     result: SpecialistResult | None = None
     planner_result: Any = None
     deferred: Any = None
@@ -4013,6 +4229,8 @@ async def _run_deep_search(
             # welcome state. Read by phase 3 only when deep_search is flagged.
             router_context=getattr(input, "router_context", None),
             welcome=getattr(input, "welcome", None),
+            analyzer_handoff=input.analyzer_handoff,
+            analyzer_checked=input.analyzer_checked,
         )
 
         # Flush the attached-item fakes minted just above BEFORE the decider LLM
@@ -4037,6 +4255,9 @@ async def _run_deep_search(
         # Unified responder only (None on the old path).
         follow_up_question = getattr(turn, "follow_up_question", None)
         question_basis = getattr(turn, "question_basis", None)
+
+        if turn.kind == "reverted":
+            return _DeepSearchOutcome(kind="reverted")
 
         if turn.kind == "paused":
             # Phase-1 ask_user pause — hand the raw pause state back to the

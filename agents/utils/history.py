@@ -95,6 +95,19 @@ def build_user_attachment_tag(
     return f"〔[نظام] أرفق المستخدم مع هذه الرسالة: {rendered}〕"
 
 
+def provenance_item_ids(row: dict) -> list:
+    """The items a reply answers for: those it made, else those it quoted.
+
+    A reply built from prior reports publishes nothing, but a follow-up to it is
+    still a follow-up to those reports, so it carries the same marker.
+    """
+    made = row.get("artifact_ids") or []
+    meta = row.get("metadata")
+    if not made and isinstance(meta, dict) and meta.get("prior_report"):
+        return list(row.get("referenced_item_ids") or [])
+    return list(made)
+
+
 def build_provenance_tag(
     artifact_ids: list[str],
     wi_provenance: dict[str, tuple[int | None, str, str]],
@@ -345,9 +358,9 @@ def messages_to_history(
         elif role == "assistant":
             text = content
             if wi_provenance:
-                artifact_ids = row.get("artifact_ids") or []
+                artifact_ids = provenance_item_ids(row)
                 if artifact_ids:
-                    tag = build_provenance_tag(list(artifact_ids), wi_provenance)
+                    tag = build_provenance_tag(artifact_ids, wi_provenance)
                     if tag:
                         text = f"{tag}\n{content}"
             pause_tag = build_pause_question_tag(row)

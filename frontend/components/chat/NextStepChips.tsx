@@ -46,8 +46,8 @@ interface NextStepChipsProps {
  * matters most for ``answer`` chips, whose prompt may end with «…» for the
  * user to complete; up to two of them can share a turn, so keys are per item.
  *
- * Visual language matches the bubble's other outline pills
- * (``ReferencedItemChip``): rounded-full, h-7, muted text that lifts on hover.
+ * Visual language: outline pills, rounded-full, h-7, muted text that lifts
+ * on hover.
  * A muted «اقتراحات للمتابعة» label marks them as offers, and the trailing ↖
  * (pointing up at the composer in RTL) + tooltip say a click fills the input
  * rather than sending.

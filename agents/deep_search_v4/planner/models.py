@@ -135,6 +135,14 @@ class PlannerDecision(BaseModel):
             "reply via the router instead of running phases 2-3."
         ),
     )
+    already_covered: bool = Field(
+        default=False,
+        description=(
+            "True when <prior_searches> or <attached_items> already answer this "
+            "message, so no search should run. Never true when the user asks to "
+            "search or repeat a search, or when <prior_coverage> is present."
+        ),
+    )
     planner_brief: str = Field(
         default="",
         description=(

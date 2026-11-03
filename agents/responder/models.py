@@ -29,8 +29,10 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from agents.utils.welcome import WelcomeState
 
 
-ResponderMode = Literal["deep_search", "simple_search", "writing"]
-RESPONDER_MODES: tuple[ResponderMode, ...] = ("deep_search", "simple_search", "writing")
+ResponderMode = Literal["deep_search", "simple_search", "writing", "prior_report"]
+RESPONDER_MODES: tuple[ResponderMode, ...] = (
+    "deep_search", "simple_search", "writing", "prior_report",
+)
 
 #: deep_search planner modes — the chat-summary framing is keyed on these.
 SearchMode = Literal["case_led", "reg_compliance_led", "full"]
@@ -231,8 +233,26 @@ class WritingResponse(ResponderBase):
     mode: Literal["writing"] = "writing"
 
 
+class PriorReportResponse(ResponderBase):
+    """prior_report — the voice over quotes that code prints (artifact_analyzer.md)."""
+
+    mode: Literal["prior_report"] = "prior_report"
+    search_offer: str | None = Field(
+        default=None,
+        description=(
+            "On a partial verdict: one short Arabic question offering to search for "
+            "the missing part, promising nothing about the result. Otherwise null."
+        ),
+    )
+
+    @field_validator("search_offer", mode="before")
+    @classmethod
+    def _coerce_none_offer(cls, v: Any) -> Any:
+        return _coerce_none_string(v)
+
+
 ResponderOutput = Annotated[
-    Union[DeepSearchResponse, SimpleSearchResponse, WritingResponse],
+    Union[DeepSearchResponse, SimpleSearchResponse, WritingResponse, PriorReportResponse],
     Field(discriminator="mode"),
 ]
 
@@ -240,6 +260,7 @@ OUTPUT_TYPES: dict[ResponderMode, type[ResponderBase]] = {
     "deep_search": DeepSearchResponse,
     "simple_search": SimpleSearchResponse,
     "writing": WritingResponse,
+    "prior_report": PriorReportResponse,
 }
 
 
@@ -346,12 +367,31 @@ class WritingArtifact:
     item_wi: str | None = None
 
 
-ArtifactPackage = Union[DeepSearchArtifact, SimpleSearchArtifact, WritingArtifact]
+@dataclass
+class PriorReportArtifact:
+    """prior_report turn package: what the analyzer verified.
+
+    ``quotes`` are shown to the model for meaning only. Code prints them.
+    """
+
+    question: str
+    verdict: Literal["sufficient", "partial"]
+    quotes: list[Any] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    ask_user: list[str] = field(default_factory=list)
+    #: ``supersession.RESPONDER_VERSION_RULE`` during a transition, else empty.
+    version_rule: str = ""
+
+
+ArtifactPackage = Union[
+    DeepSearchArtifact, SimpleSearchArtifact, WritingArtifact, PriorReportArtifact,
+]
 
 _ARTIFACT_FOR_MODE: dict[ResponderMode, type] = {
     "deep_search": DeepSearchArtifact,
     "simple_search": SimpleSearchArtifact,
     "writing": WritingArtifact,
+    "prior_report": PriorReportArtifact,
 }
 
 
@@ -441,6 +481,7 @@ __all__ = [
     "CardVerdict",
     "SimpleSearchResponse",
     "WritingResponse",
+    "PriorReportResponse",
     "ResponderOutput",
     "OUTPUT_TYPES",
     "PriorSearch",
@@ -448,6 +489,7 @@ __all__ = [
     "DocDigest",
     "SimpleSearchArtifact",
     "WritingArtifact",
+    "PriorReportArtifact",
     "ArtifactPackage",
     "ResponderInput",
 ]

@@ -37,6 +37,8 @@ _FAMILY: dict[str, str] = {
     "deep_search": "deep_search",
     "simple_search": "simple_search",
     "writing": "writing",
+    # No search ran, so it must not read as deep_search in cost or usage views.
+    "prior_report": "memory",
 }
 
 

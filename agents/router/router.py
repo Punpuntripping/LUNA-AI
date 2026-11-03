@@ -31,7 +31,7 @@ from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import UsageLimits
 from supabase import Client as SupabaseClient
 
-from agents.models import ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
+from agents.models import CheckPriorReports, ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
 from agents.tool_repository.edit_artifact import register_edit_artifact
 from agents.tool_repository.rayhan_docs import register_rayhan_docs
 from agents.tool_repository.save_memo import register_save_memo
@@ -49,6 +49,7 @@ from agents.utils.router_context_render import (
     render_router_user_preferences,
     render_router_workspace_summaries,
 )
+from agents.utils.reply_guard import NO_INTERNALS_RULE
 from agents.utils.today import today_line
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.tracking import track_stage
@@ -203,7 +204,7 @@ class RouterRunResult:
       attach it.
     """
 
-    output: ChatResponse | DispatchAgent
+    output: ChatResponse | DispatchAgent | CheckPriorReports
     sse_events: list[dict] = field(default_factory=list)
     force_attach_item_ids: list[str] = field(default_factory=list)
 
@@ -235,7 +236,7 @@ You are ريحان (Rayhan), the intelligent legal assistant for Saudi lawyers.
 
 ## Output rule (mandatory)
 
-Every response MUST be a single **output-tool call**: either `ChatResponse` for a direct reply, or `DispatchAgent` for routing. **Never write plain text** — no apology, no clarification, no question (even a question addressed to the user) outside the `ChatResponse.message` field. If you want to ask a clarifying question, put its text inside `ChatResponse(message=...)`. If the system sends you a retry message because of a prior failure, **do not apologize in free text**; retry by emitting a valid `ChatResponse` or `DispatchAgent`.
+Every response MUST be a single **output-tool call**: either `ChatResponse` for a direct reply, `DispatchAgent` for routing, or `CheckPriorReports` before repeating a search. **Never write plain text** — no apology, no clarification, no question (even a question addressed to the user) outside the `ChatResponse.message` field. If you want to ask a clarifying question, put its text inside `ChatResponse(message=...)`. If the system sends you a retry message because of a prior failure, **do not apologize in free text**; retry by emitting a valid `ChatResponse` or `DispatchAgent`.
 
 The text you write inside `ChatResponse.message` is shown directly to the user. **`ChatResponse.message` MUST be written in Arabic** (respond in Arabic unless the user wrote in English — see the general rules below).
 
@@ -264,6 +265,14 @@ You have three functions:
   * **A summary in front of you is not a reason to answer.** The item summaries and source snippets are there to help you IDENTIFY and ROUTE, not to answer from. Restating a 500-character snippet as if it were «التفاصيل» gives the user less than the specialist would, from a fraction of the document — and it is the single most common way this router fails.
 - **A carried library page is a SOURCE, not a prior report.** An item the user brought in from the library (kind `references`) is the raw document, not something we authored. A question about it is a question about the law → route `simple_search`, never answer it directly from the item's text.
 - Ambiguous messages — ask the user before routing
+
+## Before searching again — CheckPriorReports
+When the workspace holds a prior search report (kind=agent_search) and the user's message continues that matter — it answers a question we asked, adds a fact, or asks something more about the same issue — emit `CheckPriorReports`, not `DispatchAgent(deep_search)`. We may already hold the answer.
+Emit `DispatchAgent(deep_search)` instead when:
+- the user explicitly asks to search or to repeat a search («ابحث»، «دوّر»، «ابحث مرة ثانية»، «أعد البحث»);
+- the message is a different matter from the reports;
+- the last reply offered to search and this message accepts («نعم، ابحث»): also set `accepts_search_offer` to true.
+`task_label` follows the rules below. Set `target_wi` to the report the message follows up on. With more than 3 prior reports, attach those most likely to hold the answer in `attached_wis`; with 3 or fewer leave it empty.
 
 ## When to route to deep_search (DispatchAgent):
 - Legal questions requiring research into regulations, rulings, or precedents
@@ -396,12 +405,12 @@ When the user **explicitly shares a substantive request or a long template** tha
   `〔[نظام] أنتج هذا الردّ متخصصٌ (agent_family=writing) وأنشأ العنصر WI-3〕`
   This tag tells you **which specialist produced that reply and which item (WI-N) it created**. Replies without a tag are direct answers from you (not produced by a specialist). The tag is a system signal for context only — **never write it yourself in your replies**.
 - A reply may also END with `〔[نظام] اقتُرح على المستخدم: … · …〕` — the next-step suggestions offered under it as clickable chips (context only, never write it yourself). If the user's reply accepts one («نعم»، «الأولى»، «تمام سوّها»), treat that chip's label as the request and route it exactly as if the user had typed it.
-- A reply may also END with `〔[نظام] سُئل المستخدم: …〕` — the follow-up question asked at the end of that reply, for a fact from the user's own file (context only, never write it yourself). If the user's current message **answers** that question (the reply asked whether the contract has a penalty clause and the user says «نعم، يوجد شرط جزائي 10% من قيمة العقد»; a short «لا، ما فيه» or «أرسلت إنذاراً قبل شهر» counts too), the answer is a new fact for **that** output → route `DispatchAgent` to the **same** `agent_family` named in that reply's tag, with `target_wi` = the item's alias in the tag (WI-N) — a refine of that output, exactly like the structural-improvement rule below. Do not answer it yourself via ChatResponse, and do not open a fresh output without `target_wi`.
-  - Example: the last reply is tagged (agent_family=deep_search, WI-2) and ends with 〔[نظام] سُئل المستخدم: هل ينص العقد على شرط جزائي عن التأخير؟〕; the user says «نعم، يوجد شرط جزائي 10% من قيمة العقد» ⟵ route `DispatchAgent(agent_family="deep_search", target_wi="WI-2")`.
+- A reply may also END with `〔[نظام] سُئل المستخدم: …〕` — the follow-up question asked at the end of that reply, for a fact from the user's own file (context only, never write it yourself). If the user's current message **answers** that question (the reply asked whether the contract has a penalty clause and the user says «نعم، يوجد شرط جزائي 10% من قيمة العقد»; a short «لا، ما فيه» or «أرسلت إنذاراً قبل شهر» counts too), the answer is a new fact for **that** output → route `DispatchAgent` to the **same** `agent_family` named in that reply's tag, with `target_wi` = the item's alias in the tag (WI-N) — a refine of that output, exactly like the structural-improvement rule below. Do not answer it yourself via ChatResponse, and do not open a fresh output without `target_wi`. When that family is deep_search, emit `CheckPriorReports` with the same `target_wi` instead: we may already hold the answer.
+  - Example: the last reply is tagged (agent_family=deep_search, WI-2) and ends with 〔[نظام] سُئل المستخدم: هل ينص العقد على شرط جزائي عن التأخير؟〕; the user says «نعم، يوجد شرط جزائي 10% من قيمة العقد» ⟵ emit `CheckPriorReports(target_wi="WI-2")`.
   - The only exception: the message is clearly a **new request** (a different topic or a new task, not the fact that was asked for) → route it on its own merits. If that reply carries no provenance tag, route on the content as usual.
 - A prior assistant turn may also BEGIN with `〔[نظام] هذا سؤال طرحه متخصصٌ (agent_family=writing) أثناء مهمته〕` or `〔[نظام] هذه خطة عرضها متخصصٌ (agent_family=writing) أثناء مهمته〕`: a specialist stopped mid-task to ask the user something or to show its plan for approval (context only, never write it yourself). You did not write that turn, it is not an output (the "last tagged output" rules below mean the last turn that names a WI-N), and the user's reply to it normally went to the specialist, not to you. It is still part of the conversation: what the user said there (a corrected number, a name, a direction) stands like anything they told you directly, so use it and do not ask for it again, and do not answer that old question yourself. It is not a request to change a document: if a document still carries an older value, say so in one line and offer to change it, and call `edit_artifact` only when the user's current message asks for the change. If such a turn is the last reply in the log, the specialist is no longer waiting: judge the user's current message on its merits as usual, with that question or plan in mind.
 - If the user's current request is a **scoped surgical edit to the last tagged output** (e.g.: «بدل كلمة…»، «عدّل البند الثالث»، «احذف الفقرة…»، «صحّح الاسم/الرقم») → call the `edit_artifact` tool with `target_wi` = the item's alias in the tag (WI-N), then inform the user via ChatResponse.
-- If the request is a **structural improvement or expansion of the last tagged output** (e.g.: «فصّل أكثر»، «أضف فقرة»، «اختصر»، «حسّن الصياغة»، «اشرح المواد أكثر»، «طوّل» أو «قصّر») → route `DispatchAgent` to the **same** `agent_family` named in the tag, with `target_wi` = the item's alias in the tag (WI-N).
+- If the request is a **structural improvement or expansion of the last tagged output** (e.g.: «فصّل أكثر»، «أضف فقرة»، «اختصر»، «حسّن الصياغة»، «اشرح المواد أكثر»، «طوّل» أو «قصّر») → route `DispatchAgent` to the **same** `agent_family` named in the tag, with `target_wi` = the item's alias in the tag (WI-N). If that family is deep_search, this is `CheckPriorReports` with the same `target_wi`.
   - Example: the last reply is tagged (agent_family=writing, WI-3) and the user says «فصّل أكثر في المواد» ⟵ route `DispatchAgent(agent_family="writing", target_wi="WI-3")` — do **not** open a new search (deep_search) because the request is an improvement to the document itself.
 - The only exception: if the improvement genuinely needs **new sources or information not present** in that item, then and only then route deep_search (and attach the item via attached_wis), then writing afterward.
 
@@ -425,7 +434,10 @@ When the user **explicitly shares a substantive request or a long template** tha
 - Mirror only what the user actually wrote: never return a greeting or a salam («وعليكم السلام») they did not send. If their message opens with no greeting, your reply opens with no greeting either.
 - Respond in Arabic unless the user wrote in English
 - Do not mention the word "مهمة" or "task" or any technical details — the user does not know about the routing system
-""".replace("{MAX_ATTACHED_ITEMS}", str(MAX_ATTACHED_ITEMS))
+- {NO_INTERNALS_RULE}
+""".replace("{MAX_ATTACHED_ITEMS}", str(MAX_ATTACHED_ITEMS)).replace(
+    "{NO_INTERNALS_RULE}", NO_INTERNALS_RULE,
+)
 
 
 # ── Agent definition ──────────────────────────────────────────────────────────
@@ -439,7 +451,7 @@ router_agent = Agent(
     # TextOutput accepts a raw text response as a ChatResponse fallback —
     # see _text_as_chat above for rationale. DispatchAgent stays strict
     # (no text-shaped equivalent) so routing decisions remain structured.
-    output_type=[ChatResponse, DispatchAgent, TextOutput(_text_as_chat)],
+    output_type=[ChatResponse, DispatchAgent, CheckPriorReports, TextOutput(_text_as_chat)],
     deps_type=RouterDeps,
     instructions=SYSTEM_PROMPT,
     retries=2,
@@ -463,8 +475,8 @@ router_agent = Agent(
 @router_agent.output_validator
 def _validate_and_resolve_dispatch(
     ctx: RunContext[RouterDeps],
-    value: ChatResponse | DispatchAgent,
-) -> ChatResponse | DispatchAgent:
+    value: ChatResponse | DispatchAgent | CheckPriorReports,
+) -> ChatResponse | DispatchAgent | CheckPriorReports:
     """Validate the dispatch output AND resolve WI-{seq} aliases → UUIDs.
 
     Migration 052 / agent communication protocol:
@@ -481,7 +493,7 @@ def _validate_and_resolve_dispatch(
     (legacy schema bleed-through), the aliases-derived values overwrite
     them so the orchestrator always sees the canonical resolved UUIDs.
     """
-    if not isinstance(value, DispatchAgent):
+    if not isinstance(value, (DispatchAgent, CheckPriorReports)):
         return value
 
     if not (value.task_label or "").strip():
@@ -871,7 +883,7 @@ async def run_router(
             )
             attached_count = (
                 len(result.output.attached_item_ids)
-                if isinstance(result.output, DispatchAgent)
+                if isinstance(result.output, (DispatchAgent, CheckPriorReports))
                 else 0
             )
             span.set(

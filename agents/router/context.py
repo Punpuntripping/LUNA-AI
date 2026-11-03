@@ -36,7 +36,7 @@ from agents.utils.conversation_memory import (
     memory_enabled,
     render_conversation_memory,
 )
-from agents.utils.history import messages_to_history
+from agents.utils.history import messages_to_history, provenance_item_ids
 from pydantic_ai.messages import ModelMessage
 from shared.identity import resolve_call_name
 from shared.workspace.preview_lock import LockPolicy, is_locked, preview_cut
@@ -110,8 +110,40 @@ def find_pending_follow_up(msg_rows: list[dict]) -> PendingFollowUp | None:
         return PendingFollowUp(
             message_id=(str(row["message_id"]) if row.get("message_id") else None),
             question=q.strip(),
-            item_ids=[str(i) for i in (row.get("artifact_ids") or []) if i],
+            item_ids=[str(i) for i in provenance_item_ids(row) if i],
         )
+    return None
+
+
+def find_pending_handoff(msg_rows: list[dict]) -> dict | None:
+    """What a partial verdict saved on the last non-empty reply, encoded.
+
+    Only the last reply counts: an offer two replies back has lapsed. Stored real,
+    so it is encoded here like everything else bound for an LLM.
+    """
+    from backend.app.services.masking_service import encode_active
+
+    for row in reversed(msg_rows or []):
+        if (row.get("role") or "") != "assistant":
+            continue
+        if not (row.get("content") or "").strip():
+            continue
+        meta = row.get("metadata")
+        handoff = meta.get("analyzer_handoff") if isinstance(meta, dict) else None
+        if not isinstance(handoff, dict):
+            return None
+        return {
+            "restatement": encode_active(str(handoff.get("restatement") or "")),
+            "covered_quotes": [
+                {
+                    "text": encode_active(str(q.get("text") or "")),
+                    "source_name": encode_active(str(q.get("source_name") or "")),
+                }
+                for q in handoff.get("covered_quotes") or []
+                if isinstance(q, dict)
+            ],
+            "missing": [encode_active(str(m)) for m in handoff.get("missing") or []],
+        }
     return None
 
 
@@ -136,6 +168,9 @@ class RouterContext:
     # receives this object verbatim) knows whether the user answered:
     # ``None`` = no pending question · ``"answered"`` · ``"unanswered"``.
     pending_follow_up: PendingFollowUp | None = None
+    # What a partial verdict saved on the last reply, encoded. Used only when the
+    # router says the user accepted the offer to search.
+    pending_handoff: dict | None = None
     follow_up_status: str | None = None
     # Conversation memory (plan conversation_memory.md §4.7).
     # ``conversation_memory`` holds the ENCODED entries, for the router's
@@ -455,7 +490,7 @@ def _load_messages_after_cutoff(
     try:
         q = (
             supabase.table("messages")
-            .select("message_id, role, content, metadata, artifact_ids, created_at")
+            .select("message_id, role, content, metadata, artifact_ids, referenced_item_ids, created_at")
             .eq("conversation_id", conversation_id)
         )
         if cutoff_created_at:
@@ -602,6 +637,7 @@ def load_router_context(
         compaction_summary_md=compaction_summary_md,
         message_history=message_history,
         pending_follow_up=find_pending_follow_up(msg_rows),
+        pending_handoff=find_pending_handoff(msg_rows),
         conversation_memory=conversation_memory,
         conversation_memory_md=render_conversation_memory(conversation_memory),
     )
@@ -611,5 +647,6 @@ __all__ = [
     "PendingFollowUp",
     "RouterContext",
     "find_pending_follow_up",
+    "find_pending_handoff",
     "load_router_context",
 ]

@@ -308,6 +308,12 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # (one per family: refs vs meta). Short structured outputs — reasoning
     # mode is OFF (see .claude/plans/item_analyzer_v2.md §6).
     "item_analyzer":              _FLASH,
+    # Tier_2 DeepSeek-primary — Layer-4, decides whether prior reports already
+    # answer a follow-up (plan artifact_analyzer.md). V4 Flash, not V4.1, by
+    # owner decision. Default reasoning, not medium: on 17 real cases medium
+    # took twice as long and was the one that produced a false «sufficient»,
+    # the error this agent must not make (2026-11-02).
+    "artifact_analyzer":          _FLASH,
     # Tier_2 DeepSeek-primary — Layer-4 memory agent that compacts the oldest span
     # of a conversation into a single carry-forward summary (user intent + produced
     # WIs + open threads). One LLM call per compaction, fires at most once per turn

@@ -113,6 +113,12 @@ class PlannerDeps:
     # unified responder and ``_build_candidate_context_blocks``.
     conversation_memory_md: str | None = None
 
+    # From the artifact_analyzer (plan artifact_analyzer.md §4.7). The handoff is
+    # what it established and what is missing. analyzer_checked means it already
+    # ran this turn or is off, so the planner must search rather than revert.
+    analyzer_handoff: dict | None = None
+    analyzer_checked: bool = False
+
     # Migration 052 / agent communication protocol: per-conversation
     # ``WI-{seq}`` alias → workspace_items.item_id lookup. Built once per
     # turn from ``prior_searches`` + ``attached_items`` + any other WIs the
@@ -204,6 +210,8 @@ def build_planner_deps(
     attached_items: list[WorkspaceItemSnapshot] | None = None,
     compaction_summary_md: str | None = None,
     conversation_memory_md: str | None = None,
+    analyzer_handoff: dict | None = None,
+    analyzer_checked: bool = False,
     wi_alias_map: dict[int, str] | None = None,
     welcome_instruction: str | None = None,
     router_context: Any | None = None,
@@ -242,6 +250,8 @@ def build_planner_deps(
         attached_items=list(attached_items) if attached_items else [],
         compaction_summary_md=compaction_summary_md or None,
         conversation_memory_md=conversation_memory_md or None,
+        analyzer_handoff=analyzer_handoff,
+        analyzer_checked=analyzer_checked,
         wi_alias_map=dict(wi_alias_map) if wi_alias_map else {},
         welcome_instruction=welcome_instruction or None,
         router_context=router_context,

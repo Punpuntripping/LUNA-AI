@@ -36,9 +36,13 @@ import re
 from typing import Any
 
 from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
+from agents.utils.reply_guard import NO_INTERNALS_RULE
 from agents.utils.welcome import render_welcome_instruction
 
+from .prior_report_prompt import CLOSING_INSTRUCTION as PRIOR_REPORT_CLOSING
+from .prior_report_prompt import PRIOR_REPORT_BLOCK, render_prior_report_package
 from .models import (
+    PriorReportArtifact,
     RESPONDER_BODY_CHARS,
     RESPONDER_EXCERPT_CHARS,
     SYNTHESIS_HEAD_CHARS,
@@ -285,6 +289,7 @@ MODE_BLOCKS: dict[ResponderMode, str] = {
     "deep_search": _DEEP_SEARCH_BLOCK,
     "simple_search": _SIMPLE_SEARCH_BLOCK,
     "writing": _WRITING_BLOCK,
+    "prior_report": PRIOR_REPORT_BLOCK,
 }
 
 _SYSTEM_TAIL = (
@@ -296,7 +301,7 @@ _SYSTEM_TAIL = (
 
 #: The full static system prompt per mode — concatenated ONCE, at import.
 SYSTEM_PROMPTS: dict[ResponderMode, str] = {
-    mode: CORE_PROMPT + "\n\n" + block + _SYSTEM_TAIL
+    mode: CORE_PROMPT + "\n\n" + NO_INTERNALS_RULE + "\n\n" + block + _SYSTEM_TAIL
     for mode, block in MODE_BLOCKS.items()
 }
 
@@ -615,6 +620,8 @@ def render_artifact_package(inp: ResponderInput) -> str:
         return render_simple_search_package(a)
     if isinstance(a, WritingArtifact):
         return render_writing_package(a)
+    if isinstance(a, PriorReportArtifact):
+        return render_prior_report_package(a)
     raise TypeError(f"unknown artifact package {type(a).__name__}")
 
 
@@ -699,6 +706,7 @@ _CLOSING_INSTRUCTION: dict[ResponderMode, str] = {
         "`question_basis` (all user-facing text in Arabic) according to the "
         "framing and the system rules."
     ),
+    "prior_report": PRIOR_REPORT_CLOSING,
 }
 
 
