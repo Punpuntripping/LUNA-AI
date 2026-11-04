@@ -104,7 +104,7 @@ components/
 ## API Base URLs
 
 - **Development:** `NEXT_PUBLIC_API_URL=http://localhost:8000`
-- **Production:** `NEXT_PUBLIC_API_URL=https://luna-backend-production-35ba.up.railway.app`
+- **Production:** `NEXT_PUBLIC_API_URL=https://api.rayhanai.com`
 
 All API calls go through `/api/v1/` prefix on the backend.
 

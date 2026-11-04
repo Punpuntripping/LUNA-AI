@@ -141,8 +141,8 @@ raise HTTPException(status_code=401, detail="بيانات الدخول غير ص
 ## Real URLs
 
 - Supabase: https://dwgghvxogtwyaxmbgjod.supabase.co
-- Backend: https://luna-backend-production-35ba.up.railway.app
-- Frontend: https://luna-frontend-production-1124.up.railway.app
+- Backend: https://api.rayhanai.com
+- Frontend: https://rayhanai.com
 - Redis internal: redis.railway.internal:6379
 - Redis public: hopper.proxy.rlwy.net:11864
 

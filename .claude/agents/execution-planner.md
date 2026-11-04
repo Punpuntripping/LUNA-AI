@@ -155,8 +155,8 @@ When invoking build agents, include these real values in your prompts when relev
 |----------|-------|
 | Supabase Project ID | `dwgghvxogtwyaxmbgjod` |
 | Supabase URL | `https://dwgghvxogtwyaxmbgjod.supabase.co` |
-| Backend (Railway) | `https://luna-backend-production-35ba.up.railway.app` |
-| Frontend (Railway) | `https://luna-frontend-production-1124.up.railway.app` |
+| Backend (Railway) | `https://api.rayhanai.com` |
+| Frontend (Railway) | `https://rayhanai.com` |
 | Plans Access | Via @plan-reviewer only (reads Obsidian grand plans) |
 
 ---

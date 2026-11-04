@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
-        "https://luna-frontend-production-1124.up.railway.app"
+        "https://rayhanai.com"
     ]
 
     # App
@@ -505,8 +505,8 @@ These are the actual production values. Use them in documentation and defaults w
 
 - Supabase project ref: dwgghvxogtwyaxmbgjod (region: ap-south-1)
 - Supabase URL: https://dwgghvxogtwyaxmbgjod.supabase.co
-- Backend URL: https://luna-backend-production-35ba.up.railway.app
-- Frontend URL: https://luna-frontend-production-1124.up.railway.app
+- Backend URL: https://api.rayhanai.com
+- Frontend URL: https://rayhanai.com
 
 ## Rules (Mandatory)
 

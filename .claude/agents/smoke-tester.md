@@ -22,8 +22,8 @@ You are read-only against application code and against production user data. You
 ## Domain Knowledge
 
 ### Production endpoints (defaults — plans may override)
-- Backend: `https://luna-backend-production-35ba.up.railway.app`
-- Frontend: `https://luna-frontend-production-1124.up.railway.app`
+- Backend: `https://api.rayhanai.com`
+- Frontend: `https://rayhanai.com`
 - Auth: POST `/api/auth/login` with `{email, password}` returns `{access_token, refresh_token}`. Use `SMOKE_TEST_EMAIL` / `SMOKE_TEST_PASSWORD` from env. Never hardcode or log credentials.
 
 ### Production vs staging

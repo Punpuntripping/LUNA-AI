@@ -15,7 +15,7 @@ Usage:
 
 Env:
     BLOG_API_BASE  override the backend origin
-                   (default: https://luna-backend-production-35ba.up.railway.app)
+                   (default: https://api.rayhanai.com)
 """
 import os
 import re
@@ -24,10 +24,13 @@ import json
 import pathlib
 import urllib.request
 
+# Cloudflare refuses the default Python User-Agent on rayhanai.com and its API.
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent          # marketing/linkedin_post/
 API_BASE = os.environ.get(
     "BLOG_API_BASE",
-    "https://luna-backend-production-35ba.up.railway.app",
+    "https://api.rayhanai.com",
 ).rstrip("/")
 
 
@@ -40,7 +43,7 @@ def token_from_arg(arg: str) -> str:
 
 def fetch(token: str) -> dict:
     url = f"{API_BASE}/api/v1/public/blog/{token}"
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=30) as r:
         if r.status != 200:
             sys.exit(f"HTTP {r.status} fetching {url}")

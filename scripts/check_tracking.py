@@ -9,7 +9,7 @@ pass/fail report. Use cases:
   # Both:
   python scripts/check_tracking.py \
       --backend http://localhost:8000 \
-      --backend https://luna-backend-production-35ba.up.railway.app
+      --backend https://api.rayhanai.com
 
 Per-backend checks (all are HTTP — no Logfire API needed for these):
   1. GET /api/v1/health returns 200 and includes env + service + version.
@@ -29,13 +29,16 @@ from typing import Any
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
+# Cloudflare refuses the default Python User-Agent on rayhanai.com and its API.
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+
 
 DEFAULT_BACKENDS = ["http://localhost:8000"]
 TIMEOUT_SECONDS = 10
 
 
 def _fetch(url: str) -> dict[str, Any] | None:
-    req = Request(url, headers={"Accept": "application/json"})
+    req = Request(url, headers={"Accept": "application/json", "User-Agent": _UA})
     try:
         with urlopen(req, timeout=TIMEOUT_SECONDS) as r:
             body = r.read().decode("utf-8")

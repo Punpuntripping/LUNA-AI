@@ -57,13 +57,13 @@ can edit freely.
 | `REDIS_URL` | `redis://localhost:6379` | `redis://default:<pwd>@hopper.proxy.rlwy.net:11864` |
 | `ENVIRONMENT` | `development` | `production` |
 | `DEBUG` | `true` | `false` |
-| `CORS_ORIGINS` | `http://localhost:3000` | `https://luna-frontend-production-1124.up.railway.app` |
+| `CORS_ORIGINS` | `http://localhost:3000` | `https://rayhanai.com` |
 
 ### `frontend/.env.local`
 
 | Var | Local | Railway |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | `https://luna-backend-production-35ba.up.railway.app` |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | `https://api.rayhanai.com` |
 | `NEXT_PUBLIC_SUPABASE_URL` | (same — cloud) | (same — cloud) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | (same — cloud) | (same — cloud) |
 
@@ -102,7 +102,7 @@ when migrating fully back to Railway.
 
 1. **`frontend/.env.local`** — set:
    ```
-   NEXT_PUBLIC_API_URL=https://luna-backend-production-35ba.up.railway.app
+   NEXT_PUBLIC_API_URL=https://api.rayhanai.com
    ```
 2. **`.env`** (only if you want backend to use Railway Redis too):
    ```

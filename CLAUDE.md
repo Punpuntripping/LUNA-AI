@@ -100,8 +100,9 @@ If you find an older plan or report using "Tier 1–4" for the architectural con
 |----------|-------|
 | Supabase project | `dwgghvxogtwyaxmbgjod` (ap-south-1) |
 | Supabase URL | https://dwgghvxogtwyaxmbgjod.supabase.co |
-| Backend URL | https://luna-backend-production-35ba.up.railway.app |
-| Frontend URL | https://luna-frontend-production-1124.up.railway.app |
+| Backend URL | https://api.rayhanai.com |
+| Frontend URL | https://rayhanai.com |
+| Railway hosts | Locked since 2026-11-04 (origin lock): `*.up.railway.app` backend → 403, frontend → 308 to rayhanai.com. Only `/api/v1/health` answers there. Scripts must send a browser User-Agent to the domains |
 | Redis (internal) | redis.railway.internal:6379 |
 | Redis (public) | hopper.proxy.rlwy.net:11864 |
 

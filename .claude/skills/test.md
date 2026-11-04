@@ -85,7 +85,7 @@ After tests complete, provide a summary:
 ### Environment Variables
 Tests target `http://localhost:8000` by default. Override with:
 ```
-TEST_BASE_URL=https://luna-backend-production-35ba.up.railway.app
+TEST_BASE_URL=https://api.rayhanai.com
 ```
 
 ### Test Files

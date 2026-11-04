@@ -15,8 +15,8 @@ You have TWO modes:
 ## Railway Project
 
 - Project: adaptable-generosity (a1e7045f-bd90-4f46-9cf4-f1a6c50f11d6)
-- Backend: luna-backend (https://luna-backend-production-35ba.up.railway.app)
-- Frontend: luna-frontend (https://luna-frontend-production-1124.up.railway.app)
+- Backend: luna-backend (https://api.rayhanai.com)
+- Frontend: luna-frontend (https://rayhanai.com)
 - Redis: redis.railway.internal:6379 (internal) / hopper.proxy.rlwy.net:11864 (public)
 - Workspace: C:\Programming\LUNA_AI
 
@@ -84,7 +84,7 @@ Use `mcp__railway-mcp-server__list-services` to confirm all 3 services are runni
 ### 2.3 Health Check
 
 ```bash
-curl -s https://luna-backend-production-35ba.up.railway.app/api/v1/health
+curl -s https://api.rayhanai.com/api/v1/health
 ```
 Expected: `{"status": "ok"}`
 
@@ -97,11 +97,11 @@ If any deployment fails or service is not running, fetch logs via `mcp__railway-
 
 ```bash
 curl -s -D - -o /dev/null \
-  -H "Origin: https://luna-frontend-production-1124.up.railway.app" \
+  -H "Origin: https://rayhanai.com" \
   -H "Access-Control-Request-Method: POST" \
   -H "Access-Control-Request-Headers: Content-Type,Authorization" \
   -X OPTIONS \
-  https://luna-backend-production-35ba.up.railway.app/api/v1/auth/login
+  https://api.rayhanai.com/api/v1/auth/login
 ```
 
 Verify: Allow-Origin, Allow-Methods (POST), Allow-Headers (Content-Type, Authorization), Allow-Credentials: true.
@@ -112,7 +112,7 @@ Verify: Allow-Origin, Allow-Methods (POST), Allow-Headers (Content-Type, Authori
 
 After verification passes, take production screenshots to confirm the frontend is rendering:
 
-1. Navigate to `https://luna-frontend-production-1124.up.railway.app`
+1. Navigate to `https://rayhanai.com`
 2. Take screenshot → `C:/Programming/LUNA_AI/screenshots_temp/deploy-01-landing.png`
 3. Navigate to `/login`
 4. Take snapshot to verify login form renders (Arabic text, RTL layout)
