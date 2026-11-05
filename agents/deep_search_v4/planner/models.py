@@ -101,26 +101,12 @@ class PlannerDecision(BaseModel):
             "support role."
         ),
     )
-    query_restatement: str = Field(
-        default="",
-        description=(
-            "A faithful, NEUTRAL Arabic restatement of the user's actual "
-            "question and legal posture — what they are really asking and "
-            "their position in any dispute (who is suing whom, and in what "
-            "capacity). This is the canonical query text that flows downstream "
-            "to the sector_picker, the search executors, and the aggregator; "
-            "it replaces the raw (often colloquial / rambling) user message as "
-            "the retrieval query. "
-            "HARD CONSTRAINT — zero bias: do NOT introduce any law, article, "
-            "regulation, court, entity, or legal characterization the user did "
-            "NOT state. Restate only what is in the message — resolve dialect "
-            "and rambling into clear MSA, but invent no fact, party, or basis. "
-            "Leave EMPTY only when the user's message is already a clean, "
-            "unambiguous legal question (the raw query is then used as-is). "
-            "When the parties or intent cannot be identified confidently, do "
-            "NOT guess here — pause via ``ask_user`` instead."
-        ),
-    )
+    # NOTE: there is no ``query_restatement`` field any more (owner decision
+    # 2026-11-05). The planner does not reword the user's message: the search
+    # runs on the message exactly as the user wrote it, and after an
+    # ``ask_user`` pause on the original message plus the question and the
+    # reply, verbatim (``compose_resumed_query``). Ambiguity is the planner's
+    # to ask about, never to resolve by rewording.
     rationale: str = Field(
         ...,
         description="Short Arabic justification for the mode + support choice (logged).",
@@ -444,10 +430,7 @@ class PinnedPlan:
     def decision(self) -> "PlannerDecision | None":
         """The pinned ``PlannerDecision``, or ``None`` when phase 1 must run.
 
-        ⚠ ``query_restatement`` is left empty on this path, which means the raw
-        query flows downstream verbatim — correct here, since marketing's
-        questions are already curated and self-contained. When phase 1 *does*
-        run, a restatement is produced and used normally.
+        The query flows downstream verbatim, as it does on every path.
         """
         if not self.is_fully_pinned:
             return None

@@ -224,8 +224,7 @@ def derive_default_question(supabase: SupabaseClient, item: dict) -> str:
         2. the artifact title,
         3. "" (empty — the dialog is editable anyway).
 
-    ``query_restatement`` is deliberately NOT used (plan decision: the page
-    shows the verbatim user question, edited at publish time).
+    The page shows the verbatim user question, edited at publish time.
     """
     message_id = item.get("message_id")
     conversation_id = item.get("conversation_id")

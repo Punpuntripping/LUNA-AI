@@ -513,7 +513,6 @@ async def _run_planner_turn(
                     "mode": decision.mode,
                     "support": decision.support,
                     "planner_brief_chars": 0,
-                    "query_restatement_chars": 0,
                     "context_labels": [],
                     "workspace_reads_count": _count_workspace_reads(deps._events),
                     "ask_user_invoked": True,
@@ -548,7 +547,6 @@ async def _run_planner_turn(
                     "mode": decision.mode,
                     "support": decision.support,
                     "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
-                    "query_restatement_chars": len(getattr(decision, "query_restatement", "") or ""),
                     "context_labels": list(getattr(decision, "context_labels", []) or []),
                     "workspace_reads_count": _count_workspace_reads(deps._events),
                     "ask_user_invoked": False,  # paused-branch returned above
@@ -589,7 +587,6 @@ async def _run_planner_turn(
             "mode": decision.mode,
             "support": decision.support,
             "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
-            "query_restatement_chars": len(getattr(decision, "query_restatement", "") or ""),
             "context_labels": list(getattr(decision, "context_labels", []) or []),
             "workspace_reads_count": _count_workspace_reads(deps._events),
             "ask_user_invoked": _ask_user_was_invoked(deps._events),
@@ -647,15 +644,12 @@ async def _run_planner_turn(
         editorial=bool(pinned is not None and pinned.editorial),
         cap=pinned.cap if pinned is not None else None,
     )
-    # The planner's faithful, zero-bias restatement (when produced) is the
-    # canonical retrieval query — it resolves colloquial / rambling phrasing
-    # into a clean statement of the user's real question and legal posture,
-    # WITHOUT injecting any law or entity the user didn't name. This is what
-    # flows to the sector_picker, the executors, and the aggregator. Falls back
-    # to the raw query when the planner left it empty (query already clean).
-    retrieval_query = (
-        getattr(decision, "query_restatement", "") or ""
-    ).strip() or query
+    # The user's message, exactly as written, is the retrieval query: it flows
+    # to the sector_picker, the executors and the aggregator unreworded (owner
+    # decision 2026-11-05 — the planner no longer restates). On the resume path
+    # the orchestrator has already put the original message, the planner's
+    # question and the user's reply into `query` (`compose_resumed_query`).
+    retrieval_query = query
     agg_output: "AggregatorOutput | None" = None
     degraded = False
     t1 = time.perf_counter()
@@ -685,15 +679,10 @@ async def _run_planner_turn(
         )
 
     # ── PHASE 3 — respond ──────────────────────────────────────────────────
-    # Frame the chat summary around `retrieval_query` (the restatement when the
-    # planner produced one, else the raw query) — the SAME text retrieval ran
-    # on — NOT the raw `query`. On the resume path `query` is the bare user
-    # reply to an ask_user question (e.g. «نعم، الاثنين»), which is meaningless
-    # in isolation: the responder would see a terse <query> that contradicts a
-    # rich retrieval digest and wrongly conclude "couldn't understand / no
-    # results for this question" and apologise. Anchoring on `retrieval_query`
-    # keeps the responder aligned with what was actually searched. Fresh
-    # dispatch is unchanged: there `retrieval_query` falls back to `query`.
+    # Frame the chat summary around the SAME text retrieval ran on. On resume
+    # that is the composed original + question + reply, never the bare reply
+    # (e.g. «نعم، الاثنين»): a terse <query> against a rich retrieval digest
+    # made the responder conclude "couldn't understand" and apologise.
     t2 = time.perf_counter()
     from agents.responder.wiring import responder_unified
 

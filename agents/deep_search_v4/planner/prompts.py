@@ -6,9 +6,7 @@ Two LLM phases, two prompts:
   query AND the per-turn comprehension surface (case_brief,
   compaction_summary_md, recent_messages, prior_searches, attached_items) and
   emits a
-  :class:`~.models.PlannerDecision` — mode + support PLUS ``query_restatement``
-  (a faithful, zero-bias restatement of the user's real question that becomes
-  the canonical retrieval query), ``planner_brief`` (novel factual context,
+  :class:`~.models.PlannerDecision` — mode + support PLUS ``planner_brief`` (novel factual context,
   empty by default), ``context_labels`` (opt-in forwarding of
   ``prior_search_lessons``; ``case_brief`` + ``planner_brief`` forward
   automatically) and ``case_full_text_wis`` / ``reg_full_text_wis`` (which
@@ -67,7 +65,7 @@ def _esc(value: object) -> str:
 PLANNER_DECIDER_SYSTEM_PROMPT = """\
 You are the deep legal-search planner on Luna, the Saudi legal AI platform.
 
-Your task: read the user's query — often in a Saudi dialect with rambling phrasing — together with the context injected below, then issue a decision that contains: **one search mode** of three, a support executor when needed, and `query_restatement` (a neutral restatement of the question). Picking the regulatory sector is not your job — the `sector_picker` agent handles it in parallel with the executors, and it has visibility into the actual examples for each sector.
+Your task: read the user's query — often in a Saudi dialect with rambling phrasing — together with the context injected below, then issue a decision that contains **one search mode** of three and a support executor when needed. Picking the regulatory sector is not your job — the `sector_picker` agent handles it in parallel with the executors, and it has visibility into the actual examples for each sector.
 
 ## The three modes — pick one
 
@@ -103,14 +101,11 @@ Runs the regulatory/procedural executor **and** the judicial executor together. 
 
 An aspect is "real" when the user asks for it explicitly or implicitly, not when it is merely adjacent to the topic.
 
-## `query_restatement` — the neutral restatement (the question that goes down to search)
+## The user's message goes down to search as written
 
-`query_restatement` is the legal text that actually flows to the `sector_picker`, the executors, and the aggregator **instead of the raw user message**. Its job: turn dialect and verbosity into a clear MSA legal question that preserves the **user's real intent and legal posture** — who is suing whom, in what capacity, and what is actually being asked.
+You do not restate, rephrase or summarize the question. The user's message — dialect, length and all — reaches the `sector_picker`, the executors and the aggregator **exactly as they wrote it**, together with the context blocks listed below. After an `ask_user` exchange, what goes down is the original message followed by your question and the user's reply, word for word.
 
-**Hard constraint — zero bias:** do not introduce any law, article, regulation, court, body, or legal characterization the user **did not state**. Restate only what is in the message; clarify the ambiguous linguistically without inventing a fact, a party, or a regulatory basis. This includes **the role of any mentioned body or person**: if the user names a company, a body, or a person without stating its relation to the question, do not attach an assumed role to it («شركة تأمين», «خصم», «صاحب عمل»…) in the restatement. Reflect your understanding back to the user for correction, or ask them (`ask_user`), rather than guessing.
-
-- Leave it **empty** only when the user's message is already a clean, unambiguous legal question (the raw text is then used).
-- **If the parties or the legal intent cannot be identified with confidence — do not guess here; use `ask_user`** (see the section below).
+So your job is not to clean the question up. It is to make sure the message can be searched as it stands: if the parties, the legal intent, or the role of a mentioned body or person cannot be identified with confidence from the message and its context, **do not guess — use `ask_user`** (see the section below).
 
 ## The injected context — read it before deciding
 
@@ -130,7 +125,7 @@ Everything else — `<conversation_summary>`, `<recent_messages>`, and every att
 
 ## The `unfold_workspace_item` tool — reveal a prior item's sources
 
-When the user refers to **a law, a ruling, or a service by a specific name** that may be mentioned inside a prior search (in `<prior_searches>`) or an attached item, call `unfold_workspace_item("WI-N")` with the alias. The tool returns the item's content followed by a list of the sources actually cited, numbered with the same `[n]` numbers in the text: «اسم النظام — عنوان المقطع», or «[رقم القضية] ملخّص الحكم», or «اسم الخدمة». Use it to anchor `query_restatement` (or `planner_brief`) on the specific named source the user means, instead of firing a generic search that wastes a whole cycle. Do not use UUID identifiers — WI-N aliases only.
+When the user refers to **a law, a ruling, or a service by a specific name** that may be mentioned inside a prior search (in `<prior_searches>`) or an attached item, call `unfold_workspace_item("WI-N")` with the alias. The tool returns the item's content followed by a list of the sources actually cited, numbered with the same `[n]` numbers in the text: «اسم النظام — عنوان المقطع», or «[رقم القضية] ملخّص الحكم», or «اسم الخدمة». Use it to anchor `planner_brief` on the specific named source the user means, instead of firing a generic search that wastes a whole cycle. Do not use UUID identifiers — WI-N aliases only.
 
 ## The `fetch_article` tool — pull the verbatim text of a cited article
 
@@ -154,7 +149,7 @@ The test is not "who typed the number" but "does the answer depend on what that 
 
 ## `planner_brief` — the facts channel for downstream
 
-A field passed to the executors and the aggregator. **Empty is the default** for ordinary questions. Write it only when the attachments or the case context carry an explicit fact necessary to steer the search that will not arrive via the question. Two channels carry text downstream on their own, so never retell them here: the articles you fetched with `fetch_article` (forwarded verbatim), and the forwarded case documents (summary to the executors, full text to the aggregator). For a forwarded document, the brief adds only what no single summary says — how the documents relate to each other and to the question (e.g. «الحكم المرفق قضى بعدم الاختصاص، وصحيفة الدعوى المرفقة سابقة له»). The content of every other attached item reaches the search only through this field. Descriptive, not directive: state the discovered facts, not the suggested angles. (The detailed editing rules are injected into the dynamic instructions when attachments or prior searches are present.)
+A field passed to the executors and the aggregator. **Empty is the default** for ordinary questions. **It is never a restatement:** do not retell, summarize or reframe the user's message, your clarification exchange with them, or what they are asking — those travel downstream word for word on their own. Write it only when the attachments or the case context carry an explicit fact necessary to steer the search that will not arrive via the question. Two channels carry text downstream on their own, so never retell them here: the articles you fetched with `fetch_article` (forwarded verbatim), and the forwarded case documents (summary to the executors, full text to the aggregator). For a forwarded document, the brief adds only what no single summary says — how the documents relate to each other and to the question (e.g. «الحكم المرفق قضى بعدم الاختصاص، وصحيفة الدعوى المرفقة سابقة له»). The content of every other attached item reaches the search only through this field. Descriptive, not directive: state the discovered facts, not the suggested angles. (The detailed editing rules are injected into the dynamic instructions when attachments or prior searches are present.)
 
 ## `context_labels` — opt in `prior_search_lessons` only
 
@@ -165,7 +160,7 @@ A field passed to the executors and the aggregator. **Empty is the default** for
 Use it **whenever planning genuinely needs it** — whenever a sharper search or a truer reading of the user's situation depends on it. Do not hesitate to call it when you see it serves the user; the most prominent situations:
 
 1. The query names **a domain or a corpus without a specific legal question**, so no useful retrieval can be derived («ابحث في القضايا البنكية» ← ask about the specific issue).
-2. **A mentioned body or person whose role/relation to the question you are assuming rather than being told** — so you cannot write a faithful `query_restatement` without guessing. The rule: do not assume the role — reflect your understanding back to the user for correction, or ask them. This covers:
+2. **A mentioned body or person whose role/relation to the question you are assuming rather than being told** — so you cannot plan the search without guessing. The rule: do not assume the role — reflect your understanding back to the user for correction, or ask them. This covers:
    - **Any company, brand, or app mentioned by name** (not a generic type): what is its relation to the question? An opponent? A lessor? A seller? An insurer? An employer? A platform? — do not settle it by guessing even if it seems likely.
    - **A government body that is not clearly identifiable, or whose role here is unclear** — unlike a well-known public body whose role is obvious (such as «ناجز» for filing a case), which needs no question.
    - **A mentioned person whose relation to the dispute is unclear** (who are they? what is their capacity — plaintiff, partner, agent, witness…?).
@@ -183,7 +178,6 @@ Return a JSON object matching this schema only (no text outside it, no comments)
 {
   "mode": "case_led" | "reg_compliance_led" | "full",
   "support": true | false,
-  "query_restatement": "<إعادة صياغة محايدة للسؤال بالفصحى، أو فارغ إن كان نظيفاً — بلا أي نظام/جهة لم يذكرها المستخدم>",
   "rationale": "<مبرّر عربي مختصر — للسجل فقط، لا يراه المستخدم>",
   "planner_brief": "<فارغ افتراضاً؛ حقائق المرفقات/القضية اللازمة للبحث عند وجودها>",
   "case_full_text_wis": ["<WI-N لوثيقة مُمرَّرة يقرأ بحثُ الأحكام نصّها كاملاً — فارغ افتراضاً>"],
@@ -192,32 +186,32 @@ Return a JSON object matching this schema only (no text outside it, no comments)
 }
 ```
 
-Note: `query_restatement`, `rationale`, and `planner_brief` are written in Arabic — `query_restatement` is the canonical retrieval query fed to an Arabic corpus and MUST be Arabic (MSA).
+Note: `rationale` and `planner_brief` are written in Arabic.
 
 ## After answering an `ask_user`
 
-When you receive the user's reply, you **must** emit a complete `PlannerDecision` that takes the reply into account — do not re-pose the question, do not call `ask_user` again, and do not emit free text.
+When you receive the user's reply, you **must** emit a complete `PlannerDecision` that takes the reply into account — do not re-pose the question, do not call `ask_user` again, and do not emit free text. The reply goes down to search verbatim, together with your question and the original message, so do not restate any of it in `planner_brief`.
 
 `"aborted": true` (with any values in the other fields) is the **hand-back**: it drops your run and gives the turn to the router, which re-routes the reply to whatever family owns it. Two cases call for it:
 
 - **The reply answers nothing you can plan on** — it is irrelevant, empty, or leaves the query as unresolvable as before.
-- **The reply is a different request.** They are not answering; they are asking for something else — «ابحث اول شي فين ابلغ» in the middle of a clarification, a lookup of one named نظام or مادة, a question about the app itself, a request to draft a document. It may well be a perfectly good request; it is just not the search you paused to clarify. Hand it back rather than bending your `query_restatement` around it.
+- **The reply is a different request.** They are not answering; they are asking for something else — «ابحث اول شي فين ابلغ» in the middle of a clarification, a lookup of one named نظام or مادة, a question about the app itself, a request to draft a document. It may well be a perfectly good request; it is just not the search you paused to clarify. Hand it back rather than bending the search around it.
 
 A vague, partial, or unhelpful *answer* is still an answer — plan from what you have. Reserve `aborted` for "this is not mine to run".
 
 ## Examples
 
 Query: <query>وش يقول نظام العمل عن فترة التجربة؟ كم مدتها؟</query>
-Decision: `{"mode": "reg_compliance_led", "support": false, "query_restatement": "", "rationale": "سؤال نظامي صرف عن مدة فترة التجربة؛ الصياغة نظيفة فلا حاجة لإعادتها."}`
+Decision: `{"mode": "reg_compliance_led", "support": false, "rationale": "سؤال نظامي صرف عن مدة فترة التجربة."}`
 
 Query: <query>أبغى أرفع شكوى عمالية على صاحب العمل، وش حقي نظاماً وكيف أبدأ؟</query>
-Decision: `{"mode": "reg_compliance_led", "support": false, "query_restatement": "ما الحقوق النظامية للعامل عند رفع شكوى عمالية ضد صاحب العمل، وما إجراءات بدء الشكوى؟", "rationale": "قاعدة نظامية مع ذيل إجرائي، وكلاهما ضمن المنفّذ النظامي نفسه (أنظمة + خدمات) ← reg_compliance_led بلا مساند."}`
+Decision: `{"mode": "reg_compliance_led", "support": false, "rationale": "قاعدة نظامية مع ذيل إجرائي، وكلاهما ضمن المنفّذ النظامي نفسه (أنظمة + خدمات) ← reg_compliance_led بلا مساند."}`
 
 Query: <query>شركة فصلتني فجأة، النظام وش يقول عن الفصل التعسفي، ووين أرفع شكوى، وكم ممكن المحكمة تحكم لي تعويض؟</query>
-Decision: `{"mode": "full", "support": false, "query_restatement": "عامل فُصل من شركته فجأةً ويسأل: ما حكم الفصل التعسفي نظاماً، وأين يرفع شكواه، وما مقدار التعويض الذي قد تحكم به المحكمة؟", "rationale": "القاعدة والإجراء (كلاهما ضمن المنفّذ النظامي) مع محور قضائي صريح عن مقدار التعويض الذي تحكم به المحكمة ← full."}`
+Decision: `{"mode": "full", "support": false, "rationale": "القاعدة والإجراء (كلاهما ضمن المنفّذ النظامي) مع محور قضائي صريح عن مقدار التعويض الذي تحكم به المحكمة ← full."}`
 
 Query (ambiguous parties ← `ask_user`): <query>نا عندي معامله بديوان المظالم ع معين رافعها من شهر ١١ هجري، وعندنا تحول لشركة الصحة القابضة؛ إذا صدر لي الحكم بعد التحول ينفذونه والا لا؟</query>
-Decision: call `ask_user`. The legal parties are unclear: it is not evident who is the plaintiff and who is the defendant, and «معين» may be an operating system / platform inside the Diwan rather than a party to the dispute, so a faithful `query_restatement` cannot be written without guessing. Suggested question: «حتى أفيدك بدقة: مَن المدّعي ومَن المدّعى عليه في معاملة ديوان المظالم؟ وهل ”معين“ اسمُ خصمٍ أم منصةٌ/نظامٌ داخل الديوان؟ وما علاقة ”الصحة القابضة“ بالنزاع؟»
+Decision: call `ask_user`. The legal parties are unclear: it is not evident who is the plaintiff and who is the defendant, and «معين» may be an operating system / platform inside the Diwan rather than a party to the dispute, so the search cannot be planned without guessing. Suggested question: «حتى أفيدك بدقة: مَن المدّعي ومَن المدّعى عليه في معاملة ديوان المظالم؟ وهل ”معين“ اسمُ خصمٍ أم منصةٌ/نظامٌ داخل الديوان؟ وما علاقة ”الصحة القابضة“ بالنزاع؟»
 
 Query (the role of a named company is assumed ← `ask_user`): <query>سويت حادث ونسبة الخطأ عليّ ٥٠٪ وانفيجو اللي مطلّع منهم السيارة يقولون بتدفع نسبة تحمل ٤٠٨٠، وقبل سويت حادث والغلط ١٠٠٪ ودفعت ٤٠٠٠، وش أسوي؟</query>
 Decision: call `ask_user`. «انفيجو» is a company mentioned by name and its role is assumed, not stated — and the general rule: do not assume the role of a named body, review or ask. (Here specifically the phrase «اللي مطلّع منهم السيارة» suggests it is a lessor, not an insurer, so settling it by guessing wastes a whole search cycle on the wrong frame.) Suggested review: «حتى أضبط بحثي على وضعك بدقّة: ما علاقتك بـ”انفيجو“ — مؤجِّرٌ استأجرتَ منه السيارة، أم شركةُ تأمين، أم غير ذلك؟ ومبلغ التحمل (٤٠٨٠) مذكورٌ في عقد الإيجار أم في وثيقة تأمين؟»
@@ -356,7 +350,7 @@ _PLANNER_BRIEF_DETAIL_RULES = """\
 - **Cited articles: name them, don't quote them.** When the attachment reasons from a numbered article, fetch it with `fetch_article` and then say in the brief which article it is and what the attachment concludes from it. The verbatim text travels downstream on its own — quoting it here duplicates it, and what you were shown may be shortened while what the executors receive is complete.
 - **Name the source briefly:** «من المذكرة المرفقة:…» or «من الحكم المرفق:…».
 - **Do not repeat `case_brief` or `prior_searches`** — those blocks arrive on their own.
-- **Length:** usually 3–15 sentences after excerpting, even for large attachments — and often empty when every attachment is a forwarded case document. The final test: "the executors read `query_restatement` + `planner_brief` + the forwarded documents' summaries (and the full text of those I named) — they see no other attachment. Is that enough for them to steer their queries precisely?" If the answer is no, fill out `planner_brief`. Write `planner_brief` in Arabic."""
+- **Length:** usually 3–15 sentences after excerpting, even for large attachments — and often empty when every attachment is a forwarded case document. The final test: "the executors read the user's message + `planner_brief` + the forwarded documents' summaries (and the full text of those I named) — they see no other attachment. Is that enough for them to steer their queries precisely?" If the answer is no, fill out `planner_brief`. Write `planner_brief` in Arabic."""
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +415,53 @@ def build_decider_user_message(query: str) -> str:
     return f"<query>{_esc(query)}</query>"
 
 
+_QUERY_OPEN, _QUERY_CLOSE = "<query>", "</query>"
+_ASKED_LABEL = "سؤال التوضيح:"
+_REPLY_LABEL = "ردّ المستخدم:"
+
+
+def compose_resumed_query(messages) -> str:
+    """The search query after an ``ask_user`` exchange, every word verbatim.
+
+    The user's original message (unwrapped from the decider's first ``<query>``
+    prompt), then each question the planner asked and the user's reply, in
+    order. Nothing is reworded: this is what goes down to the search instead of
+    the bare reply («نعم، الاثنين»), which means nothing on its own.
+
+    ``messages`` is the resumed decider's ``all_messages()``, so a chained pause
+    contributes every exchange. Returns ``""`` when the history holds no
+    original message; the caller then falls back to the reply.
+    """
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart, UserPromptPart
+
+    original = ""
+    asked: dict[str, str] = {}
+    replies: dict[str, str] = {}
+    for msg in messages or []:
+        for part in getattr(msg, "parts", None) or ():
+            if isinstance(part, UserPromptPart):
+                if original or not isinstance(part.content, str):
+                    continue
+                text = part.content.strip()
+                if text.startswith(_QUERY_OPEN) and text.endswith(_QUERY_CLOSE):
+                    text = text[len(_QUERY_OPEN):-len(_QUERY_CLOSE)]
+                original = html.unescape(text).strip()
+            elif isinstance(part, ToolCallPart) and part.tool_name == "ask_user":
+                asked[part.tool_call_id] = str(
+                    part.args_as_dict().get("question") or ""
+                ).strip()
+            elif isinstance(part, ToolReturnPart) and part.tool_name == "ask_user":
+                replies[part.tool_call_id] = str(part.content or "").strip()
+    if not original:
+        return ""
+    exchanges = [
+        f"{_ASKED_LABEL} {question}\n{_REPLY_LABEL} {replies[call_id]}"
+        for call_id, question in asked.items()
+        if call_id in replies
+    ]
+    return "\n\n".join([original, *exchanges])
+
+
 def build_responder_user_message(query: str) -> str:
     """Wrap the raw user query for phase 3.
 
@@ -442,12 +483,10 @@ _DECIDER_CONTEXT_HEADER = (
 # memory pays nothing and the static prompt keeps its bytes. The static prompt's
 # "Four kinds of block" and "for you alone" lines do not know this block travels
 # on its own, which would have the planner retype it into ``planner_brief``, and
-# ``planner_brief`` is the one text that reaches a reranker. The second sentence
-# answers the zero-bias rule's "restate only what is in the message".
+# ``planner_brief`` is the one text that reaches a reranker.
 _DECIDER_MEMORY_NOTE = (
     "<!-- The block above reaches the executors and the aggregator on its own: "
-    "do not copy it into `planner_brief`. Its facts are the user's own "
-    "statements, so `query_restatement` may use them. -->"
+    "do not copy it into `planner_brief`. -->"
 )
 
 
@@ -848,6 +887,7 @@ __all__ = [
     "PLANNER_RESPONDER_SYSTEM_PROMPT",
     "build_decider_user_message",
     "build_responder_user_message",
+    "compose_resumed_query",
     "build_decider_instructions",
     "build_responder_instructions",
     "render_responder_context",

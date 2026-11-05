@@ -529,9 +529,9 @@ def test_row1_both_set_is_fully_pinned_and_carries_a_decision() -> None:
     assert d is not None
     assert (d.mode, d.support) == ("case_led", True)
     assert d.rationale.startswith("editorial_pin:")
-    # §5: query_restatement is empty on the fully-pinned path — the raw query
-    # flows downstream verbatim, which is correct for a curated question.
-    assert d.query_restatement == ""
+    # The planner never rewords the query (no query_restatement field): the
+    # curated question flows downstream verbatim.
+    assert not hasattr(d, "query_restatement")
 
 
 def test_row2_mode_only_carries_no_decision_and_overlays_the_mode() -> None:

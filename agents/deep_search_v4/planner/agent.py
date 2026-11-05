@@ -212,7 +212,7 @@ def create_planner_decider(
 
     # Deterministic read tool: unfold a prior search / attached item into its
     # content_md + a used-only, [n]-keyed manifest of the named sources it
-    # cites. Lets the decider anchor query_restatement / planner_brief on a
+    # cites. Lets the decider anchor planner_brief on a
     # specific named regulation/ruling/service the user points at, instead of
     # re-running a generic search. PlannerDeps exposes
     # .supabase / .user_id / .wi_alias_map (satisfies HasWorkspaceContext).

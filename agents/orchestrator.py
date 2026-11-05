@@ -1643,13 +1643,27 @@ async def _resume_major_agent_inner(
         recent_messages = _load_recent_messages(
             supabase, conversation_id, user_id=user_id
         )
-        # On resume the router has NOT re-run, so task_label / describe_query
-        # are inherited from the paused agent_runs row (populated at original
-        # dispatch time). Fall back to a placeholder if missing — keeps the
-        # required MajorAgentInput field satisfied without inventing data.
+        # On resume the router has NOT re-run, so task_label is inherited from
+        # the paused agent_runs row (populated at original dispatch time). Fall
+        # back to a placeholder if missing — keeps the required MajorAgentInput
+        # field satisfied without inventing data.
         resumed_task_label = (pending.get("task_label") or "").strip() or "متابعة المحادثة"
+        # The search runs on the original message + the planner's question(s) +
+        # the user's reply, word for word — never the bare reply alone, and
+        # never a planner rewording (the planner no longer restates).
+        from agents.deep_search_v4.planner.prompts import compose_resumed_query
+
+        try:
+            resumed_query = compose_resumed_query(planner_result.all_messages())
+        except Exception:  # never lose the search over the query text
+            logger.warning(
+                "_resume_major_agent: could not compose the resumed query for "
+                "run_id=%s; searching on the reply alone", run_id, exc_info=True,
+            )
+            resumed_query = ""
+        resumed_query = resumed_query or user_reply
         major_input = MajorAgentInput(
-            describe_query=user_reply,
+            describe_query=resumed_query,
             task_label=resumed_task_label,
             attached_items=attached_items,
             recent_messages=recent_messages,
@@ -4282,14 +4296,9 @@ async def _run_deep_search(
             and response is not None
             and getattr(response, "build_artifact", True)
         )
-        # The planner's faithful, zero-bias restatement (when produced) is the
-        # canonical query for this turn — prefer it over the raw user message
-        # for the artifact's stored query so prior_searches comprehension in
-        # future turns reflects the corrected intent. Falls back to the raw
-        # query when the planner left it empty (query already clean).
-        effective_describe_query = (
-            getattr(turn.decision, "query_restatement", "") or ""
-        ).strip() or input.describe_query
+        # The query the search ran on — the user's message as written (on a
+        # resume: original + question + reply, verbatim). Never reworded.
+        effective_describe_query = input.describe_query
         if should_publish:
             try:
                 publish_input = SearchPublishInput(
