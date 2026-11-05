@@ -103,7 +103,7 @@ Diversity comes from matching the decomposition to the shape of the question —
 
 - **A yes/no legality question** («هل يجوز…») → step back to the governing rule, then decompose into the conditions and exceptions that decide it.
 - **A rights / entitlements question** («وش حقوقي») → decompose into each distinct right or obligation and the fact that triggers it.
-- **A remedy / "what do I do" question** («وش الحل», «كيف أوقف…») → the governing rule + the procedural sub-steps + the objection / stay / appeal routes.
+- **A remedy / "what do I do" question** («وش الحل», «كيف أوقف…») → the governing rule + the substantive conditions that decide the outcome; procedural routes (objection, stay, appeal) only within the procedural budget below.
 - **A comparison question** («أيهما يطبَّق», «الفرق بين…») → abstract each side to its own rule, then the rule that resolves the conflict between them.
 - **A penalty / consequence question** («وش العقوبة») → the rule defining the act + the primary penalty + any ancillary or consequential effects.
 - **An open research question** («ماذا ينص النظام على…») → the general governing rule first, then its distinct sub-provisions.
@@ -115,7 +115,7 @@ Do not decompose every question the same way. The shape decides how many queries
 Every query is one of two angles. There is no "direct" angle: do NOT write a query that merely restates the user's question in other words — a restatement adds no new coverage and crowds out diversity.
 
 - **تجريدي (abstraction / step-back)** — strip the case-specific facts and target the *general governing principle* behind the situation, not the incident itself. It broadens coverage toward the source rule. (It is NOT a way to target a "chapter" or "section" unit — the retrieval unit is always a chunk.)
-- **تفكيكي (decomposition / independent sub-issue)** — extract the independent legal issues that are NOT stated in the question but are necessary for a complete answer: the sub-issues your Step-3 framing surfaced (the procedure, the proof, the jurisdiction, the deadline, the ancillary right…).
+- **تفكيكي (decomposition / independent sub-issue)** — extract the independent legal issues that are NOT stated in the question but are necessary for a complete answer: the sub-issues your Step-3 framing surfaced (the proof, a condition, an exception, the ancillary right… — and procedural ones such as the jurisdiction or the deadline only within the procedural budget below).
 
 Every query must target a DISTINCT legal issue or rule. No two queries may be rephrasings of one another — if two would retrieve the same chunks, drop one. Spread your queries across the axes your framing identified: breadth over repetition. Do not hold to a fixed quota per angle; distribute by what the question needs.
 
@@ -211,6 +211,21 @@ Decide the number of queries based on the complexity of the user's question:
 - **Complex question** (multiple parties, interlocking conditions, multiple issues): 8-14 queries
 
 Include at least one abstract (step-back) query to broaden coverage toward the governing rule — even for simple questions.
+
+## Substantive vs procedural queries — the procedural budget
+
+Every query is either **substantive (موضوعي)** — the right, the obligation, the ruling, its conditions and exceptions, and the proof (burden of proof, means of proof, the weight of an expert report) — or **procedural (شكلي)** — the competent court or body, how to file, deadlines, objection / appeal / reconsideration routes, whether a decided claim can be filed again, e-government services, forms, fees, required documents, and enforcement steps.
+
+How many procedural queries you write depends on **what the user wrote**, not on what a complete answer might cover:
+
+| The user… | Procedural queries |
+|---|---|
+| did not ask about procedure — a general «وش الحل» / «فما الحل» counts as not asking | **at most 2**; the rest substantive |
+| asked about procedure alongside the substance («وش المهلة», «وين أرفع», «كيف أعترض») | **at most 4** |
+| asked **only** about procedure | all procedural, plus **exactly 2** substantive queries on the right the procedure serves |
+| asked to leave the procedural side out («تجاهل الجوانب الشكلية») | **none** |
+
+The procedural numbers are ceilings, not quotas — never add a procedural query just to reach them. The 2 substantive queries in the «only procedure» row are not optional: write exactly 2.
 
 ## Output
 

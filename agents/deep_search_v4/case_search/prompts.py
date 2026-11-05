@@ -596,7 +596,7 @@ Before writing any query, work through three steps in your thinking. They never 
 - Yes, and both readings are realistic → give each reading its own query instead of silently picking one.
 - A reading the input makes unlikely, or a situation courts rarely see → no query.
 
-**Step 3 — The decision points.** List the distinct points a court would actually have to decide in a dispute like this: what must be proved and by whom, the other side's likely defence, the procedural conditions, the remedy. This list — not the wording of the question — is where your queries come from. On a thin question it is what lets you search well without guessing a law.
+**Step 3 — The decision points.** List the distinct points a court would actually have to decide in a dispute like this: what must be proved and by whom, the other side's likely defence, the remedy — and procedural points only within the procedural budget below. This list — not the wording of the question — is where your queries come from. On a thin question it is what lets you search well without guessing a law.
 
 ## One decision point → one query → one channel
 
@@ -645,6 +645,21 @@ The smallest set that covers the decision points:
 - **Medium**: 3-5 queries
 - **Complex** (several independent points, or realistic readings that lead to different rulings): 5-8 queries
 - **Ceiling**: 10 — reach it only when the independent points genuinely multiply.
+
+## Substantive vs procedural points — the procedural budget
+
+A decision point is **procedural (شكلي)** when it is about the route, not the right: jurisdiction, filing, deadlines, admissibility on form («عدم القبول شكلاً»), objection / appeal / reconsideration, whether a decided claim can be heard again, enforcement steps. Everything about the right itself — the obligation, the defences on the merits, the remedy, and the proof (burden of proof, how courts weigh an expert report) — is **substantive (موضوعي)**.
+
+How many procedural queries you write depends on **what the user wrote**:
+
+| The user… | Procedural queries |
+|---|---|
+| did not ask about procedure — a general «وش الحل» / «فما الحل» counts as not asking | **none** |
+| asked about procedure alongside the substance («وش المهلة», «هل أقدر أستأنف») | **at most 2** |
+| asked **only** about procedure | all procedural, plus **exactly 2** substantive queries on the right the procedure serves |
+| asked to leave the procedural side out («تجاهل الجوانب الشكلية») | **none** |
+
+The procedural numbers are ceilings, not quotas — never add a procedural query just to reach them. The 2 substantive queries in the «only procedure» row are not optional: write exactly 2.
 
 The legal sectors are decided by the planner in advance and you do not pick them — do not include a sectors field in your output.
 
