@@ -51,7 +51,9 @@ def _sha(text: str) -> str:
 # the `case_document` rule (case_documents_forwarding.md §5.4), and again for
 # the `<conversation_memory>` exception bullet (conversation_memory.md §5): that
 # one bullet, 362 characters, is the only change, and each length below grew by
-# exactly that.
+# exactly that. Re-captured 2026-11-05 for the «focus follows what the user
+# asked» bullet in _SHARED_ROLE_AR (substance vs procedure, owner rule): 393
+# characters, and each length below grew by exactly that.
 # ---------------------------------------------------------------------------
 
 # (constant, expected length in characters, expected sha256 of the UTF-8 bytes)
@@ -59,20 +61,20 @@ PRE_REFACTOR: list[tuple[str, str, int, str]] = [
     (
         "PROMPT_MODE_CASE",
         PROMPT_MODE_CASE,
-        16564,
-        "37b437659f72a4f58024b3ad76441f522f49410750d36c81490aa3096306abec",
+        16957,
+        "5d5fe6dad8eec1afa51fd748210466af046a5f645407ab45b11ae16d0fc1c89c",
     ),
     (
         "PROMPT_MODE_REG",
         PROMPT_MODE_REG,
-        19398,
-        "02540b878abcd322948e096ec25fddc527b22c0da416e8b5a33333e59714e7b8",
+        19791,
+        "e51e0f89c67de896e8c7d89e8bb217768f8670bc0fd8200b36847e93901e8cc7",
     ),
     (
         "PROMPT_MODE_FULL",
         PROMPT_MODE_FULL,
-        17566,
-        "653df2349d1772bdd8050498300e0dda5b35a4bc7a60a875ae32f3e8857022bb",
+        17959,
+        "22bd71a285bd64e6c74fa944d7a32901093228ceb4757bbf50405fff159553fc",
     ),
 ]
 
