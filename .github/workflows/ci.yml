@@ -88,6 +88,7 @@ jobs:
             backend/tests/test_guard_signals.py \
             backend/tests/test_rate_limit_library.py \
             backend/tests/test_library_item_budget.py \
+            backend/tests/test_workspace_item_create.py \
             agents/tests/test_conversation_memory*.py \
             agents/tests/test_router_full_history.py \
             agents/tests/test_today_context.py \

@@ -350,6 +350,10 @@ supabase/.temp/
 !backend/tests/test_blog_related_topics.py
 # parallel conversations (171) — per-user cap + points reserve
 !backend/tests/test_parallel_runs.py
+# a describe_query over the DB CHECK (4000) lost a whole deep-search report and
+# was mislabelled as the 15-item cap (convo a6f68263, 2026-11-06). Durable because
+# the failure is silent: the chat reply still arrives, only the card is missing.
+!backend/tests/test_workspace_item_create.py
 # supersession: which version of a replaced law a title or number opens. Durable
 # because the failure is silent: an old number returning an unrelated article of
 # the new law reads exactly like a right answer. They also pin that a law with no

@@ -35,6 +35,26 @@ from shared.workspace.preview_lock import LockPolicy
 
 logger = logging.getLogger(__name__)
 
+# Mirrors the CHECK on workspace_items.describe_query (migration 038). A deep
+# search resumed after a clarify question stores the original message + every
+# question and reply (compose_resumed_query), so a pasted pleading overshoots
+# it. The row is only a record of what was asked: the search has already run.
+DESCRIBE_QUERY_MAX_CHARS = 4000
+_DESCRIBE_QUERY_GAP = "\n…\n"
+# Kept from the end on a clip: the clarify exchanges sit there.
+_DESCRIBE_QUERY_TAIL_CHARS = 1500
+
+
+def _fit_describe_query(text: str) -> str:
+    """Clip to the DB limit, keeping the start (the user's message) and the end
+    (the clarify question and reply). A row that fails the CHECK loses the
+    whole report, so it must never be sent over the limit."""
+    if len(text) <= DESCRIBE_QUERY_MAX_CHARS:
+        return text
+    head = DESCRIBE_QUERY_MAX_CHARS - _DESCRIBE_QUERY_TAIL_CHARS - len(_DESCRIBE_QUERY_GAP)
+    return text[:head] + _DESCRIBE_QUERY_GAP + text[-_DESCRIBE_QUERY_TAIL_CHARS:]
+
+
 # Content validation rules for the legacy single-shot attachment upload —
 # mirror the case_documents rules so workspace attachments behave identically.
 _ALLOWED_MIME_TYPES = {"application/pdf", "image/png", "image/jpeg"}
@@ -164,7 +184,7 @@ def create_workspace_item(
     if document_id is not None:
         payload["document_id"] = document_id
     if describe_query is not None:
-        payload["describe_query"] = describe_query
+        payload["describe_query"] = _fit_describe_query(describe_query)
     if summary is not None:
         payload["summary"] = summary
 
@@ -172,9 +192,11 @@ def create_workspace_item(
         result = supabase.table("workspace_items").insert(payload).execute()
     except Exception as e:
         # The 15-item cap trigger (migration 031) raises
-        # workspace_items_cap_exceeded with SQLSTATE 23514 — surface it as a
-        # client error, not a 500.
-        if "workspace_items_cap_exceeded" in str(e) or getattr(e, "code", None) == "23514":
+        # workspace_items_cap_exceeded — surface it as a client error, not a
+        # 500. Match the name, NOT SQLSTATE 23514: every CHECK constraint on
+        # the table raises 23514 too, and labelling those as the cap told a
+        # user with 6 of 15 items to delete one (convo a6f68263, 2026-11-06).
+        if "workspace_items_cap_exceeded" in str(e):
             raise LunaHTTPException(
                 status_code=400,
                 code=ErrorCode.VALIDATION_ERROR,
