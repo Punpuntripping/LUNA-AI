@@ -12,6 +12,26 @@ two completely different identifiers. The metering ledger
     ``compliance:<sha1>`` → ``('service', services.id)``  — never gated, never charged
     ``article:<uuid>``    → ``('article', '{regulation_id}#{n}')`` | ``('regulation', regulation_id)``
     ``regdoc:<uuid>``     → ``('regulation', regulations_v2.id)``
+    ``principle:<uuid>``  → ``('principle', '')``  — always free, never shelved
+
+THE PRINCIPLE PREFIX MINTS A TYPE BUT NO KEY (official_principles_refs.md D8)
+-----------------------------------------------------------------------------
+An official judicial principle («مبدأ قضائي») is a published, public ruling of
+the highest judicial body: opening one is FREE. There is no ``library_items`` /
+``seo_item_meta`` vocabulary for it (no library page, no shelf), so it resolves
+to ``content_type='principle'`` with an EMPTY ``content_id`` and
+``always_free=True``. Both halves are load-bearing at the reveal endpoint:
+
+* ``always_free`` → no ``resolve_access``, no ledger row, ``balance: null``;
+* empty ``content_id`` → ``_record_library_use`` returns before touching the
+  shelf (``library_items`` has a ``content_type`` CHECK that does not know
+  ``principle`` — a write would 23514), and ``public_page_url`` answers ``None``,
+  so the panel shows the source PDF alone.
+
+The id is NOT looked up here: nothing is charged, so a fabricated uuid buys the
+caller nothing, and the body itself is rebuilt by ``references_service`` from
+``official_principles`` — a vanished id 404s there («تعذّر عرض هذا المصدر»),
+before any of this matters. A malformed (non-uuid) id still fails closed.
 
 THE TWO simple_search PREFIXES ADD NO METERING VOCABULARY
 ---------------------------------------------------------
@@ -57,7 +77,9 @@ Every unresolvable / malformed / vanished id returns ``None``, and the caller
 MUST refuse (402, ``reason='unresolvable'``). A resolver that fails open hands
 out corpus bytes for free, which is the whole thing this phase is bounding.
 
-Two exceptions are policy, not leaks:
+Three exceptions are policy, not leaks:
+* ``principle`` — an official judicial principle is free to open (D8; see the
+  section above).
 * ``service`` — compliance pages are never gated (§1.3), so the tuple comes back
   with ``always_free=True``; ``resolve_access`` also short-circuits
   ``content_type='service'`` to open. No charge, no ledger row, ever.
@@ -121,9 +143,11 @@ class ResolvedRef:
     ``parent_regulation_id`` is passed straight through to ``resolve_access`` so
     the D5 نظام-covers-مادة check works without re-deriving it from the key.
 
-    ``always_free`` marks the two policy-open cases (a compliance service, a
-    short circular). The caller must NOT charge, must NOT write a ledger row, and
-    must still serve the content.
+    ``always_free`` marks the three policy-open cases (a compliance service, a
+    short circular, an official judicial principle). The caller must NOT charge,
+    must NOT write a ledger row, and must still serve the content. An empty
+    ``content_id`` additionally means "nothing to shelve" — the reveal skips the
+    «مكتبتي» write.
     """
 
     content_type: str
@@ -171,7 +195,8 @@ async def resolve_ref(
     Args:
         ref_id: the URA-emitted identifier stored on the row.
         domain: the row's ``domain`` column (``regulations`` | ``cases`` |
-            ``compliance`` | ``circulars`` | ``articles`` | ``regulation_docs``).
+            ``compliance`` | ``circulars`` | ``articles`` | ``regulation_docs`` |
+            ``principles``).
             Used only to disambiguate a prefix-less ``ref_id``; an explicit
             prefix always wins, because the prefix and the id were minted
             together by the same adapter.
@@ -209,6 +234,8 @@ async def resolve_ref(
         return await _resolve_case(supabase, tail, iid)
     if prefix == "circular" or (not prefix and dom == "circulars"):
         return await _resolve_circular(supabase, tail, iid)
+    if prefix == "principle" or (not prefix and dom == "principles"):
+        return _resolve_principle(tail, iid)
     if (
         prefix == "compliance"
         or (not prefix and dom == "compliance")
@@ -431,6 +458,34 @@ async def _resolve_circular(
         title=(row.get("title") or "").strip(),
         always_free=is_open,
         free_reason="short_circular" if is_open else "",
+    )
+
+
+def _resolve_principle(tail: str, item_id: str) -> Optional[ResolvedRef]:
+    """``principle:<official_principles.id>`` → ``('principle', '')`` — free.
+
+    Plan D8: opening an official judicial principle is free and never lands on
+    the «مكتبتي» shelf, so there is no ledger key to mint — ``content_id`` stays
+    EMPTY on purpose (see the module docstring for what that does downstream).
+    The uuid is still required (``item_id`` first, like ``_resolve_circular``):
+    a malformed id fails closed exactly like every other family. No row read —
+    nothing is charged, so there is nothing a fabricated id could buy, and the
+    reveal's body build 404s a vanished principle before this answer is used.
+
+    ``title`` stays ``""``: the reveal falls back to the source view's own title
+    («المبدأ رقم N — {الباب}»), which is the label the card already printed.
+    """
+    principle_id = item_id if _UUID_RE.match(item_id or "") else ""
+    if not principle_id and _UUID_RE.match(tail or ""):
+        principle_id = tail
+    if not principle_id:
+        logger.info("reference_resolver: principle ref without a uuid (%r)", tail)
+        return None
+    return ResolvedRef(
+        content_type="principle",
+        content_id="",
+        always_free=True,
+        free_reason="official_principle",
     )
 
 

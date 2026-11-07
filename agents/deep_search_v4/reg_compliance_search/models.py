@@ -184,14 +184,22 @@ class RerankedResult(BaseModel):
     and appendix chunks both keep ``source_type == "chunk"`` (the existing
     ``reg_compliance_to_rqr`` chunk path is byte-identical — the regulation/appendix
     distinction rides on ``source_row["corpus"]``); circular and service
-    candidates carry ``"circular"`` / ``"service"``. The legacy article/section
+    candidates carry ``"circular"`` / ``"service"``. An official judicial
+    principle (the ``OFFICIAL_PRINCIPLES_ENABLED`` side-call) carries
+    ``"official_principle"``: ``title`` = «المبدأ رقم N — {الباب}», ``content`` =
+    the rule text, ``db_id`` = ``official_principles.id``. The legacy article/section
     fields below are kept — and left at their defaults — so the ``reg_adapter``
     -> shared ``RegURAResult`` boundary keeps compiling unchanged (Wave 2a makes
     it type-aware by reading ``source_row``).
     """
 
-    source_type: Literal["chunk", "article", "section", "circular", "service"] = Field(
-        description='Type of result — "chunk" (regulation/appendix), "circular", or "service"',
+    source_type: Literal[
+        "chunk", "article", "section", "circular", "service", "official_principle",
+    ] = Field(
+        description=(
+            'Type of result — "chunk" (regulation/appendix), "circular", "service",'
+            ' or "official_principle"'
+        ),
     )
     title: str = Field(
         description="Arabic title",
@@ -244,7 +252,8 @@ class RerankedResult(BaseModel):
         description=(
             "The fetched content row + merged RPC provenance the search layer "
             "attached: the true topic ``source_type`` (regulation/appendix/"
-            "circular/service), ``corpus`` (regulation vs appendix), ``doc_ref``,"
+            "circular/service/official_principle), ``corpus`` (regulation vs "
+            "appendix), ``doc_ref``,"
             " ``doc_id``, ``entity_ref``, ``sectors``, ``_rrf``, ``_mode``. Empty"
             " for chunk results assembled before this wave. Wave 2a's type-aware "
             "``reg_compliance_to_rqr`` reads this to route each kept row to the right URA "
@@ -355,7 +364,7 @@ class SearchResult:
 
     query: str
     chunks: list  # list[dict] — tagged content rows from search.py (mixed
-    # source types: chunks_v2 / circulars / services, each carrying
+    # source types: chunks_v2 / circulars / services / official_principles, each carrying
     # ``source_type`` + ``_mode`` + ``_rrf`` + merged RPC provenance).
     result_count: int
     # Retrieval-health fields, copied off the ``SearchOutcome`` this result was
@@ -374,7 +383,8 @@ class RerankerQueryResult:
     rationale: str
     sufficient: bool
     results: list  # list[RerankedResult] — kept rows of any source type
-    # (chunk / circular / service); each carries ``source_type`` + ``source_row``.
+    # (chunk / circular / service / official_principle); each carries
+    # ``source_type`` + ``source_row``.
     dropped_count: int
     summary_note: str
     unfold_rounds: int = 0   # vestigial (single-pass now); always 0/1 — kept

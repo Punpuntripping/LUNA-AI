@@ -92,6 +92,25 @@ describe("sourceRows", () => {
     assert.deepEqual(sourceRows(art, opts)[0], { kind: "label", key: "label", text: "المادة 81 مكرر — نظام العمل" });
   });
 
+  test("official_principle: rule text, «المصدر», decision lines, page", () => {
+    const view: SourceView = {
+      source_type: "official_principle",
+      title: "المبدأ رقم 23 — الوعد",
+      chapter: "الوعد",
+      text: "الوعد ملزم ديانةً لا قضاءً.",
+      decisions: [{ body: "مجلس القضاء الأعلى", decision_no: "162/5", date_hijri: "24/3/1415" }],
+      pages: [343],
+      url: "https://drive.example/book.pdf",
+    };
+    const rows = sourceRows(view, opts);
+    assert.deepEqual(rows.map((r) => r.kind), ["md", "label", "note", "note"]);
+    assert.deepEqual(rows[2], { kind: "note", key: "decision-0", text: "مجلس القضاء الأعلى — القرار 162/5 بتاريخ 24/3/1415هـ" });
+    assert.deepEqual(rows[3], { kind: "note", key: "pages", text: "ص 343" });
+    assert.ok(extractSourceContent(view).startsWith("الوعد ملزم"));
+    const bare = sourceRows({ ...view, decisions: [], pages: [] }, opts);
+    assert.deepEqual(bare.map((r) => r.kind), ["md"]);
+  });
+
   test("gov_service: a note only when an exit exists", () => {
     const view: SourceView = { source_type: "gov_service", title: "خدمة", service_url: "" };
     assert.equal(sourceRows(view, opts).length, 1);

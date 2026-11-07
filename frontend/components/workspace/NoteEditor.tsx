@@ -79,7 +79,11 @@ function readWriterMetadataRefsView(
       domain !== "regulations" &&
       domain !== "cases" &&
       domain !== "compliance" &&
-      domain !== "circulars"
+      domain !== "circulars" &&
+      // deep_search now emits both: official principles, and the pinned
+      // المادة 40 article ref that rides along with them.
+      domain !== "principles" &&
+      domain !== "articles"
     ) {
       continue;
     }

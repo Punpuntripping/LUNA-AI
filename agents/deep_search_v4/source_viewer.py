@@ -26,6 +26,11 @@ the article/section split is gone):
   (``services.service_url``). No body: the popup is a link, not a guide.
 - ``CircularSourceView``   -- a ministerial circular (تعميم); the FULL uncapped
   ``circulars.content`` body + issuing entity name + ``circulars.source`` link.
+- ``PrincipleSourceView``  -- an official judicial principle (مبدأ قضائي): the
+  rule, its chapter, one decision per citation, the source pages and the
+  official exit (the source PDF).
+- ``ArticleFullSourceView`` -- ONE مادة (simple_search, and deep_search's
+  Article 40 pin via ``ArticleURAResult``).
 
 ``ArticleSourceView`` / ``SectionSourceView`` / ``RegulationSourceView`` are
 retained in the ``SourceView`` union ONLY so pre-v3.0 persisted ``source_view``
@@ -42,6 +47,9 @@ The ref_id formats produced by the three executor adapters are::
                                      not the ref_id itself)
     reg_compliance (circular)    ->  ``circular:<uuid>``   (the circulars.id;
                                      _build_circular_view strips the prefix)
+    reg + case (principle)       ->  ``principle:<uuid>``  (official_principles.id;
+                                     the same id from either executor)
+    ura/pinned.py (article)      ->  ``article:<uuid>``    (articles_v2.id)
 
 Example::
 
@@ -68,10 +76,18 @@ from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 # The public bucket origin, read once in the agents layer so the fetch stage and
 # this view builder cannot disagree about where a figure lives.
 from agents.deep_search_v4.ura.enrich import image_base_url
+from agents.deep_search_v4.ura.principles import (
+    fetch_principles_by_id,
+    principle_from_row,
+    principle_id_from_ref,
+    principle_title,
+)
 from agents.deep_search_v4.ura.schema import (
+    ArticleURAResult,
     CaseURAResult,
     CircularURAResult,
     ComplianceURAResult,
+    PrincipleURAResult,
     RegURAResult,
     URAResult,
 )
@@ -378,6 +394,35 @@ class RegulationSummarySourceView(BaseModel):
     """``regulations_v2.landing_url``."""
 
 
+class PrincipleSourceView(BaseModel):
+    """Click-ready payload for an **official judicial principle** (مبدأ قضائي).
+
+    Plan ``official_principles_refs.md`` §3.6 / D8. Built from the URA result
+    with no round-trip when it is hydrated (``enrich_ura`` already read the
+    row); a bare shell is hydrated by id first. Opening one is free — there is
+    no metered body behind it.
+
+    ⚠ The body field is ``text``, NOT ``content`` (the shared contract pins it).
+    The frontend's generic ``extractSourceContent`` keys on ``content``, so this
+    arm needs its own renderer — it cannot fall through to the generic one.
+    """
+
+    source_type: Literal["official_principle"] = "official_principle"
+    title: str = ""
+    """«المبدأ رقم N — {الباب}» — the same label the reference card carries."""
+    chapter: str = ""
+    """``chapter_title`` (الباب); "" when the corpus has none."""
+    text: str = ""
+    """The rule itself (``official_principles.text``), uncapped."""
+    decisions: list[dict[str, str]] = Field(default_factory=list)
+    """One ``{"body", "decision_no", "date_hijri"}`` per citation — Latin
+    digits, the body by its full name."""
+    pages: list[int] = Field(default_factory=list)
+    """Pages of the source book («ص 343»), deduped, in order."""
+    url: str = ""
+    """``source->>'source_url'`` — the official exit (the book's PDF)."""
+
+
 SourceView = Annotated[
     Union[
         ChunkSourceView,
@@ -389,6 +434,7 @@ SourceView = Annotated[
         CircularSourceView,
         ArticleFullSourceView,
         RegulationSummarySourceView,
+        PrincipleSourceView,
     ],
     Field(discriminator="source_type"),
 ]
@@ -1001,6 +1047,70 @@ async def build_regulation_summary_view(
     )
 
 
+async def _build_principle_view(
+    supabase: SupabaseClient, ura: PrincipleURAResult
+) -> PrincipleSourceView:
+    """Resolve a ``PrincipleURAResult`` -> ``PrincipleSourceView``.
+
+    No round-trip when the shell already carries its rule (every live URA does —
+    ``enrich_ura`` hydrated it). A bare shell (rule text missing) is hydrated by
+    id first; a miss falls back to whatever the shell carries, so the popup is
+    never built from nothing when something is known.
+    """
+    shell = ura
+    if not (shell.text or "").strip():
+        pid = shell.principle_id or principle_id_from_ref(shell.ref_id)
+        if pid:
+            rows = await asyncio.to_thread(fetch_principles_by_id, supabase, [pid])
+            row = rows.get(pid)
+            if row:
+                shell = principle_from_row(row, ref_id=ura.ref_id)
+
+    return PrincipleSourceView(
+        title=principle_title(shell.principle_no, shell.chapter_title),
+        chapter=shell.chapter_title or "",
+        text=_strip_line_indent((shell.text or "").strip()),
+        decisions=[
+            {
+                "body": str(d.get("body") or ""),
+                "decision_no": str(d.get("decision_no") or ""),
+                "date_hijri": str(d.get("date_hijri") or ""),
+            }
+            for d in shell.decisions or []
+        ],
+        pages=list(shell.pages or []),
+        url=(shell.source_url or "").strip(),
+    )
+
+
+async def _build_pinned_article_view(
+    supabase: SupabaseClient, ura: ArticleURAResult
+) -> ArticleFullSourceView:
+    """``ArticleURAResult`` -> the simple_search ``article_full`` view.
+
+    Delegates to :func:`build_article_full_view` — the ONE article view builder,
+    so a pinned مادة and a simple_search مادة open the identical popup. When the
+    re-read misses, the shell's own (already full) body backs the view rather
+    than leaving the reference with no source.
+    """
+    view = await build_article_full_view(
+        supabase,
+        ura.article_id,
+        article_number=ura.article_number,
+        regulation_title=ura.reg_title,
+        regulation_source_url=ura.landing_url,
+    )
+    if view is not None:
+        return view
+    return ArticleFullSourceView(
+        title=article_full_title(ura.article_number, ura.reg_title),
+        article_num=ura.article_number or None,
+        content=_strip_line_indent((ura.content or "").strip()),
+        regulation_title=ura.reg_title,
+        regulation_source_url=ura.landing_url,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entrypoint
 # ---------------------------------------------------------------------------
@@ -1014,14 +1124,16 @@ async def build_source_view(
 
     Args:
         supabase: Sync supabase-py client (driven via ``asyncio.to_thread``).
-        ura_result: One of ``RegURAResult`` | ``ComplianceURAResult`` | ``CaseURAResult``.
+        ura_result: Any member of the URA union (``RegURAResult`` |
+            ``ComplianceURAResult`` | ``CircularURAResult`` | ``CaseURAResult`` |
+            ``PrincipleURAResult`` | ``ArticleURAResult``).
 
     Returns:
         A discriminated-union ``SourceView`` instance, ready to JSON-serialize
         and ship to the frontend artifact popup.
 
     Raises:
-        TypeError: When ``ura_result`` is not one of the three URA result types.
+        TypeError: When ``ura_result`` is not a URA result type.
     """
     if isinstance(ura_result, RegURAResult):
         return await _build_reg_view(supabase, ura_result)
@@ -1031,6 +1143,10 @@ async def build_source_view(
         return await _build_service_view(supabase, ura_result)
     if isinstance(ura_result, CircularURAResult):
         return await _build_circular_view(supabase, ura_result)
+    if isinstance(ura_result, PrincipleURAResult):
+        return await _build_principle_view(supabase, ura_result)
+    if isinstance(ura_result, ArticleURAResult):
+        return await _build_pinned_article_view(supabase, ura_result)
     raise TypeError(
         f"build_source_view: unsupported URA result type {type(ura_result).__name__}"
     )
@@ -1046,6 +1162,7 @@ __all__ = [
     "CircularSourceView",
     "ArticleFullSourceView",
     "RegulationSummarySourceView",
+    "PrincipleSourceView",
     "SourceView",
     "build_source_view",
     "build_article_full_view",

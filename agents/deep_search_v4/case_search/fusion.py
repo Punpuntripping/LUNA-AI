@@ -117,8 +117,13 @@ def wrap_as_fused(candidates: list["ChannelCandidate"]) -> list["FusedCandidate"
     `list[FusedCandidate]`) can score a query's own retrieval without going
     through `rrf_fuse`. The resulting "fused_score" is just the channel
     similarity and `channel_ranks` is a one-entry dict.
+
+    `candidate_kind` is carried across so `assemble_kept_cases` can tell an
+    official principle (built from its row) from a ruling (fetched from
+    `cases`). `rrf_fuse` / `assemble_buckets` never see principles — the
+    loop feeds them rulings only.
     """
-    from .models import FusedCandidate  # local import to avoid cycle
+    from .models import CANDIDATE_KIND_CASE, FusedCandidate  # local import to avoid cycle
 
     return [
         FusedCandidate(
@@ -127,6 +132,7 @@ def wrap_as_fused(candidates: list["ChannelCandidate"]) -> list["FusedCandidate"
             channel_ranks={c.channel: c.rank},
             channel_scores={c.channel: c.score},
             row=c.row,
+            candidate_kind=getattr(c, "candidate_kind", CANDIDATE_KIND_CASE),
         )
         for c in candidates
     ]

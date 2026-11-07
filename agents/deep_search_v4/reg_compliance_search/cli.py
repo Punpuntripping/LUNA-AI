@@ -769,7 +769,9 @@ def _write_reranker_md_to_dir(
         lines.append("")
         for i, res in enumerate(rqr.results, 1):
             rel_label = "عالية" if res.relevance == "high" else "متوسطة"
-            type_label = "مادة" if res.source_type == "article" else "باب/فصل"
+            type_label = {"article": "مادة", "official_principle": "مبدأ قضائي"}.get(
+                res.source_type, "باب/فصل"
+            )
             lines.append(f"### {i}. [{type_label}] {res.title} (صلة: {rel_label})")
             if res.regulation_title:
                 lines.append(f"- **النظام:** {res.regulation_title}")

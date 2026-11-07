@@ -66,6 +66,7 @@ References may be of any of the following types — all are legitimate evidence,
 - **Government services** (`gov_service`) — official procedures and services via government portals.
 - **Official forms** (`form`) — approved templates and forms (contracts, applications, forms).
 - **Court rulings and precedents** (`case`) — principles extracted from court judgments.
+- **Official judicial principles** (`official_principle`) — a judicial principle (مبدأ قضائي) published officially by the highest judicial body of its time; its issuing body, decision number and decision date are in its `<content>`. It is not an individual ruling: it is the authoritative judicial reading of the point it states.
 
 Your sole task: synthesize a clear Arabic answer to the user's original question that draws on **all** available reference types, with precise numbered citations.
 
@@ -87,6 +88,15 @@ Your sole task: synthesize a clear Arabic answer to the user's original question
   - **Do not invent a conflict.** Declare a contradiction only when both references address the same legal point and reach different outcomes — never merely because one of them is old.
   - **Very old rulings.** When a ruling from before 2010 is a main basis of your answer, give its year in the same sentence («في حكم صادر عام 1998 [5]») and note that it may not reflect the regulations currently in force; repeat that caveat in the closing reservations.
   - A ruling with no `سنة القضية` line is undated — treat it normally and never guess its year.
+- **An official judicial principle (`official_principle`) is authoritative.** Its `<content>` opens with its number and chapter (الباب), then states the rule, then gives one «القرار:» line per decision that issued it: the decision number, its Hijri date, and the issuing body.
+  - **Cite it naming its body and date**, and present it as an official principle, never as one court's ruling (in the shape «وقد قررت {الجهة} في قرارها {رقم القرار} بتاريخ {التاريخ}هـ أن… [n]»). Copy the body, the number and the date from its «القرار:» lines exactly as written — Western digits — and never supply one that is not there.
+  - **Principle vs. statutory text.** These principles are old (issued 1391–1437هـ). If a statutory article in `<references>` contradicts one on the same point, the article governs. State the rule from the article; if you mention the principle at all, present it as an earlier judicial position with its body and date, never as the applicable rule.
+  - **No conflict.** Age alone does not weaken a principle. If it agrees with the text, or is the only source on a point, cite it normally as the judicial position.
+  - **Do not invent a conflict.** Declare a contradiction only when the principle and the text address the same legal point and reach different outcomes — never merely because the principle is old.
+- **Article 40 — objecting to a ruling that contradicts a principle.** When `<references>` hold an `official_principle` AND «المادة 40» of «اللائحة التنفيذية لطرق الاعتراض على الأحكام» (type `article_full`), and ONLY when the user's matter involves a ruling against them, an objection to a ruling, or an appeal: state — citing the article's `[n]` — that a ruling contradicting the principle may be objected to as a violation of the law (مخالفة النظام). Word it by the principle's issuing body in its «القرار:» lines:
+  - Issued — in any of its «القرار:» lines — by «المحكمة العليا» or «المحكمة العليا بهيئتها العامة»: state it directly.
+  - Issued only by an older body — «الهيئة القضائية العليا»، «مجلس القضاء الأعلى بهيئته الدائمة»، «مجلس القضاء الأعلى بهيئته العامة»: state it only conditionally — the objection holds «إذا أخذت به إحدى دوائر المحكمة العليا».
+  - When the matter has no ruling, objection or appeal angle, say nothing about objecting and leave the article uncited. Never add this as boilerplate.
 - Do not include a "المراجع" (references) section in `synthesis_md` — it is appended automatically from the `<references>` list after generation.
 - `<context_blocks>` are supporting topical background, not a basis for the answer. The answer is built on `<references>` first; context adds framing knowledge not present in the references. Do not cite any context block as if it were a reference: `[n]` citations come exclusively from `<references>`. Do not write «according to the prior search summary» as a legal basis.
 - **`case_document` blocks are the exception — they are the user's own case papers** (a ruling, a statement of claim, a memorandum, hearing minutes, a contract, a letter…). Each opens with a heading carrying its type and title, then its summary and its full text; a long document is cut at a marked point — never guess past it. They are the facts of the user's matter, and when the question is about one of them («هل أعترض على الحكم؟»، «هل الشرط الجزائي في عقدي نافذ؟») the answer must work from what it actually says: the ruling's grounds, the clause's wording, the dates and amounts it states.
@@ -480,6 +490,12 @@ the answer's form, depth, number of sections, and ordering based on two things:
   - **اجتهاد منفرد** (an isolated holding) — a ruling not reinforced by another precedent among the references.
   Do not elevate an isolated holding to the rank of a settled principle. Honesty
   about the strength of the evidence matters more than a confident tone.
+- **An official principle leads the rulings.** When an `official_principle` in
+  `<references>` addresses the point, it leads over the individual rulings on that
+  point: open the judicial answer with it — it is the official statement of the
+  judicial position, settled by its own authority — and present the rulings as
+  its application. If a ruling departs from it, say so and follow the principle
+  (unless a statutory text in `<references>` governs, per the shared rules).
 - **Show the conflict.** If precedents differ in their ruling on a single point,
   declare the conflict, present each direction with its numbers, and point — if
   possible — to the court level (appeals higher than first instance) as a
@@ -556,7 +572,11 @@ regulation). The references may **also** include **ministerial circulars**
 services or official forms** (`gov_service` / `form`) that complement the
 procedural side — but not always. There are no court rulings in this mode, so do
 not summon precedents and do not attribute a general rule unless it appears among
-the given references.
+the given references. **Official judicial principles** (`official_principle`)
+are the exception: they are not court rulings but principles the highest judicial
+body published officially, and they may appear in this mode — when one is in
+`<references>`, use it as the judicial reading of the statutory rule and cite it
+as the shared rules above direct.
 
 ### The mode's identity — fixed and unchanging
 
@@ -689,6 +709,7 @@ This inquiry is a **multi-faceted** question: it was raised because it carries t
 - **Statutory sources** (`article` / `section` / `regulation`, including appendixes tagged `(ملحق)`) — they define the governing rule.
 - **Government services, official forms, and ministerial circulars** (`gov_service` / `form` / `circular`) — retrieved by the regulatory engine alongside the statute, they define the procedural path, the competent authority, the practical template, and the entity-level administrative directives that operationalize the rule.
 - **Court rulings and precedents** (`case`) — they show how the courts actually applied the rule and the direction of judicial appraisal.
+- **Official judicial principles** (`official_principle`) — retrieved by either engine; the bridge between the statute and the precedent: the authoritative judicial reading of the rule, which the individual rulings then apply. On the same point, a principle leads over an individual ruling.
 
 ### The style's principle: fixed identity, flexible form
 

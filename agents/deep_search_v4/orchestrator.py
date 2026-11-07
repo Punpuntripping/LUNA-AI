@@ -68,6 +68,7 @@ from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.ura.case_adapter import case_to_rqr
 from agents.deep_search_v4.ura.enrich import enrich_ura
 from agents.deep_search_v4.ura.merger import build_ura_from_phases
+from agents.deep_search_v4.ura.pinned import pin_article_40
 from agents.deep_search_v4.ura.reg_adapter import reg_compliance_to_rqr
 from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
@@ -76,6 +77,7 @@ from agents.utils.agent_models import usage_by_model
 from agents.utils.conversation_memory import CONVERSATION_MEMORY_LABEL
 from agents.utils.prior_coverage import PRIOR_COVERAGE_LABEL, render_prior_coverage
 from agents.utils.tracking import track_stage
+from shared.config import get_settings
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -241,6 +243,27 @@ _PHASE_TEXT_AR = {
     "reg_compliance": "اكتمل البحث في الأنظمة والتعاميم والخدمات",
     "case": "اكتمل البحث في الأحكام القضائية",
 }
+
+# Appended to the reg phase line only while official principles are retrieved
+# (OFFICIAL_PRINCIPLES_ENABLED) — a status line must not claim a search that
+# did not run.
+_PRINCIPLES_PHASE_SUFFIX_AR = "والمبادئ القضائية"
+
+
+def _principles_enabled() -> bool:
+    """``OFFICIAL_PRINCIPLES_ENABLED`` — False on any settings failure."""
+    try:
+        return bool(getattr(get_settings(), "OFFICIAL_PRINCIPLES_ENABLED", False))
+    except Exception:  # pragma: no cover - config must never break a search
+        return False
+
+
+def _reg_phase_text() -> str:
+    """The reg phase's completion line, naming principles when they are searched."""
+    text = _PHASE_TEXT_AR["reg_compliance"]
+    if _principles_enabled():
+        return f"{text} {_PRINCIPLES_PHASE_SUFFIX_AR}"
+    return text
 
 
 def _count_sources(rqrs: list[RerankerQueryResult]) -> int:
@@ -597,14 +620,14 @@ async def _run_reg_compliance_phase(
             # Graph crashed before producing anything; surface an empty phase so
             # the orchestrator can still assemble the URA from the other two.
             _emit_progress(
-                deps, "searching", _PHASE_TEXT_AR["reg_compliance"],
+                deps, "searching", _reg_phase_text(),
                 phase="reg_compliance", sources=0, queries=0,
             )
             return ([], log_id, sectors)
 
         reg_rqrs = reg_compliance_to_rqr(reranker_results)
         _emit_progress(
-            deps, "searching", _PHASE_TEXT_AR["reg_compliance"],
+            deps, "searching", _reg_phase_text(),
             phase="reg_compliance",
             sources=_count_sources(reg_rqrs),
             queries=len(reg_rqrs),
@@ -882,6 +905,12 @@ async def run_full_loop(
         # chunk content, cross-refs, landing urls, entity names) for the surviving
         # deduped results, and drops empty-content reg results. Best-effort.
         await enrich_ura(ura, deps.supabase)
+        # Official principles (plan D6): when a 18329 principle survived, pin
+        # المادة 40 من اللائحة التنفيذية لطرق الاعتراض على الأحكام at the END of
+        # the medium tier so the aggregator can cite it. After enrich — the
+        # principles' entity_ref is only certain once hydrated. Fail-soft.
+        if _principles_enabled():
+            await pin_article_40(deps.supabase, ura)
         deps._ura = ura
         logger.info(
             "run_full_loop[%s]: URA built -- high=%d medium=%d (reg=%s cases=%s)",

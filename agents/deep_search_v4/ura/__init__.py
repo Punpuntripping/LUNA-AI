@@ -6,7 +6,8 @@ and case_search) into the aggregator. It exposes:
 
 - ``UnifiedRetrievalArtifact`` with ``high_results`` / ``medium_results``
   relevance tiers and per-domain result subclasses (``RegURAResult``,
-  ``ComplianceURAResult``, ``CircularURAResult``, ``CaseURAResult``) wired
+  ``ComplianceURAResult``, ``CircularURAResult``, ``CaseURAResult``,
+  ``PrincipleURAResult``, ``ArticleURAResult``) wired
   through a Pydantic discriminated union on the ``domain`` field.
 - ``build_ura_from_phases`` -- single-pass merger that consumes the
   shared ``RerankerQueryResult`` lists from each domain adapter and
@@ -17,10 +18,12 @@ the ``PartialURA`` intermediate have been removed.
 """
 from .merger import DOMAIN_RANK, build_ura_from_phases
 from .schema import (
+    ArticleURAResult,
     CaseURAResult,
     CircularURAResult,
     ComplianceURAResult,
     Domain,
+    PrincipleURAResult,
     RegURAResult,
     URAResult,
     URAResultBase,
@@ -35,6 +38,8 @@ __all__ = [
     "ComplianceURAResult",
     "CircularURAResult",
     "CaseURAResult",
+    "PrincipleURAResult",
+    "ArticleURAResult",
     "UnifiedRetrievalArtifact",
     "build_ura_from_phases",
     "DOMAIN_RANK",

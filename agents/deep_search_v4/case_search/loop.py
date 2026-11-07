@@ -73,7 +73,7 @@ def _resolve_reranker_max_keep(deps: "CaseSearchDeps", n_queries: int) -> int:
     )
     return clamped
 
-from .unfold_ura import assemble_kept_cases
+from .unfold_ura import assemble_kept_cases, is_principle, principle_title
 from .unfold_reranker import (
     format_bucket_for_reranker,
     format_candidate_for_reranker,
@@ -88,6 +88,9 @@ from .logger import (
     save_search_query_md,
 )
 from .models import (
+    CANDIDATE_KIND_CASE,
+    CANDIDATE_KIND_PRINCIPLE,
+    PRINCIPLE_EXTRA_KEEP,
     CaseSearchDeps,
     CaseSearchOutcome,
     CaseSearchResult,
@@ -107,9 +110,26 @@ from .prompts import (
     is_sectioned_prompt,
 )
 from .reranker import run_reranker_for_query
-from .search import search_case_section, search_cases_pipeline
+from .search import PRINCIPLE_CANDIDATES, search_case_section, search_cases_pipeline
 
 logger = logging.getLogger(__name__)
+
+
+def reranker_window(
+    cands: list["ChannelCandidate"],
+    top_n: int,
+) -> list["ChannelCandidate"]:
+    """What one reranker call is shown: the top ``top_n`` rulings, then the principles.
+
+    Official principles (official_principles_refs.md D2) sit AFTER the rulings
+    and outside the ruling cut: a plain ``cands[:top_n]`` would drop every
+    principle whenever retrieval found ``top_n`` rulings, which is nearly every
+    sub-query (the grouping floor yields 25+ cases). With no principles in the
+    list this is exactly ``cands[:top_n]``.
+    """
+    rulings = [c for c in cands if not is_principle(c)]
+    principles = [c for c in cands if is_principle(c)]
+    return rulings[:top_n] + principles[:PRINCIPLE_CANDIDATES]
 
 
 def _stamp_span(span, *, outcome: str | None = None, **attrs) -> None:
@@ -838,6 +858,28 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
                 topic_rows_kept=sum(o.topic_rows_kept for o in outcomes),
                 candidates_total=sum(o.count for o in outcomes),
             )
+            # Official-principle side-call (principle channel, flag on). Stamped
+            # only when it ran, so a run without it carries the same attrs as
+            # before. A dead side-call is NOT a failed sub-query — the rulings
+            # answered — hence its own counter instead of `failed_queries`.
+            principle_runs = [o for o in outcomes if o.principle_searched]
+            if principle_runs:
+                principle_failed = [o for o in principle_runs if o.principle_error]
+                _stamp_span(
+                    _search_span,
+                    principle_queries=len(principle_runs),
+                    principle_failed=len(principle_failed),
+                    principle_rows=sum(o.principle_rows for o in principle_runs),
+                    principle_candidates=sum(len(o.principles) for o in principle_runs),
+                )
+                if principle_failed:
+                    logger.error(
+                        "SectionedSearchNode: official-principle side-call died on "
+                        "%d/%d principle sub-queries (%s) — those sub-queries "
+                        "carry rulings only",
+                        len(principle_failed), len(principle_runs),
+                        ", ".join(sorted({o.principle_error or "?" for o in principle_failed})),
+                    )
             if failed:
                 logger.error(
                     "SectionedSearchNode: %d/%d sub-queries FAILED in transit "
@@ -861,12 +903,20 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
         # topics. The per-sub-query lists therefore ARE the reranker payload,
         # each with its own query-scoped rank and its own topic set (mirroring
         # reg_search's per-query reranker pattern — no cross-query blending).
-        state.per_query_candidates = list(zip(queries, per_query_candidates))
+        #
+        # The payload is the rulings followed by this sub-query's official
+        # principles (`outcome.principles`, empty unless the side-call ran).
+        # They join HERE and not above: the channel merge, fusion and the
+        # distinct-case count stay rulings-only.
+        per_query_payload: list[list[ChannelCandidate]] = [
+            o.candidates + o.principles for o in outcomes
+        ]
+        state.per_query_candidates = list(zip(queries, per_query_payload))
 
         # Record per-query search results for logging parity with legacy path
-        for qi, (q, cands) in enumerate(zip(queries, per_query_candidates), start=1):
-            # Same cap the reranker sees, so the forensic dump matches its input.
-            display = cands[: SectionedRerankerNode._TOP_N_PER_QUERY]
+        for qi, (q, cands) in enumerate(zip(queries, per_query_payload), start=1):
+            # Same window the reranker sees, so the forensic dump matches its input.
+            display = reranker_window(cands, SectionedRerankerNode._TOP_N_PER_QUERY)
 
             if display:
                 header = f"## {q.channel} — {q.text} ({len(cands)} نتيجة)\n"
@@ -1081,9 +1131,10 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
         # Truncate each query's list up-front so both the rendered markdown
         # AND the bucket we pass into `assemble_kept_cases` agree on what
         # position N points at — otherwise a kept decision on position 12
-        # would dereference a case the reranker never saw.
+        # would dereference a case the reranker never saw. The window keeps
+        # official principles outside the ruling cut (see `reranker_window`).
         capped_per_query: list[tuple[TypedQuery, list[ChannelCandidate]]] = [
-            (q, cands[: self._TOP_N_PER_QUERY]) for q, cands in per_query
+            (q, reranker_window(cands, self._TOP_N_PER_QUERY)) for q, cands in per_query
         ]
 
         # Dynamic result-budget model (MODE_PROFILES.md §1): per-sub-query keep
@@ -1185,6 +1236,17 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
             # `assemble_kept_cases` API works unchanged.
             keep_decisions = [d for d in decision_log if d.get("action") == "keep"]
 
+            def _pos(d: dict) -> int:
+                return int(d.get("position", 0) or 0)
+
+            # Official principles (D2) are capped on their own, below — split
+            # them out so the ruling cap here sees exactly the list it always
+            # did. Empty whenever the window holds no principle.
+            principle_pos = {i + 1 for i, c in enumerate(cands) if is_principle(c)}
+            principle_keeps = [d for d in keep_decisions if _pos(d) in principle_pos]
+            if principle_keeps:
+                keep_decisions = [d for d in keep_decisions if _pos(d) not in principle_pos]
+
             # Re-apply the keep cap to the DECISION LOG before rebuilding.
             #
             # `run_reranker_for_query` already truncated `reranker_result.results`
@@ -1212,6 +1274,27 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                 )
                 keep_decisions = keep_decisions[:reranker_max_keep]
 
+            # The principles' own cap — the twin of reranker.py's split: high
+            # before medium, then retrieval score desc, PRINCIPLE_EXTRA_KEEP
+            # slots appended after the rulings (never in place of one).
+            if principle_keeps:
+                if len(principle_keeps) > PRINCIPLE_EXTRA_KEEP:
+                    p_score_by_pos = {i + 1: c.score for i, c in enumerate(cands)}
+                    principle_keeps.sort(
+                        key=lambda d: (
+                            (d.get("relevance") or "") != "high",
+                            -p_score_by_pos.get(_pos(d), 0.0),
+                        )
+                    )
+                    logger.info(
+                        "SectionedRerankerNode q%d [%s]: principle cap truncated "
+                        "keep_decisions %d -> %d (principle_extra_keep=%d)",
+                        qi, q.channel, len(principle_keeps), PRINCIPLE_EXTRA_KEEP,
+                        PRINCIPLE_EXTRA_KEEP,
+                    )
+                    principle_keeps = principle_keeps[:PRINCIPLE_EXTRA_KEEP]
+                keep_decisions = keep_decisions + principle_keeps
+
             if keep_decisions:
                 try:
                     pseudo_bucket = wrap_as_fused(cands)
@@ -1221,13 +1304,33 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                         fused_bucket=pseudo_bucket,
                     )
                     section_count = len(reranker_result.results)
-                    if full_results:
+                    # A kept principle is built from its own row (no `cases`
+                    # fetch), so it cannot fail the way a ruling fetch can.
+                    # The section-text fallback is therefore decided on the
+                    # RULINGS alone: principles must not mask a dead fetch.
+                    # With no principle kept this is exactly `if full_results`.
+                    built_principles = [r for r in full_results if is_principle(r)]
+                    built_rulings = len(full_results) - len(built_principles)
+                    wanted_rulings = any(_pos(d) not in principle_pos for d in keep_decisions)
+                    if full_results and (built_rulings or not wanted_rulings):
                         logger.info(
                             "SectionedRerankerNode q%d [%s]: replaced %d "
                             "section-text results with %d full-content results",
                             qi, q.channel, section_count, len(full_results),
                         )
                         reranker_result.results = full_results
+                    elif built_principles:
+                        logger.warning(
+                            "SectionedRerankerNode q%d [%s]: assemble_kept_cases "
+                            "returned 0 rulings for %d kept ruling decisions — "
+                            "keeping the section-text rulings plus %d principles",
+                            qi, q.channel,
+                            len(keep_decisions) - len(principle_keeps),
+                            len(built_principles),
+                        )
+                        reranker_result.results = [
+                            r for r in reranker_result.results if not is_principle(r)
+                        ] + built_principles
                     else:
                         logger.warning(
                             "SectionedRerankerNode q%d [%s]: assemble_kept_cases "
@@ -1249,7 +1352,10 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
             # `cands` (format_bucket_for_reranker numbers candidates 1..N), so
             # candidate for position p is cands[p-1] when 1 <= p <= len(cands).
             try:
-                def _cand_title(row: dict) -> str:
+                def _cand_title(candidate: ChannelCandidate) -> str:
+                    row = candidate.row or {}
+                    if is_principle(candidate):
+                        return principle_title(row.get("principle_no"), row.get("chapter"))
                     title = " | ".join(
                         x for x in (
                             row.get("court", "") or "",
@@ -1258,6 +1364,12 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                         ) if x
                     )
                     return title or (row.get("case_ref", "") or "")
+
+                def _cand_source(candidate: ChannelCandidate) -> tuple[str, str]:
+                    """(source_table, source_type) — a principle's id is not a cases.id."""
+                    if is_principle(candidate):
+                        return "official_principles", CANDIDATE_KIND_PRINCIPLE
+                    return "cases", CANDIDATE_KIND_CASE
 
                 def _cand_topic_ref(candidate: ChannelCandidate) -> str:
                     """`topic_ref` of the TOP matched topic (topics are score-desc).
@@ -1290,16 +1402,17 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                     if not ref_id or ref_id in seen_refs:
                         continue
                     action = entry.get("action")
-                    title = _cand_title(cand.row or {})
+                    title = _cand_title(cand)
                     topic_ref = _cand_topic_ref(cand)
+                    source_table, source_type = _cand_source(cand)
                     if action in ("drop", "undecided"):
                         dropped.append({
-                            "source_table": "cases",
+                            "source_table": source_table,
                             "ref_id": ref_id,
                             "title": title,
                             "drop_reason": "llm",
                             "reasoning": entry.get("reasoning", "") or "",
-                            "source_type": "case",
+                            "source_type": source_type,
                             "topic_ref": topic_ref,
                         })
                         seen_refs.add(ref_id)
@@ -1313,12 +1426,12 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                         if ref_id in survived or (case_ref and case_ref in survived):
                             continue
                         dropped.append({
-                            "source_table": "cases",
+                            "source_table": source_table,
                             "ref_id": ref_id,
                             "title": title,
                             "drop_reason": "cap",
                             "reasoning": "",
-                            "source_type": "case",
+                            "source_type": source_type,
                             "topic_ref": topic_ref,
                         })
                         seen_refs.add(ref_id)

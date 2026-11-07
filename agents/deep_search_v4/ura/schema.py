@@ -7,8 +7,10 @@ aggregator. A single ``UnifiedRetrievalArtifact`` carries:
 
 - ``high_results`` / ``medium_results`` -- relevance-tiered buckets.
 - Per-domain result classes -- ``RegURAResult``, ``ComplianceURAResult``,
-  ``CircularURAResult``, ``CaseURAResult`` -- wired through a Pydantic
-  discriminated union on the ``domain`` field.
+  ``CircularURAResult``, ``CaseURAResult``, ``PrincipleURAResult`` (an official
+  judicial principle — the one item BOTH executors can surface) and
+  ``ArticleURAResult`` (one مادة, used only for the Article 40 pin) -- wired
+  through a Pydantic discriminated union on the ``domain`` field.
 
 v3.0 reshape (URA Two-View Reframe):
 - Each result class holds the **full unfolded data** for its kept result.
@@ -31,7 +33,20 @@ from pydantic import BaseModel, Field
 
 from shared.library.supersession import Transition
 
-Domain = Literal["regulations", "compliance", "circulars", "cases"]
+Domain = Literal[
+    "regulations",
+    "compliance",
+    "circulars",
+    "cases",
+    # An official judicial principle (``official_principles``). Shared by BOTH
+    # executors under one ``principle:<id>`` ref_id so the merger collapses a
+    # double find into one [n] (plan official_principles_refs.md D1).
+    "principles",
+    # ONE مادة (``articles_v2``). deep_search never retrieves one; it exists for
+    # the Article 40 pin (``ura/pinned.py``) and matches the wire shape
+    # simple_search already emits (``domain='articles'``, ``article_full``).
+    "articles",
+]
 
 
 # -- Cross-ref caps -- applied at projection time, not at fetch time ----------
@@ -233,6 +248,18 @@ class AggregatorItem(BaseModel):
     # aggregator can prefer the statutory text / newer rulings over an old one.
     year_gregorian: int | None = None
     referenced_regulations: list[dict] = Field(default_factory=list)
+    # principles (D5 — the FULL principle: number, chapter, rule, decisions).
+    # ``entity_name`` (above) carries the issuing bodies joined «، ».
+    principle_no: int | None = None
+    principle_chapter: str = ""
+    principle_text: str = ""
+    # Each ``{"body", "decision_no", "date_hijri"}`` — Latin digits, full body
+    # names (never the stored ``content``, which carries Arabic-Indic digits
+    # and the «م ق د» codes).
+    principle_decisions: list[dict] = Field(default_factory=list)
+    # articles (the Article 40 pin). ``reg_title`` (above) is the parent نظام.
+    article_number: str = ""
+    article_content: str = ""
 
 
 class ReferenceView(BaseModel):
@@ -288,6 +315,13 @@ class ReferenceView(BaseModel):
     # Do NOT dump a ReferenceView into a response.
     short_summary: str = ""
     summary: str = ""
+    # principles — ``entity_name`` carries the issuing bodies, ``url`` the
+    # source PDF (``official_principles.source->>'source_url'``).
+    principle_title: str = ""      # «المبدأ رقم N — {الباب}»
+    decision_line: str = ""        # «القرار 162/5 بتاريخ 24/3/1415هـ» (· joined)
+    # articles — ``reg_title`` / ``landing_url`` / ``doc_type`` are shared with
+    # the regulations domain above.
+    article_number: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -659,8 +693,135 @@ class CaseURAResult(URAResultBase):
         )
 
 
+class PrincipleURAResult(URAResultBase):
+    """Principles-domain URA result (one official judicial principle — مبدأ قضائي).
+
+    The ONE item both executors can surface (plan D1): the reg reranker keeps it
+    from ``search_topics`` and the case reranker from ``case_topics``, and both
+    adapters build this same shell under ``ref_id='principle:<official_principles.id>'``
+    (``ura/principles.principle_from_row``), so the merger's ``ref_id`` dedup
+    collapses a double find into one [n].
+
+    The reg side arrives with every field below (the search row carries them);
+    the case side with the rule text alone. ``ura/enrich.py`` hydrates every
+    principle from ``official_principles`` in one batched read, which is what
+    makes the two shells identical by the time the aggregator sees them.
+
+    ``decisions`` are the row's ``citations`` reduced to ``{"body",
+    "decision_no", "date_hijri"}`` — Latin digits, the issuing body by its FULL
+    name. Never derived from ``official_principles.content``, which carries
+    Arabic-Indic digits and the «م ق د» codes (plan D5).
+    """
+
+    domain: Literal["principles"] = "principles"
+    source_type: str = "official_principle"
+    principle_id: str
+    principle_ref: str = ""         # stored only (e.g. «18329_principles_0001»)
+    entity_ref: str = ""            # the corpus («18329»); drives the Art. 40 pin
+    principle_no: int | None = None
+    chapter_title: str = ""         # «الباب» — "" when a corpus has none
+    text: str = ""                  # the rule itself
+    decisions: list[dict] = Field(default_factory=list)
+    # Fallback for the body names when a corpus carries no citations (17486 is
+    # unclassified — the design must not assume citations exist).
+    issuing_body_names: list[str] = Field(default_factory=list)
+    source_url: str = ""            # source->>'source_url' — the official exit
+    pages: list[int] = Field(default_factory=list)  # source->'pages', deduped
+
+    def body_names(self) -> list[str]:
+        """Distinct issuing-body full names, in order of first appearance."""
+        from agents.deep_search_v4.ura.principles import principle_body_names
+
+        return principle_body_names(self.decisions, self.issuing_body_names)
+
+    def for_aggregator(self, n: int = 0) -> AggregatorItem:
+        return AggregatorItem(
+            ref_id=self.ref_id,
+            n=n,
+            domain="principles",
+            relevance=self.relevance,
+            entity_name="، ".join(self.body_names()),
+            principle_no=self.principle_no,
+            principle_chapter=self.chapter_title,
+            principle_text=self.text,
+            principle_decisions=[dict(d) for d in self.decisions],
+        )
+
+    def for_reference(self) -> ReferenceView:
+        from agents.deep_search_v4.ura.principles import (
+            principle_decision_line,
+            principle_title,
+        )
+
+        return ReferenceView(
+            ref_id=self.ref_id,
+            domain="principles",
+            source_type=self.source_type,
+            relevance=self.relevance,
+            entity_name="، ".join(self.body_names()),
+            url=self.source_url,
+            principle_title=principle_title(self.principle_no, self.chapter_title),
+            decision_line=principle_decision_line(self.decisions),
+        )
+
+
+class ArticleURAResult(URAResultBase):
+    """Articles-domain URA result (ONE مادة — ``articles_v2``).
+
+    deep_search never retrieves a مادة as an object; this exists for the
+    Article 40 pin (``ura/pinned.py``), which arrives fully hydrated — so
+    ``enrich_ura`` is a no-op for this domain.
+
+    Its projections reproduce the wire shape simple_search already ships for one
+    مادة — ``domain='articles'``, ``source_type='article_full'``,
+    ``ref_id='article:<articles_v2.id>'`` — so the backend's existing
+    ``articles`` shells, the ``article_full`` source view and the frontend arm
+    all apply unchanged.
+    """
+
+    domain: Literal["articles"] = "articles"
+    source_type: str = "article_full"
+    article_id: str
+    regulation_id: str = ""
+    article_number: str = ""        # TEXT — the corpus carries «7-4», «81 مكرر»
+    reg_title: str = ""             # parent نظام (clean_title, else title)
+    content: str = ""               # FULL articles_v2.content
+    landing_url: str = ""           # parent regulations_v2.landing_url
+    doc_type: str = ""              # parent doc_type_raw («لائحة تنفيذية» …)
+
+    def for_aggregator(self, n: int = 0) -> AggregatorItem:
+        return AggregatorItem(
+            ref_id=self.ref_id,
+            n=n,
+            domain="articles",
+            relevance=self.relevance,
+            reg_title=self.reg_title,
+            article_number=self.article_number,
+            article_content=self.content,
+        )
+
+    def for_reference(self) -> ReferenceView:
+        return ReferenceView(
+            ref_id=self.ref_id,
+            domain="articles",
+            source_type=self.source_type,
+            relevance=self.relevance,
+            reg_title=self.reg_title,
+            landing_url=self.landing_url,
+            doc_type=self.doc_type,
+            article_number=self.article_number,
+        )
+
+
 URAResult = Annotated[
-    Union[RegURAResult, ComplianceURAResult, CircularURAResult, CaseURAResult],
+    Union[
+        RegURAResult,
+        ComplianceURAResult,
+        CircularURAResult,
+        CaseURAResult,
+        PrincipleURAResult,
+        ArticleURAResult,
+    ],
     Field(discriminator="domain"),
 ]
 
@@ -697,6 +858,8 @@ __all__ = [
     "ComplianceURAResult",
     "CircularURAResult",
     "CaseURAResult",
+    "PrincipleURAResult",
+    "ArticleURAResult",
     "URAResult",
     "UnifiedRetrievalArtifact",
     "MAX_CROSS_REFS_AGG_REG",

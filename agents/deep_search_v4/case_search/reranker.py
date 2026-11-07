@@ -35,6 +35,10 @@ from agents.utils.structured_output import make_json_salvager
 
 from . import decider_rules
 from .models import (
+    CANDIDATE_KIND_CASE,
+    CANDIDATE_KIND_PRINCIPLE,
+    PRINCIPLE_EXTRA_KEEP,
+    PRINCIPLE_HEADER_AR,
     CaseRerankerClassification,
     RerankedCaseResult,
     RerankerQueryResult,
@@ -107,11 +111,14 @@ def create_reranker_agent(
 
 # -- Markdown parser -----------------------------------------------------------
 
-# Matches both the new minimal `### [N]` header and the legacy
+# Matches the new minimal `### [N]` header, the legacy
 # `### [N] حكم: <court> — <city> (<level>)` header (still used by the
-# non-sectioned search.py path).
+# non-sectioned search.py path), and the official-principle header
+# `### [N] مبدأ قضائي رسمي` (group 3). A principle header this regex missed
+# would leave its position out of `pos_to_block`, and every keep the model
+# gave it would be discarded as an "invalid position".
 _RESULT_HEADER_RE = re.compile(
-    r"^### \[(\d+)\](?:\s+حكم:\s*(.+?))?\s*$",
+    r"^### \[(\d+)\](?:\s+حكم:\s*(.+?)|\s+(" + re.escape(PRINCIPLE_HEADER_AR) + r"))?\s*$",
     re.MULTILINE,
 )
 
@@ -154,6 +161,7 @@ def _parse_case_blocks(markdown: str) -> list[dict[str, Any]]:
             "title": (m.group(2) or "").strip(),
             "rrf": rrf,
             "markdown": block_md,
+            "kind": CANDIDATE_KIND_PRINCIPLE if m.group(3) else CANDIDATE_KIND_CASE,
         })
 
     return blocks
@@ -180,10 +188,16 @@ def _assemble_case_result(block: dict, decision: dict) -> RerankedCaseResult:
     carries no `رقم القضية` / `المجالات القانونية` — they were deliberately
     dropped from the reranker view), but court / city / level are parsed for
     both, so the fallback still names a court instead of an empty string.
+
+    A third shape — the official-principle block — goes to
+    ``_assemble_principle_result``.
     """
     relevance = decision.get("relevance") or "medium"
     if relevance not in ("high", "medium"):
         relevance = "medium"
+
+    if block.get("kind") == CANDIDATE_KIND_PRINCIPLE:
+        return _assemble_principle_result(block, relevance, decision.get("reasoning", ""))
 
     md = block.get("markdown", "")
 
@@ -224,6 +238,37 @@ def _assemble_case_result(block: dict, decision: dict) -> RerankedCaseResult:
         score=block.get("rrf", 0.0),
         relevance=relevance,
         reasoning=decision.get("reasoning", ""),
+    )
+
+
+def _assemble_principle_result(
+    block: dict,
+    relevance: str,
+    reasoning: str,
+) -> RerankedCaseResult:
+    """Fallback result for a kept official-principle block.
+
+    The block shows only `الباب:` and the rule text (D4), so this carries no
+    number and no `principle_id`. It is a placeholder for the cap below:
+    ``assemble_kept_cases`` replaces it with the row-built result on the
+    sectioned path, and without an id ``ura/case_adapter.py`` drops it.
+    """
+    chapter = ""
+    rule_lines: list[str] = []
+    for line in block.get("markdown", "").split("\n")[1:]:
+        if line.startswith("الباب:") and not chapter and not rule_lines:
+            chapter = line[len("الباب:"):].strip()
+        elif line.strip():
+            rule_lines.append(line.strip())
+    return RerankedCaseResult(
+        source_type=CANDIDATE_KIND_PRINCIPLE,
+        candidate_kind=CANDIDATE_KIND_PRINCIPLE,
+        title=f"{PRINCIPLE_HEADER_AR} — {chapter}" if chapter else PRINCIPLE_HEADER_AR,
+        content="\n".join(rule_lines)[:3000],
+        court_level="supreme",
+        score=block.get("rrf", 0.0),
+        relevance=relevance,
+        reasoning=reasoning or "",
     )
 
 
@@ -286,15 +331,22 @@ async def _run_decider(
     max_keep: int,
     models: list[str],
     failures: list[str],
+    principle_positions: frozenset[int] = frozenset(),
 ) -> tuple[CaseRerankerClassification | None, dict | None, dict | None]:
     """One decider request for this sub-query → ``(classification, usage_entry, trace)``.
 
     ``classification`` is None when the caller must run qwen; the reason goes to
     ``failures``. ``usage_entry`` is set whenever a decider answered (it was
     billed), even if its answer could not be used. Never raises.
+
+    ``principle_positions`` are the official-principle blocks: they get the
+    principle rubric and their own keep rule / cap (``decider_rules``).
     """
     state = decider_rules.build_state(query, rationale, raw_markdown, planner_brief=planner_brief)
-    questions, required = decider_rules.build_questions(positions, decider_rules.channel_of(rationale))
+    questions, required = decider_rules.build_questions(
+        positions, decider_rules.channel_of(rationale),
+        principle_positions=principle_positions,
+    )
     try:
         reply = await _decider.decide(state, questions, required=required, models=models)
     except Exception as e:  # noqa: BLE001 — the engine must never break the reranker
@@ -310,7 +362,10 @@ async def _run_decider(
     usage_entry = {**reply.usage_entry, "agent": "reranker", "model": reply.model, "query": query[:80]}
     try:
         scores = decider_rules.scores_from_answers(reply.answers, positions)
-        classification = decider_rules.classify(scores, model=reply.model, max_keep=max_keep)
+        classification = decider_rules.classify(
+            scores, model=reply.model, max_keep=max_keep,
+            principle_positions=principle_positions,
+        )
     except Exception as e:  # noqa: BLE001 — unusable answer → qwen, like any decider failure
         logger.warning(
             "Reranker [%s]: decider %s answer unusable (%s) — qwen path",
@@ -364,7 +419,9 @@ async def run_reranker_for_query(
         raw_markdown: Search results in markdown format (from search_pipeline).
         model_override: Optional model registry key.
         prompt_key: Which reranker prompt variant to use.
-        max_keep: Max results to keep per sub-query (single flat cap).
+        max_keep: Max RULINGS to keep per sub-query (single flat cap).
+            Official principles are capped separately at
+            ``PRINCIPLE_EXTRA_KEEP`` on top of it.
         round_trace: Optional list; one trace dict appended per pass.
         planner_brief: Optional planner-distilled background (the
             ``planner_brief`` ``ContextBlock.body`` only — never ``case_brief``
@@ -415,6 +472,11 @@ async def run_reranker_for_query(
 
     # Map position → block
     pos_to_block: dict[int, dict] = {b["position"]: b for b in blocks}
+    # Official-principle blocks (official_principles_refs.md D2) — their own
+    # decider rubric and their own cap below. Empty unless the side-call ran.
+    principle_positions = frozenset(
+        p for p, b in pos_to_block.items() if b.get("kind") == CANDIDATE_KIND_PRINCIPLE
+    )
 
     async def _run_once(extra_note: str | None = None):
         """One agent call. Returns (classification, usage_entry) or raises."""
@@ -499,6 +561,7 @@ async def run_reranker_for_query(
             query=query, rationale=rationale, raw_markdown=raw_markdown,
             planner_brief=planner_brief, positions=list(pos_to_block),
             max_keep=max_keep, models=models, failures=decider_failures,
+            principle_positions=principle_positions,
         )
         if decider_usage is not None:   # billed even when its answer was unusable
             usage_entries.append(decider_usage)
@@ -563,7 +626,15 @@ async def run_reranker_for_query(
                 summary_note=f"خطأ في التصنيف: {str(e)[:100]}",
             ), [], []
 
-    # Apply a single flat per-sub-query keep cap. High-relevance results are
+    # Two caps, never one shared pool (official_principles_refs.md D2): the
+    # rulings keep the flat per-sub-query `max_keep` exactly as before, and the
+    # official principles get their OWN `PRINCIPLE_EXTRA_KEEP` slots, appended
+    # after the rulings — a principle never displaces a ruling, and a ruling
+    # never displaces a principle.
+    kept_principles = [r for r in kept if r.candidate_kind == CANDIDATE_KIND_PRINCIPLE]
+    kept = [r for r in kept if r.candidate_kind != CANDIDATE_KIND_PRINCIPLE]
+
+    # Rulings: a single flat per-sub-query keep cap. High-relevance results are
     # ordered ahead of medium; ties broken by score desc.
     high_results = sorted(
         [r for r in kept if r.relevance == "high"],
@@ -584,6 +655,28 @@ async def run_reranker_for_query(
             query[:40], truncated, max_keep,
         )
 
+    caps_applied: dict = {"max_keep": max_keep, "truncated_by_cap": truncated}
+
+    # Principles: high first, then score. Recorded in `caps_applied` only when
+    # the window held a principle, so a run without the side-call reports the
+    # exact dict it always did.
+    if principle_positions:
+        principle_order = sorted(
+            kept_principles,
+            key=lambda r: (r.relevance != "high", -r.score),
+        )
+        principle_truncated = max(0, len(principle_order) - PRINCIPLE_EXTRA_KEEP)
+        kept = kept + principle_order[:PRINCIPLE_EXTRA_KEEP]
+        dropped += principle_truncated
+        caps_applied["principle_extra_keep"] = PRINCIPLE_EXTRA_KEEP
+        caps_applied["principle_truncated_by_cap"] = principle_truncated
+        if principle_truncated > 0:
+            logger.info(
+                "Reranker [%s]: principle cap truncated %d results "
+                "(principle_extra_keep=%d)",
+                query[:40], principle_truncated, PRINCIPLE_EXTRA_KEEP,
+            )
+
     logger.info(
         "Reranker [%s]: %d kept, %d dropped, sufficient=%s",
         query[:40],
@@ -599,5 +692,5 @@ async def run_reranker_for_query(
         results=kept,
         dropped_count=dropped,
         summary_note=classification.summary_note,
-        caps_applied={"max_keep": max_keep, "truncated_by_cap": truncated},
+        caps_applied=caps_applied,
     ), usage_entries, decision_log

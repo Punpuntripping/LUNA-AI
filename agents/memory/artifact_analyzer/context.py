@@ -15,6 +15,11 @@ import html
 import logging
 from typing import Any, Iterable, Mapping, Sequence
 
+from agents.deep_search_v4.ura.principles import (
+    principle_body_names,
+    principle_decision_line,
+    principle_title,
+)
 from backend.app.services.masking_service import encode_active
 from shared.library.supersession import (
     aggregator_status,
@@ -39,6 +44,10 @@ _NO_SUMMARY = "(لا يوجد ملخص)"
 _NO_TITLE = "بدون عنوان"
 _CIRCULAR_HEAD_CHARS = 200
 _SERVICE_HEAD_CHARS = 600
+# A principle's rule is usually one or two sentences, so the head is most often
+# the whole rule. It is still only the summary the model chooses from: a quote
+# counts only after ``open_sources`` reads it (verify._verify_quote).
+_PRINCIPLE_HEAD_CHARS = 600
 
 
 def _esc(value: object) -> str:
@@ -108,6 +117,7 @@ def _stored_text(domain: str, row: Mapping[str, Any]) -> str:
         "cases": ("case_content",),
         "circulars": ("content",),
         "compliance": ("service_context",),
+        "principles": ("text",),
     }.get(domain, ())
     for key in keys:
         if row.get(key):
@@ -124,7 +134,37 @@ def _source_name(domain: str, row: Mapping[str, Any], chunk: Mapping[str, Any]) 
         return row.get("title") or f"حكم {row.get('court') or ''}".strip()
     if domain == "circulars":
         return row.get("title") or "تعميم"
+    if domain == "principles":
+        return _principle_name(row)
     return row.get("service_name") or row.get("intro_title") or "خدمة حكومية"
+
+
+def _principle_number(row: Mapping[str, Any]) -> int | None:
+    try:
+        value = row.get("principle_no")
+        return int(value) if value is not None and str(value).strip() else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _principle_bodies(row: Mapping[str, Any]) -> str:
+    """The issuing bodies by full name — from the decisions, else the row's list."""
+    return "، ".join(
+        principle_body_names(row.get("decisions") or [], row.get("issuing_body_names") or [])
+    )
+
+
+def _principle_name(row: Mapping[str, Any]) -> str:
+    """«المبدأ رقم N — {الباب} — {الجهة}»: the card's copy label.
+
+    ``Reference.label`` for an ``official_principle`` is title + bodies, because
+    the body alone does not tell two principles apart and the title alone does
+    not say who issued it — a reply that names this source needs both. A cited
+    principle with no search row (the artifact write is best-effort) still
+    reads «مبدأ قضائي».
+    """
+    title = principle_title(_principle_number(row), str(row.get("chapter_title") or ""))
+    return " — ".join(p for p in (title, _principle_bodies(row)) if p)
 
 
 def _cited_suffix(cited_in: Sequence[tuple[str, int]]) -> str:
@@ -162,6 +202,20 @@ def _render_block(source: SourceRow, row: Mapping[str, Any], chunk: Mapping[str,
             f"**الجهة**: {_esc(row.get('entity_name'))}",
             _esc(str(row.get("content") or "")[:_CIRCULAR_HEAD_CHARS]),
         ])
+    if domain == "principles":
+        # Its own kind, never the service fall-through below: the reranker
+        # names it «مبدأ قضائي رسمي» and so does this. Bodies and decisions come
+        # from the stored ``decisions`` (citations, Latin digits, full names).
+        title = principle_title(_principle_number(row), str(row.get("chapter_title") or ""))
+        lines = [f"### [{source.label}] مبدأ قضائي رسمي: {_esc(title)}{head}"]
+        bodies = _principle_bodies(row)
+        if bodies:
+            lines.append(f"**الجهة**: {_esc(bodies)}")
+        decisions = principle_decision_line(row.get("decisions") or [])
+        if decisions:
+            lines.append(f"**القرار**: {_esc(decisions)}")
+        lines.append(_esc(str(row.get("text") or "")[:_PRINCIPLE_HEAD_CHARS]))
+        return "\n".join(lines)
     return "\n".join([
         f"### [{source.label}] خدمة: {_esc(source.name)}{head}",
         f"**الجهة**: {_esc(row.get('provider_name'))}",

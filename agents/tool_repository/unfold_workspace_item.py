@@ -8,6 +8,7 @@ returned only ``content_md``, this returns the body PLUS a used-only,
     [2] قضية: [{case number}] {card title} — {snippet}   (cases domain)
     [3] {service name}                                   (compliance domain)
     [4] تعميم: {title} — {entity}                        (circulars domain)
+    [5] مبدأ قضائي: {title} ({bodies}، {decisions}) — {rule}  (principles domain)
 
 The numbers match the ``[n]`` citation markers in ``content_md`` (the same
 ``workspace_item_references.n``), so an agent reading the item can map any
@@ -87,6 +88,16 @@ from agents.deep_search_v4.aggregator.preprocessor import (
     build_snippet,
 )
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
+# The ONE principle row → shell builder and the card's own title / decision-line
+# helpers (``aggregator.preprocessor._reference_from_ura`` titles the card with
+# the same two) — imported, never re-derived, like ``judgment_subject`` below.
+from agents.deep_search_v4.ura.principles import (
+    PRINCIPLE_COLUMNS,
+    principle_decision_line,
+    principle_from_row,
+    principle_id_from_ref,
+    principle_title,
+)
 from agents.deep_search_v4.ura.schema import CaseURAResult
 from shared.seo.judgment_naming import judgment_subject
 # The WI preview lock — the SAME decision and cut the backend applies to the
@@ -110,6 +121,7 @@ _REGS_TABLE = "regulations_v2"
 _CASES_TABLE = "cases"
 _SERVICES_TABLE = "services"
 _CIRCULARS_TABLE = "circulars"
+_PRINCIPLES_TABLE = "official_principles"  # RLS on, service-role only
 
 # PostgREST `.in_()` batch size — matches references_service / enrich.py.
 _ID_BATCH = 150
@@ -138,6 +150,8 @@ _DOMAIN_TYPE_LABELS = {
     "cases": "قضية",
     "compliance": "خدمة حكومية",
     "circulars": "تعميم",
+    # ``DOMAIN_META.principles`` — an official judicial principle.
+    "principles": "مبدأ قضائي",
 }
 
 # ``regulations_v2.doc_type_raw`` not-determined sentinel. Normalised away so a
@@ -672,12 +686,93 @@ def _resolve_circulars(
     return lines
 
 
+def _principle_id(row: dict) -> str:
+    """``official_principles.id`` for a principles ref row.
+
+    Prefers the ``item_id`` UUID (persist mints it from the ``principle:<uuid>``
+    ref_id); falls back to the ref_id tail — but only a uuid one: the column is
+    ``uuid``, so one malformed id inside the batched ``in_`` would fail the
+    whole batch and stub every principle line, not just its own.
+    """
+    item_id = row.get("item_id")
+    if item_id:
+        return str(item_id)
+    candidate = principle_id_from_ref(row.get("ref_id") or "")
+    return candidate if _UUID_RE.match(candidate) else ""
+
+
+def _resolve_principles(
+    supabase, rows: list[dict], *, snippet_max_chars: int = _SNIPPET_MAX_CHARS,
+) -> list[SourceLine]:
+    """Build ``[n] مبدأ قضائي: {title} ({bodies}، {decisions}) — {rule}`` lines.
+
+    One batched ``official_principles`` read. Each part is the card's own:
+
+    * «مبدأ قضائي» is the panel's chip (``DOMAIN_META.principles``);
+    * the title is «المبدأ رقم N — {الباب}» — ``principle_title``, the helper
+      the card is titled with (``_reference_from_ura``);
+    * the parenthesis is the card's body line (the issuing bodies) and its
+      decision line («القرار 162/5 بتاريخ 24/3/1415هـ») — the identifiers a user
+      quotes back («مبدأ الهيئة القضائية العليا») and the agent needs to cite;
+    * the rule is the card's snippet: ``build_snippet`` on the same shell the
+      panel rebuilds (``PrincipleURAResult`` → ``text``), capped exactly as the
+      card is — so the rule text is the source line, never more than the card.
+
+    Decisions come from ``citations`` (Latin digits, bodies by full name) via the
+    shared builder, never from ``content`` (Arabic-Indic digits + codes). A row
+    that can't be resolved degrades to a stub so its ``[n]`` is never lost.
+    """
+    if not rows:
+        return []
+    n_to_principle: dict[int, str] = {}
+    for r in rows:
+        pid = _principle_id(r)
+        if pid:
+            n_to_principle[int(r["n"])] = pid
+
+    principle_rows = _select_in(
+        supabase, _PRINCIPLES_TABLE, PRINCIPLE_COLUMNS, "id",
+        list(n_to_principle.values()),
+    )
+    principle_by_id = {str(p["id"]): p for p in principle_rows if p.get("id")}
+
+    lines: list[SourceLine] = []
+    for r in rows:
+        n = int(r["n"])
+        row = principle_by_id.get(n_to_principle.get(n, ""))
+        if not row:
+            lines.append(SourceLine(n=n, text=_FALLBACK_LINE, domain="principles"))
+            continue
+        try:
+            shell = principle_from_row(row)
+            title = _cap(
+                principle_title(shell.principle_no, shell.chapter_title), snippet_max_chars,
+            )
+            bodies = _cap("، ".join(shell.body_names()), snippet_max_chars)
+            decisions = _cap(principle_decision_line(shell.decisions), snippet_max_chars)
+            rule = _one_line(build_snippet(shell, max_chars=snippet_max_chars))
+        except Exception:  # noqa: BLE001 — a preview line must not break a tool read
+            logger.debug("unfold: principle line build failed", exc_info=True)
+            lines.append(SourceLine(n=n, text=_FALLBACK_LINE, domain="principles"))
+            continue
+        chip = _DOMAIN_TYPE_LABELS["principles"]
+        # No number and no chapter → the title IS the chip («مبدأ قضائي»), so it
+        # is printed once, not as «مبدأ قضائي: مبدأ قضائي».
+        head = chip if title in ("", chip) else f"{chip}: {title}"
+        meta = "، ".join(p for p in (bodies, decisions) if p)
+        if meta:
+            head = f"{head} ({meta})"
+        text = f"{head} — {rule}" if rule else head
+        lines.append(SourceLine(n=n, text=text, domain="principles"))
+    return lines
+
+
 def resolve_used_sources(
     supabase, wi_id: str, *, snippet_max_chars: int = _SNIPPET_MAX_CHARS,
 ) -> list[SourceLine]:
     """Resolve the used-only citation manifest for a WI, sorted by ``n``.
 
-    Groups the used ref rows by domain and dispatches the four lean per-domain
+    Groups the used ref rows by domain and dispatches the five lean per-domain
     resolvers. Never raises — a resolver hiccup contributes no lines for that
     domain rather than failing the whole read.
 
@@ -692,6 +787,7 @@ def resolve_used_sources(
         return []
     by_domain: dict[str, list[dict]] = {
         "regulations": [], "cases": [], "compliance": [], "circulars": [],
+        "principles": [],
     }
     for r in refs:
         dom = r.get("domain")
@@ -706,6 +802,7 @@ def resolve_used_sources(
     lines.extend(_resolve_cases(supabase, by_domain["cases"], snippet_max_chars=cap))
     lines.extend(_resolve_compliance(supabase, by_domain["compliance"], snippet_max_chars=cap))
     lines.extend(_resolve_circulars(supabase, by_domain["circulars"], snippet_max_chars=cap))
+    lines.extend(_resolve_principles(supabase, by_domain["principles"], snippet_max_chars=cap))
     return sorted(lines, key=lambda x: x.n)
 
 

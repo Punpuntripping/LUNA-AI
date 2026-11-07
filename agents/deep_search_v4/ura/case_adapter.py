@@ -7,6 +7,15 @@ the URA 2.0 shared types. Inputs are ``CaseSearchResult.reranker_results``
 ``RerankerQueryResult``s whose ``.results`` are typed ``CaseURAResult``s.
 
 Results without a ``db_id`` are dropped (no stable URA ref_id).
+
+Official judicial principles (plan D1/D2): a kept candidate with
+``candidate_kind == "official_principle"`` is NOT a ruling. It is routed to the
+SAME shell builder the reg adapter uses (``ura/principles.principle_from_row``)
+under the SAME ``ref_id`` (``principle:<official_principles.id>``), which is
+what lets the merger collapse a principle both executors kept into one [n].
+The case side carries the rule text only; ``enrich_ura`` hydrates the rest.
+``candidate_kind`` / ``principle_id`` are read with ``getattr`` so a
+``RerankedCaseResult`` from before that field existed still routes as a case.
 """
 from __future__ import annotations
 
@@ -17,10 +26,44 @@ from agents.deep_search_v4.case_search.models import (
 from agents.deep_search_v4.shared.models import (
     RerankerQueryResult as SharedRQR,
 )
-from agents.deep_search_v4.ura.schema import CaseURAResult
+from agents.deep_search_v4.ura.principles import (
+    PRINCIPLE_SOURCE_TYPE,
+    principle_from_row,
+    principle_title,
+)
+from agents.deep_search_v4.ura.schema import CaseURAResult, PrincipleURAResult
 
 
-def _case_to_ura(r) -> CaseURAResult | None:
+def _is_principle(r) -> bool:
+    """True for a kept official principle (``candidate_kind``, default "case")."""
+    return (getattr(r, "candidate_kind", "case") or "case") == PRINCIPLE_SOURCE_TYPE
+
+
+def _principle_id(r) -> str:
+    """``official_principles.id`` — ``principle_id`` first, ``db_id`` as fallback."""
+    return (
+        (getattr(r, "principle_id", "") or "").strip()
+        or (getattr(r, "db_id", "") or "").strip()
+    )
+
+
+def _principle_to_ura(r) -> PrincipleURAResult | None:
+    """Kept principle candidate -> the shared principle shell (rule text only)."""
+    pid = _principle_id(r)
+    if not pid:
+        return None
+    return principle_from_row(
+        {"id": pid, "text": getattr(r, "content", "") or ""},
+        ref_id=f"principle:{pid}",
+        relevance=r.relevance,
+        reasoning=r.reasoning or "",
+        rrf=float(getattr(r, "score", 0.0) or 0.0),
+    )
+
+
+def _case_to_ura(r) -> CaseURAResult | PrincipleURAResult | None:
+    if _is_principle(r):
+        return _principle_to_ura(r)
     db_id = (getattr(r, "db_id", "") or "").strip()
     if not db_id:
         return None
@@ -64,7 +107,7 @@ def case_to_rqr(
 
     out: list[SharedRQR] = []
     for sq in case_rqrs:
-        typed: list[CaseURAResult] = []
+        typed: list[CaseURAResult | PrincipleURAResult] = []
         kept_forensic: list[dict] = []
         for r in sq.results or []:
             ura = _case_to_ura(r)
@@ -73,6 +116,19 @@ def case_to_rqr(
                 # forensic list stays 1:1 with the typed results.
                 continue
             typed.append(ura)
+            if isinstance(ura, PrincipleURAResult):
+                kept_forensic.append({
+                    "source_table": "official_principles",
+                    "ref_id": ura.principle_id,
+                    "title": (
+                        (getattr(r, "title", "") or "").strip()
+                        or principle_title(ura.principle_no, ura.chapter_title)
+                    ),
+                    "relevance": r.relevance,
+                    "source_type": PRINCIPLE_SOURCE_TYPE,
+                    "reasoning": r.reasoning or "",
+                })
+                continue
             # Forensic: prefer the bare cases.id UUID; fall back to db_id
             # (case_ref) only when db_uuid was not populated.
             ref_id = (getattr(r, "db_uuid", "") or "").strip() or (

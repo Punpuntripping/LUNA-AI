@@ -257,6 +257,65 @@ def _build_reranked_case_result(
     )
 
 
+# ─── Official principles ──────────────────────────────────────────────────────
+
+# Arabic-Indic → Latin digits. Titles are Latin-digit only (project policy);
+# `attrs.principle_no` is normally an int, but a string from another corpus
+# must not leak `٤٣` into a reference title.
+_LATIN_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+
+def is_principle(cand: Any) -> bool:
+    """True when a candidate / result is an official principle, not a ruling."""
+    from .models import CANDIDATE_KIND_PRINCIPLE
+
+    return getattr(cand, "candidate_kind", "") == CANDIDATE_KIND_PRINCIPLE
+
+
+def principle_title(principle_no: Any, chapter: Any) -> str:
+    """«المبدأ رقم N — {الباب}», dropping whichever half is missing (D9)."""
+    no = str(principle_no if principle_no is not None else "").strip().translate(_LATIN_DIGITS)
+    chap = str(chapter or "").strip()
+    head = f"المبدأ رقم {no}" if no else "مبدأ قضائي"
+    return f"{head} — {chap}" if chap else head
+
+
+def _build_principle_result(
+    cand: "FusedCandidate",
+    *,
+    relevance: str,
+    reasoning: str,
+) -> "RerankedCaseResult":
+    """One kept official principle, built from its candidate row — no DB hop.
+
+    The retrieval row already carries everything the contract needs (the rule
+    text, chapter, number, issuing bodies), so a principle never reaches
+    `fetch_full_cases` — its id is not a `cases.id`. `ura/enrich.py` hydrates
+    the rest (decisions, source link) from `official_principles` by id.
+    """
+    from .models import CANDIDATE_KIND_PRINCIPLE, RerankedCaseResult
+
+    row = cand.row or {}
+    principle_id = str(row.get("principle_id") or cand.case_id or "").strip()
+    return RerankedCaseResult(
+        source_type=CANDIDATE_KIND_PRINCIPLE,
+        candidate_kind=CANDIDATE_KIND_PRINCIPLE,
+        principle_id=principle_id,
+        title=principle_title(row.get("principle_no"), row.get("chapter")),
+        content=_truncate(
+            str(row.get("short_summary") or "").strip(),
+            MAX_AGGREGATOR_CONTENT_CHARS,
+        ),
+        court=row.get("court") or None,
+        court_level="supreme",
+        score=cand.fused_score,
+        relevance=relevance if relevance in ("high", "medium") else "medium",
+        reasoning=reasoning or "",
+        db_id=principle_id,
+        db_uuid=principle_id,
+    )
+
+
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 
@@ -280,6 +339,9 @@ async def assemble_kept_cases(
         RerankedCaseResult list in the original bucket order (by position).
         Positions that point outside the bucket or reference a case the DB
         can't find are skipped (logged as a warning).
+
+    Official principles in the bucket are built from their own row
+    (`_build_principle_result`) and never join the `cases` fetch.
     """
     if not kept_decisions or not fused_bucket:
         return []
@@ -301,11 +363,23 @@ async def assemble_kept_cases(
 
     # Resolve case_ids and batch-fetch full rows
     selected = [(pos, fused_bucket[pos - 1]) for pos in sorted(by_position)]
-    case_ids = [c.case_id for _, c in selected]
+    # Rulings only: a principle's id is an `official_principles.id`, and
+    # `fetch_full_cases` short-circuits on an empty list (no DB call).
+    case_ids = [c.case_id for _, c in selected if not is_principle(c)]
     full_rows = await fetch_full_cases(supabase, case_ids)
 
     out: list["RerankedCaseResult"] = []
     for pos, cand in selected:
+        if is_principle(cand):
+            dec = by_position[pos]
+            out.append(
+                _build_principle_result(
+                    cand,
+                    relevance=str(dec.get("relevance") or "medium"),
+                    reasoning=str(dec.get("reasoning") or ""),
+                )
+            )
+            continue
         full = full_rows.get(cand.case_id)
         if not full:
             logger.warning(

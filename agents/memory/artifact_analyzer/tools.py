@@ -23,6 +23,9 @@ DOMAIN_TABLES: dict[str, tuple[str, str, str]] = {
     "cases": ("cases", "case_ref", "content"),
     "circulars": ("circulars", "id", "content"),
     "compliance": ("services", "service_ref", "original_markdown"),
+    # An official judicial principle: the whole thing IS the rule (``text``).
+    # Never ``content`` — it carries Arabic-Indic digits and the «م ق د» codes.
+    "principles": ("official_principles", "id", "text"),
 }
 
 

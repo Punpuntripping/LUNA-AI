@@ -45,6 +45,8 @@ from typing import TYPE_CHECKING, Any
 # a local map here — that is exactly how the bug propagated.
 from agents.deep_search_v4.shared.court_levels import COURT_LEVEL_AR, court_level_ar
 
+from .models import CANDIDATE_KIND_PRINCIPLE, PRINCIPLE_HEADER_AR
+
 if TYPE_CHECKING:
     from .models import ChannelCandidate, FusedCandidate
 
@@ -174,6 +176,38 @@ def _format_topics_block(
     return ["الموضوعات المطابقة:", *lines]
 
 
+def _format_principle_block(
+    cand: "FusedCandidate | ChannelCandidate",
+    position: int,
+) -> str:
+    """Render one official principle (official_principles_refs.md D4):
+
+        ### [N] مبدأ قضائي رسمي
+        الباب: {chapter}            ← omitted when the corpus has none
+        {rule text}
+
+    Deliberately NOTHING else — no principle number, no decision, no issuing
+    body, no court line, no score (owner decision D4). The rule text is the
+    RPC's `short_summary`; a principle without one falls back to its best
+    topic's text, and with neither it shows the same no-data marker a ruling
+    does (the prompt drops those).
+    """
+    row = cand.row or {}
+    lines: list[str] = [f"### [{position}] {PRINCIPLE_HEADER_AR}"]
+
+    chapter = _clean(row.get("chapter"))
+    if chapter:
+        lines.append(f"الباب: {chapter}")
+
+    rule = _clean(row.get("short_summary"))
+    if not rule:
+        topics = list(getattr(cand, "topics", None) or [])
+        rule = _clean(topics[0].get("text")) if topics else ""
+    lines.append(rule or _NO_DATA)
+
+    return "\n".join(lines) + "\n"
+
+
 # ─── Formatters ───────────────────────────────────────────────────────────────
 
 
@@ -195,7 +229,13 @@ def format_candidate_for_reranker(
     the `الملخص:` line is omitted with no placeholder (trap 6). A candidate
     with neither header nor topics renders a short marker so the block is
     never empty.
+
+    An official principle (`candidate_kind == "official_principle"`) renders
+    its own shape instead — see `_format_principle_block`.
     """
+    if getattr(cand, "candidate_kind", "") == CANDIDATE_KIND_PRINCIPLE:
+        return _format_principle_block(cand, position)
+
     row = cand.row or {}
     # `topics` lives on ChannelCandidate; a FusedCandidate wrapper has none, so
     # fall back to the row (and then to empty) rather than raising.

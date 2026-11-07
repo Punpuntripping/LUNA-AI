@@ -517,6 +517,14 @@ async def record_use(
         cid = str(content_id or "").strip()
         if not user_id or not ct or not cid:
             return
+        if ct not in SHELF_CONTENT_TYPES:
+            # A type with no shelf (an official judicial principle — the
+            # resolver's ``content_type='principle'``, plan D8) is never written:
+            # ``library_items_content_type_valid`` would reject it, and the RPC +
+            # fallback insert would fail twice per reveal to say so. The reveal
+            # path already sends an EMPTY id for it; this is the second lock.
+            logger.debug("library_items: %r has no shelf — skipping record_use", ct)
+            return
         await run_db(_record_use, supabase, str(user_id), ct, cid)
     except Exception as e:  # noqa: BLE001
         # Swallow deliberately — see the docstring. Logged, never re-raised.
@@ -1076,6 +1084,8 @@ def _public_page_urls_for_reference_rows(
     ``regulation_docs``   ``item_id`` **IS** ``regulations_v2.id``     0
     ``articles``          ``articles_v2.regulation_id``                1
     ``compliance``        ``service_guides.id`` for ``item_id``        1
+    ``principles``        — (no library page; the card's exit is the   0
+                          source PDF, plan D8)
     ====================  ==========================================  ======
 
     then at most four ``ls._slug_map`` calls (judgment / circular / regulation /
@@ -1193,6 +1203,12 @@ def _public_page_urls_for_reference_rows(
             # rather than a guessed one.
             if item_id:
                 service_by_n[n] = item_id
+        elif domain == "principles":
+            # An official judicial principle has no page in our library (no
+            # wing, no sidecar slug) — its official exit is the source PDF on
+            # the card itself. Named here so the skip reads as a decision, not
+            # as the unknown-domain fall-through below. Zero lookups.
+            continue
         # Deliberately not an else-branch: an unknown future domain must fall
         # through to "no button" as well.
 

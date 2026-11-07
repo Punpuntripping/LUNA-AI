@@ -54,6 +54,15 @@ def _sha(text: str) -> str:
 # exactly that. Re-captured 2026-11-05 for the «focus follows what the user
 # asked» bullet in _SHARED_ROLE_AR (substance vs procedure, owner rule): 393
 # characters, and each length below grew by exactly that.
+#
+# Re-captured 2026-11-07, deliberately, for official judicial principles
+# (.claude/plans/official_principles_refs.md §3.5): _SHARED_ROLE_AR gained the
+# `official_principle` type bullet, the principle rule (cite with body + date;
+# a contradicting statute governs) and the Article 40 objection rule — +2,671
+# characters in every mode prompt. Each mode body gained its own sentence on top:
+# case +478 (a principle leads the rulings), reg +330 (principles are allowed
+# despite «no court rulings»), full +291 (the bridge between statute and
+# precedent). Old → new: case 16957 → 20106, reg 19791 → 22792, full 17959 → 20921.
 # ---------------------------------------------------------------------------
 
 # (constant, expected length in characters, expected sha256 of the UTF-8 bytes)
@@ -61,20 +70,20 @@ PRE_REFACTOR: list[tuple[str, str, int, str]] = [
     (
         "PROMPT_MODE_CASE",
         PROMPT_MODE_CASE,
-        16957,
-        "5d5fe6dad8eec1afa51fd748210466af046a5f645407ab45b11ae16d0fc1c89c",
+        20106,
+        "7c5775c4bdd000ba486a61dc8a5af76af4ce9a788946c6fc44e5b6d8e04bf241",
     ),
     (
         "PROMPT_MODE_REG",
         PROMPT_MODE_REG,
-        19791,
-        "e51e0f89c67de896e8c7d89e8bb217768f8670bc0fd8200b36847e93901e8cc7",
+        22792,
+        "2e106e45e4cffb2e486995713bf4f289e69e6fff333f4582a5a8752f7a783da3",
     ),
     (
         "PROMPT_MODE_FULL",
         PROMPT_MODE_FULL,
-        17959,
-        "22bd71a285bd64e6c74fa944d7a32901093228ceb4757bbf50405fff159553fc",
+        20921,
+        "0c223a9a5c90e24d37b6dc319364c96ea7aaf54545167b8aed2eff52380e7c26",
     ),
 ]
 

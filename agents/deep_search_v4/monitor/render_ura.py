@@ -52,7 +52,7 @@ def _render_cross_refs(cross_refs: Any) -> list[str]:
 
 def _render_result_block(idx: int, r: Any) -> str:
     """Render one URA v3.0 result (RegURAResult / ComplianceURAResult /
-    CaseURAResult) as a markdown block."""
+    CaseURAResult / PrincipleURAResult / ArticleURAResult) as a markdown block."""
     domain = getattr(r, "domain", "?")
     source_type = getattr(r, "source_type", "?")
     ref_id = getattr(r, "ref_id", "?")
@@ -127,6 +127,42 @@ def _render_result_block(idx: int, r: Any) -> str:
         if ref_regs:
             lines.append(f"- **referenced_regulations**: {ref_regs}")
         content = getattr(r, "case_content", "") or ""
+    elif domain == "principles":
+        # An official judicial principle (PrincipleURAResult). The decisions are
+        # printed one per line, as the aggregator reads them (plan D5).
+        for fld in (
+            "principle_id", "principle_ref", "entity_ref", "principle_no",
+            "chapter_title", "source_url",
+        ):
+            val = getattr(r, fld, None)
+            if val is not None and val != "":
+                lines.append(f"- **{fld}**: {val}")
+        bodies = getattr(r, "issuing_body_names", []) or []
+        if bodies:
+            lines.append(f"- **issuing_body_names**: {bodies}")
+        pages = getattr(r, "pages", []) or []
+        if pages:
+            lines.append(f"- **pages**: {pages}")
+        decisions = getattr(r, "decisions", []) or []
+        if decisions:
+            lines.append(f"- **decisions** ({len(decisions)}):")
+            for d in decisions:
+                d = d or {}
+                lines.append(
+                    f"  - {d.get('decision_no', '')} | {d.get('date_hijri', '')} | "
+                    f"{d.get('body', '')}"
+                )
+        content = getattr(r, "text", "") or ""
+    elif domain == "articles":
+        # ONE مادة (ArticleURAResult) — the Article 40 pin.
+        for fld in (
+            "article_id", "article_number", "regulation_id", "reg_title",
+            "doc_type", "landing_url",
+        ):
+            val = getattr(r, fld, None)
+            if val:
+                lines.append(f"- **{fld}**: {val}")
+        content = getattr(r, "content", "") or ""
 
     lines.append("")
     lines.append("**content**:")

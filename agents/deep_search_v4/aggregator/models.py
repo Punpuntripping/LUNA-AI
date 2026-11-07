@@ -49,6 +49,9 @@ class Reference(BaseModel):
         # against the wrong arm of the frontend union (a SILENT one).
         "article_full",        # one مادة, domain='articles'
         "regulation_summary",  # a whole نظام, domain='regulation_docs'
+        # An official judicial principle (مبدأ قضائي), domain='principles'
+        # (plan official_principles_refs.md §3.5).
+        "official_principle",
     ] = Field(description='Type of source')
     regulation_title: str = Field(description="Parent regulation name (Arabic)")
     article_num: Optional[str] = Field(
@@ -74,7 +77,7 @@ class Reference(BaseModel):
         description=(
             "Ref id -- reg:{chunks_v2.id} | compliance:{sha1} | case:{case_ref} "
             "| circular:{circulars.id} | article:{articles_v2.id} "
-            "| regdoc:{regulations_v2.id}"
+            "| regdoc:{regulations_v2.id} | principle:{official_principles.id}"
         ),
     )
     domain: Literal[
@@ -86,8 +89,9 @@ class Reference(BaseModel):
         # ref_id prefix is distinct per domain because `reg:` hard-assumes a
         # chunks_v2.id: a regulations_v2/articles_v2 uuid smuggled in under it
         # inserts cleanly and then renders a dead stub, with zero errors.
-        "articles",          # articles_v2 — ONE مادة
+        "articles",          # articles_v2 — ONE مادة (also deep_search's Art. 40 pin)
         "regulation_docs",   # regulations_v2 — the WHOLE نظام ('regulations' is a CHUNK)
+        "principles",        # official_principles — ONE مبدأ قضائي, from either executor
     ] = Field(
         default="regulations",
         description="Which executor / family produced this reference",
@@ -122,7 +126,18 @@ class Reference(BaseModel):
     )
     entity_name: str = Field(
         default="",
-        description="Resolved court/entity Arabic name (cases domain)",
+        description=(
+            "Resolved court/entity Arabic name (cases domain); the issuing "
+            "body full names joined «، » (principles domain)"
+        ),
+    )
+    decision_line: str = Field(
+        default="",
+        description=(
+            "Principles domain only: the decisions that issued the principle — "
+            "«القرار 162/5 بتاريخ 24/3/1415هـ», several joined « · ». Latin "
+            "digits. Empty for every other domain"
+        ),
     )
     # -- Citation identifiers (cases domain) --------------------------------
     # NOT shown on the reference card — the card's title is the ruling's
@@ -187,6 +202,11 @@ class Reference(BaseModel):
             return f"{self.regulation_title} — مادة {self.article_num}"
         if self.source_type == "section" and self.section_title:
             return f"{self.regulation_title} — {self.section_title}"
+        if self.source_type == "official_principle":
+            # «المبدأ رقم 2 — الأصول والقواعد — الهيئة القضائية العليا»: the
+            # body alone (regulation_title) does not tell two principles apart.
+            parts = [p for p in (self.title, self.regulation_title) if p]
+            return " — ".join(parts)
         return self.regulation_title
 
 

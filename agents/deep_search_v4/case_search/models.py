@@ -37,6 +37,24 @@ from agents.deep_search_v4.shared.context import ContextBlock
 CaseChannel = Literal["principle", "facts", "basis"]
 CHANNEL_NAMES: tuple[str, ...] = ("principle", "facts", "basis")
 
+# -- Official judicial principles (.claude/plans/official_principles_refs.md) --
+# A candidate is either a court ruling or an official principle
+# (`public.official_principles`, surfaced by `search_case_topics` with
+# `case_id NULL`). The kind rides on `ChannelCandidate` / `FusedCandidate` /
+# `RerankedCaseResult` so every stage can tell the two apart without
+# re-deriving it from a row shape.
+CandidateKind = Literal["case", "official_principle"]
+CANDIDATE_KIND_CASE = "case"
+CANDIDATE_KIND_PRINCIPLE = "official_principle"
+# The reranker-view header a principle block carries — `### [N] مبدأ قضائي رسمي`.
+# Shared by the formatter (unfold_reranker) and the parser (reranker) so the two
+# can never drift apart: a header the parser misses is a principle the reranker
+# can keep but the code silently cannot.
+PRINCIPLE_HEADER_AR = "مبدأ قضائي رسمي"
+# Principles get their OWN keep slots, on top of the rulings' `max_keep` (D2):
+# they never push a ruling out, and a ruling never pushes them out.
+PRINCIPLE_EXTRA_KEEP = 5
+
 
 # -- Pydantic models (LLM output) ---------------------------------------------
 
@@ -234,6 +252,19 @@ class RerankedCaseResult(BaseModel):
         default="",
         description="cases.id UUID — forensic ref_id seed (db_id stays case_ref for citations)",
     )
+    # -- Official principle (official_principles_refs.md D1/D2) ----------------
+    # A kept principle: candidate_kind="official_principle", principle_id ==
+    # db_id == db_uuid == official_principles.id, content = the rule text,
+    # title = «المبدأ رقم N — {الباب}», court = issuing bodies, court_level =
+    # supreme. `ura/case_adapter.py` routes on candidate_kind.
+    candidate_kind: CandidateKind = Field(
+        default=CANDIDATE_KIND_CASE,
+        description="case | official_principle",
+    )
+    principle_id: str = Field(
+        default="",
+        description="official_principles.id — set only on an official principle",
+    )
 
 
 class CaseSearchResult(BaseModel):
@@ -313,6 +344,11 @@ class ChannelCandidate:
     # principle → {النوع}; fact → {}. Keys may be missing on any given row.
     # `kind` is the DB `case_topic_kind` verbatim (`fact`, NOT the `facts`
     # channel spelling) so the reranker formatter needs no second translation.
+    candidate_kind: str = CANDIDATE_KIND_CASE
+    # `official_principle` → `case_id` holds official_principles.id (the RPC
+    # row has no case), and `row` carries principle_id / principle_no /
+    # chapter / court (issuing bodies) / short_summary (the rule text).
+    # Built only by `search.group_principle_rows`.
 
 
 @dataclass
@@ -379,6 +415,17 @@ class CaseSearchOutcome:
     topic_rows: int = 0             # rows the RPC returned, before any filtering
     topic_rows_kept: int = 0        # rows surviving `deps.score_threshold`
     gate_wait_ms: float = 0.0       # time queued at `shared.db_gate.search_gate`
+    # -- official principles (principle channel, OFFICIAL_PRINCIPLES_ENABLED) --
+    # Kept APART from `candidates` on purpose: `candidates` / `count` and
+    # every score above stay "rulings only", so each ruling-side consumer
+    # (channel merge, fusion, the distinct-case count) is untouched. The
+    # loop appends these after the rulings when it builds the reranker window.
+    principles: list = field(default_factory=list)  # list[ChannelCandidate], kind official_principle
+    principle_searched: bool = False  # the side-call ran for this sub-query
+    principle_rows: int = 0           # principle topic rows the side-call returned
+    principle_error: str | None = None
+    # Exception type name when the principle side-call died. It never sets
+    # `error`: the rulings answered, so the sub-query is not a failed one.
 
 
 @dataclass
@@ -395,6 +442,10 @@ class FusedCandidate:
     channel_ranks: dict[str, int]       # channel → rank (missing => not in channel)
     channel_scores: dict[str, float]    # channel → similarity score (missing => not in channel)
     row: dict                           # merged case metadata (first-seen wins for duplicates)
+    # Copied from ChannelCandidate by `fusion.wrap_as_fused`, so
+    # `assemble_kept_cases` can build a kept principle from its row instead of
+    # sending its id to a `cases` fetch. `rrf_fuse` only ever sees rulings.
+    candidate_kind: str = CANDIDATE_KIND_CASE
 
 
 @dataclass
@@ -411,7 +462,9 @@ class RerankerQueryResult:
     total_unfolds: int = 0   # always 0 for cases
     caps_applied: dict = field(default_factory=dict)
     # ``caps_applied`` carries {"max_keep", "truncated_by_cap"} when the flat
-    # keep cap was applied. Empty dict when the cap was not active.
+    # keep cap was applied. Empty dict when the cap was not active. When the
+    # reranker window held official principles it also carries
+    # {"principle_extra_keep", "principle_truncated_by_cap"} — their own cap.
     dropped_results: list = field(default_factory=list)
     # Forensic descriptors for LLM-dropped + cap-truncated cases. Each dict:
     # {db_uuid, title, reasoning, drop_reason, source_type}. Reconstructed in

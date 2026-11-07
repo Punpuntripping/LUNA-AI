@@ -484,6 +484,15 @@ class Settings(BaseSettings):
     ARTIFACT_ANALYZER_ENABLED: bool = False
     ARTIFACT_ANALYZER_USERS: Optional[str] = None
 
+    # ── Official judicial principles — .claude/plans/official_principles_refs.md
+    # Gates RETRIEVAL only: the reg and case executors' principle side-calls and
+    # the Article 40 pin after URA enrichment. Rendering, persistence and the
+    # follow-up readers are always on, so turning this off never breaks a saved
+    # panel. Migration 212 must be applied before it goes on. Env var name ==
+    # field name (no validation_alias). Settings is lru_cache'd, so a change
+    # needs the redeploy Railway does on every variable edit anyway.
+    OFFICIAL_PRINCIPLES_ENABLED: bool = False
+
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
     # OpenRouter Decisions API per sub-query, falling back down the

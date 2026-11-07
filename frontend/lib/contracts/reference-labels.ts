@@ -2,6 +2,7 @@
 // components/workspace/ReferencePanel.tsx (which imports and re-exports them),
 // so the mobile reader labels and links a reference exactly like the web.
 
+import { toLatinDigits } from "./numerals";
 import type { Reference, ReferenceDomain, SourceView } from "./references";
 
 /** Domains whose rows carry `regulations_v2.doc_type_raw`. */
@@ -54,7 +55,84 @@ export function referenceLabel(ref: Reference): string {
     if (num) return parent ? `المادة ${num} من ${parent}` : `المادة ${num}`;
     return parent || ref.ref_id || "مادة";
   }
+  if (ref.domain === "principles") {
+    // `regulation_title` on a principle is the ISSUING BODY, not a document —
+    // falling through to it would title the card «مجلس القضاء الأعلى». The
+    // backend sends «مبدأ قضائي» for a numberless row; this is the same answer.
+    return "مبدأ قضائي";
+  }
   return ref.regulation_title || ref.ref_id || "مرجع";
+}
+
+/**
+ * The issuing body(ies) of an official principle — `entity_name`, falling back
+ * to `regulation_title` (the backend fills both with the same names). "" for
+ * any other domain, and when the card's title already names the body.
+ */
+export function principleBodyLine(ref: Reference): string {
+  if (ref.domain !== "principles") return "";
+  const body = (ref.entity_name || ref.regulation_title || "").trim();
+  if (!body || referenceLabel(ref).includes(body)) return "";
+  return body;
+}
+
+/** `decision_line` of an official principle, Latin digits; "" otherwise. */
+export function principleDecisionLine(ref: Reference): string {
+  if (ref.domain !== "principles") return "";
+  return toLatinDigits((ref.decision_line ?? "").trim());
+}
+
+type PrincipleView = Extract<SourceView, { source_type: "official_principle" }>;
+
+/**
+ * One line per decision behind a principle, for the source view:
+ * «مجلس القضاء الأعلى بهيئته الدائمة — القرار 162/5 بتاريخ 24/3/1415هـ».
+ *
+ * Every part is optional-safe — the 17486 corpus carries no citations yet, and
+ * a decision missing its number or date should read shorter, never as
+ * «القرار  بتاريخ هـ». A trailing «هـ» already on the date is not doubled.
+ */
+export function principleDecisionLines(view: PrincipleView): string[] {
+  return (view.decisions ?? [])
+    .map((d) => {
+      const body = (d.body ?? "").trim();
+      const no = toLatinDigits((d.decision_no ?? "").trim());
+      const date = toLatinDigits((d.date_hijri ?? "").trim()).replace(/\s*هـ$/, "");
+      const tail = [no ? `القرار ${no}` : "", date ? `بتاريخ ${date}هـ` : ""]
+        .filter(Boolean)
+        .join(" ");
+      return [body, tail].filter(Boolean).join(" — ");
+    })
+    .filter(Boolean);
+}
+
+/**
+ * «ص 343» / «ص 343–344» / «ص 343، 350» — the principle's page(s) in its source
+ * book, as text (there is no deep link into the PDF). "" when there are none.
+ */
+export function principlePagesLabel(pages: number[] | null | undefined): string {
+  const sorted = Array.from(new Set((pages ?? []).filter((p) => Number.isFinite(p)))).sort(
+    (a, b) => a - b,
+  );
+  if (sorted.length === 0) return "";
+  if (sorted.length === 1) return `ص ${sorted[0]}`;
+  const contiguous = sorted.every((p, i) => i === 0 || p === sorted[i - 1] + 1);
+  return contiguous
+    ? `ص ${sorted[0]}–${sorted[sorted.length - 1]}`
+    : `ص ${sorted.join("، ")}`;
+}
+
+/**
+ * What «نسخ المحتوى» copies for a principle — what the dialog shows: the rule
+ * text, then its decision lines, then the page. The view's body is `text`, not
+ * `content`, so the generic extractor cannot reach it.
+ */
+export function principleSourceText(view: PrincipleView): string {
+  const text = (view.text ?? "").trim();
+  const tail = [...principleDecisionLines(view), principlePagesLabel(view.pages)].filter(
+    Boolean,
+  );
+  return [text, tail.join("\n")].filter(Boolean).join("\n\n");
 }
 
 /**
@@ -75,6 +153,8 @@ export function referenceLabel(ref: Reference): string {
  *   cases        «434939 — 1443 — وزارة العدل»               (رقم / سنة / جهة)
  *   compliance   «إصدار رخصة — وزارة التجارة»                (خدمة / مقدّمها)
  *   circulars    «تعميم بشأن مهلة السداد — البنك المركزي»    (عنوان / جهة)
+ *   principles   «المبدأ رقم 23 — الوعد — مجلس القضاء الأعلى، القرار 162/5
+ *                 بتاريخ 24/3/1415هـ»                         (مبدأ / جهة، قرار)
  *
  * A نظام is deliberately left as-is: its title IS its citation.
  *
@@ -136,6 +216,18 @@ export function referenceCopyLabel(ref: Reference): string {
     return appendOnce(title, ref.entity_name);
   }
 
+  if (ref.domain === "principles") {
+    // «المبدأ رقم 23 — الوعد — مجلس القضاء الأعلى بهيئته الدائمة، القرار 162/5
+    // بتاريخ 24/3/1415هـ» — number + الباب (both inside the title), the issuing
+    // body, then the decision that LOCATES the principle. Empty parts drop out;
+    // the body is appended once (`appendOnce`), never twice.
+    const body = (ref.entity_name || ref.regulation_title || "").trim();
+    const head = appendOnce(title, body);
+    const decision = principleDecisionLine(ref);
+    if (!decision) return head;
+    return body ? `${head}، ${decision}` : `${head} — ${decision}`;
+  }
+
   return title;
 }
 
@@ -163,6 +255,9 @@ export function sourceViewExternalUrl(view: SourceView): string {
       return view.regulation_source_url || "";
     case "regulation_summary":
       return view.regulation_source_url || "";
+    case "official_principle":
+      // The source PDF — principles have no landing page of their own.
+      return view.url || "";
     default:
       // Legacy views only (article / section / regulation). ⚠ Falling here is
       // how a new variant silently loses its «فتح المصدر الرسمي» button — no
@@ -219,6 +314,9 @@ const DEFINITE_DOMAIN_TYPE: Record<ReferenceDomain, string> = {
   circulars: "التعميم",
   articles: "المادة",
   regulation_docs: "النظام",
+  // Completes the table only: a principle has no library page (`library_url`
+  // is always null), so «فتح المبدأ في ريحان» is never actually rendered.
+  principles: "المبدأ",
 };
 
 export function referenceDefiniteType(ref: Reference): string {
@@ -280,6 +378,9 @@ export function referencePrimaryUrl(ref: Reference): string {
       // The parent نظام's landing page — a مادة is not published standalone by
       // any issuing body, so this is the honest official exit for it.
       return ref.landing_url || "";
+    case "principles":
+      // The source PDF (`official_principles.source->>'source_url'`).
+      return ref.url || "";
     default:
       // ⚠ A domain that lands here loses «فتح المصدر الرسمي» with no error.
       return "";

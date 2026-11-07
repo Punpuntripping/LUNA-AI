@@ -2,8 +2,10 @@
 
 reg_search now retrieves across FOUR source types through ``search_topics``:
 regulation + appendix chunks (`chunks_v2`), circulars (`public.circulars`), and
-government services (`public.services`). This module renders each into the
-labelled markdown block the reranker grades, dispatched on ``source_type``:
+government services (`public.services`) — plus, behind
+``OFFICIAL_PRINCIPLES_ENABLED``, official judicial principles
+(`public.official_principles`) from a side-call. This module renders each into
+the labelled markdown block the reranker grades, dispatched on ``source_type``:
 
 - **chunk** (regulation/appendix) — the historical two-shape unfold below
   (`unfold_chunk_*` + `format_chunk`); appendix chunks get a ``(ملحق)`` tag.
@@ -11,6 +13,8 @@ labelled markdown block the reranker grades, dispatched on ``source_type``:
   clamped < 1k chars).
 - **service** — `_format_service_block` (ported from the retired compliance
   loop, minus its sector line).
+- **official_principle** — `_format_principle_block` (the rule text + one
+  «الباب» line; no number, no decision, no score).
 
 The chunk (`chunks_v2`) unit is linked to one parent regulation
 (`regulations_v2`) and to its neighbours by a linked list (`prev_chunk_id` /
@@ -90,6 +94,10 @@ MAX_CIRCULAR_BLOCK_CHARS = 1_000
 # Service reranker block: compact ``service_context`` (ported from the retired
 # compliance loop, MINUS the القطاع line — D17).
 MAX_SERVICE_CONTEXT_CHARS = 600
+
+# Principle reranker block: the rule text in full. The 18329 corpus tops out at
+# ~860 chars (p99 ~360); the cap only guards a future corpus with longer rules.
+MAX_PRINCIPLE_TEXT_CHARS = 2_000
 
 
 # Columns a chunk row must carry to be unfoldable. search.py selects these from
@@ -503,6 +511,49 @@ def _format_service_block(row: dict[str, Any], label: str, score: float) -> str:
     return "\n".join(lines)
 
 
+# -- Official judicial principle (flat, no DB hop) ----------------------------
+
+
+def principle_title(row: dict[str, Any]) -> str:
+    """Display title of a principle row: «المبدأ رقم N — {الباب}».
+
+    The ``search_topics`` RPC already builds that string as the topic ``title``
+    (carried as ``topic_title``), but with a NULL chapter it ends in a bare
+    « — », which is trimmed. Without the RPC title it is rebuilt from the row.
+    Never shown to the reranker (D4) — it titles the kept result and the logs.
+    """
+    title = (row.get("topic_title") or "").strip().rstrip("—").strip()
+    if title:
+        return title
+    no = row.get("principle_no")
+    chapter = (row.get("chapter_title") or "").strip()
+    head = f"المبدأ رقم {no}" if no not in (None, "") else "مبدأ قضائي"
+    return f"{head} — {chapter}" if chapter else head
+
+
+def _format_principle_block(row: dict[str, Any], label: str) -> str:
+    """Render one ``official_principles`` row as a reranker block (D4).
+
+    Shape::
+
+        ### [Cn] مبدأ قضائي رسمي
+        **الباب:** {chapter_title}      (omitted when the corpus has no chapter)
+
+        {rule text}
+
+    Deliberately nothing else: no principle number, no decision line, no score.
+    The reranker judges the rule's subject; the number and the decisions are the
+    aggregator's view.
+    """
+    lines = [f"### [{label}] مبدأ قضائي رسمي"]
+    chapter = (row.get("chapter_title") or "").strip()
+    if chapter:
+        lines.append(f"**الباب:** {chapter}")
+    lines.append("")
+    lines.append(_truncate((row.get("text") or "").strip(), MAX_PRINCIPLE_TEXT_CHARS))
+    return "\n".join(lines)
+
+
 __all__ = [
     "CHUNK_SELECT",
     "unfold_chunk_simple",
@@ -510,5 +561,7 @@ __all__ = [
     "format_chunk",
     "_format_circular_block",
     "_format_service_block",
+    "_format_principle_block",
     "_circular_entity_name",
+    "principle_title",
 ]

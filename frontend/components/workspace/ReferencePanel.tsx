@@ -18,6 +18,7 @@ import {
   Loader2,
   Lock,
   Sparkles,
+  Landmark,
 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -57,6 +58,11 @@ import type {
 } from "@/types";
 import {
   parseWiSeq,
+  principleBodyLine,
+  principleDecisionLine,
+  principleDecisionLines,
+  principlePagesLabel,
+  principleSourceText,
   referenceDefiniteType,
   referenceLabel,
   referenceLibraryExitLabel,
@@ -159,6 +165,11 @@ interface ReferencePanelProps {
  * shade, so it reads as a narrower slice of the same wing rather than a fifth
  * unrelated colour. cases amber / compliance emerald / circulars violet are
  * untouched.
+ *
+ * - `principles`       — an official judicial principle · مبنى (Landmark) ·
+ *                        rose-600/400. Its own hue, not the rulings' amber: a
+ *                        principle is shared by both deep-search executors and
+ *                        reads as official doctrine, not as one more ruling.
  */
 const DOMAIN_META: Record<
   ReferenceDomain,
@@ -190,6 +201,11 @@ const DOMAIN_META: Record<
     label: "نظام",
     icon: BookText,
     tint: "text-sky-600 dark:text-sky-400",
+  },
+  principles: {
+    label: "مبدأ قضائي",
+    icon: Landmark,
+    tint: "text-rose-600 dark:text-rose-400",
   },
 };
 
@@ -492,6 +508,10 @@ function ReferenceCard({
 
   const primaryUrl = referencePrimaryUrl(reference);
   const label = referenceLabel(reference);
+  // Official principle only ("" for every other domain): the issuing body under
+  // the title, then the decision(s) the principle was drawn from.
+  const principleBody = principleBodyLine(reference);
+  const principleDecision = principleDecisionLine(reference);
 
   // «من WI-9» — provenance the panel has always DISPLAYED and never acted on.
   // It becomes a button only when the alias parses AND the host confirms it can
@@ -575,6 +595,13 @@ function ReferenceCard({
           <p className="mt-0.5 text-sm font-medium leading-snug text-foreground">
             {label}
           </p>
+
+          {(principleBody || principleDecision) && (
+            <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+              {principleBody && <p>{principleBody}</p>}
+              {principleDecision && <p className="tabular-nums">{principleDecision}</p>}
+            </div>
+          )}
 
           {reference.snippet && (
             <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
@@ -1158,6 +1185,9 @@ function extractSourceContent(view: SourceView): string {
   // A ruling's rendered body is its ملخص — `content` is only ever populated for
   // the few rulings that have no summary at all. Copy what is on screen.
   if (view.source_type === "case") return view.summary || view.content || "";
+  // An official principle's body is `text` (plus its decision lines) — it has
+  // no `content`, so without this branch the copy button would vanish.
+  if (view.source_type === "official_principle") return principleSourceText(view);
   // Everything else keys off ONE field name. This is why §6.1a pins the body of
   // both simple_search views to `content` (article_full = the full مادة,
   // regulation_summary = the نظام's summary): they get the body, the dialog's
@@ -1416,6 +1446,46 @@ function SourceViewContent({
             : `ملخص ${definiteType}`}
         </p>
         {sourceContent && <MarkdownRenderer content={sourceContent} />}
+      </div>
+    );
+  }
+  if (view.source_type === "official_principle") {
+    // An official judicial principle — the rule itself is the point, so it
+    // leads, verbatim (whitespace-pre-line, not markdown: the corpus text is
+    // plain prose and must not be re-parsed). Under it, in the same «المصدر»
+    // box a ruling's provenance uses: one line per decision the principle was
+    // drawn from, then the page in the source book. The PDF itself is the
+    // action bar's «فتح المصدر الرسمي»; there is no «في ريحان» exit — principles
+    // have no library page.
+    //
+    // `sourceContent` (the copy payload) is NOT rendered here — it is the same
+    // text plus these lines flattened, for the clipboard only.
+    const decisions = principleDecisionLines(view);
+    const pages = principlePagesLabel(view.pages);
+    const text = (view.text ?? "").trim();
+    return (
+      <div className="space-y-3">
+        {text && (
+          <p className="whitespace-pre-line font-medium leading-loose text-foreground">
+            {text}
+          </p>
+        )}
+        {(decisions.length > 0 || pages) && (
+          <div className="space-y-1 rounded-lg border border-border/70 bg-muted/30 p-3">
+            <p className="text-xs font-medium text-muted-foreground">المصدر</p>
+            {decisions.map((line, i) => (
+              <p
+                key={`${i}-${line}`}
+                className="text-xs leading-relaxed tabular-nums text-foreground"
+              >
+                {line}
+              </p>
+            ))}
+            {pages && (
+              <p className="text-xs tabular-nums text-muted-foreground">{pages}</p>
+            )}
+          </div>
+        )}
       </div>
     );
   }

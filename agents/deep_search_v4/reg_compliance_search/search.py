@@ -27,6 +27,19 @@ reg_search is the single retrieval executor over the unified
    rest of the chunks; flat for circular/service. ``_rrf`` = the RPC score
    copied directly. Every row carries ``source_type`` + merged RPC provenance.
 
+**Official judicial principles** (``OFFICIAL_PRINCIPLES_ENABLED``, default off;
+``.claude/plans/official_principles_refs.md`` §3.1). ``search_topics_per_chunk``
+does not carry principles, so with the flag on step 3 makes a second call,
+``search_topics(p_types => ['official_principle'], p_per_type => 10)``, right
+after the main one and inside the SAME gate slot. It never takes ``p_sectors``:
+principles are tagged with the 26 case-sector codes and the picker's Arabic
+sector names would match none of them (D7). Its rows join the one pool of step 4
+and compete in the TOP_K cut by score; they render ``flat`` and never take a
+precise slot. The side-call is fail-soft on its own — a failed principle RPC or
+content fetch costs the sub-query its principles, never its other rows, and never
+sets ``SearchOutcome.error``. The 0-rows sector retry stays keyed on the main
+rows. With the flag off nothing here runs and the output is unchanged.
+
 Replaces the legacy ``search_chunk_titles``-only pipeline (that RPC is now
 legacy — see ``planning/REG_SEARCH_V2_REFRAME.md`` and the upstream reference
 ``agentic_for_ministry/ingestion/search_topics/REFERENCE.md``).
@@ -58,6 +71,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents.deep_search_v4.sector_picker.consume import resolve_sector_filter
 from agents.deep_search_v4.shared.db_gate import SearchGateTimeout, search_gate
+from shared.config import get_settings
 
 from .models import SearchOutcome
 from .unfold_reranker import CHUNK_SELECT
@@ -84,8 +98,8 @@ PER_TYPE = 25
 TOP_K = 25
 
 # Rank-band boundary: the top-5 CHUNK rows render "precise" (prev/next context);
-# remaining chunks render "simple"; circular/service always render "flat" and
-# never consume a precise slot (D12).
+# remaining chunks render "simple"; circular/service (and official principles)
+# always render "flat" and never consume a precise slot (D12).
 PRECISE_BAND = 5
 
 # Batch size for the id-``in_`` content fetches.
@@ -110,6 +124,37 @@ SERVICE_SELECT = (
     "intro_title, intro_description, steps, requirements, required_documents, "
     "service_url, url"
 )
+
+# -- Official judicial principles (side-call, flag-gated) ---------------------
+#
+# ``search_topics`` (not the per-chunk RPC) is the one that serves principles,
+# and only when asked for them by type. One row per principle; ``title`` is
+# «المبدأ رقم N — {الباب}». ``content`` is never selected: it repeats the text
+# with Arabic-Indic digits and coded body names — ``citations`` and
+# ``issuing_body_names`` carry the same facts cleanly (plan D5).
+PRINCIPLE_RPC = "search_topics"
+PRINCIPLE_TYPE = "official_principle"
+PRINCIPLE_PER_QUERY = 10
+PRINCIPLE_SELECT = (
+    "id, principle_ref, entity_ref, principle_no, chapter_no, chapter_title, "
+    "text, citations, issuing_bodies, issuing_body_names, source"
+)
+
+# What the status lines say this executor searches. The principles wording only
+# appears with the flag on, so the flag-off event stream is unchanged.
+_CORPUS_AR = "الأنظمة والتعاميم والخدمات"
+_CORPUS_WITH_PRINCIPLES_AR = "الأنظمة والتعاميم والخدمات والمبادئ القضائية"
+
+
+def _principles_enabled() -> bool:
+    """``OFFICIAL_PRINCIPLES_ENABLED``, read per call; any doubt reads as off.
+
+    ``getattr`` so this module works whether or not the setting exists yet.
+    """
+    try:
+        return bool(getattr(get_settings(), "OFFICIAL_PRINCIPLES_ENABLED", False))
+    except Exception:  # pragma: no cover - settings that fail to load fail elsewhere
+        return False
 
 
 # -- Unified topic pipeline ---------------------------------------------------
@@ -143,7 +188,8 @@ async def search_regulations_pipeline(
 
     Returns:
         A :class:`~.models.SearchOutcome`. ``rows`` holds the fetched content
-        rows (``chunks_v2`` / ``circulars`` / ``services``) plus routing /
+        rows (``chunks_v2`` / ``circulars`` / ``services``, and
+        ``official_principles`` with the flag on) plus routing /
         provenance keys: ``source_type``, ``_mode``
         ("precise"/"simple"/"flat"), ``_rrf`` (= RPC score), and merged RPC
         fields (``topic_title``, ``doc_ref``, ``doc_id``, ``entity_ref``,
@@ -178,12 +224,16 @@ async def _search_regulations_pipeline_inner(
     events = deps._events
     # Accumulated across the (up to two) RPC calls this sub-query makes — the
     # sector-filtered one plus, when that returns 0 rows, the unfiltered retry.
+    # The principle side-call shares the first call's gate slot, so it adds no
+    # wait of its own.
     gate_wait_ms = 0.0
+    principles_on = _principles_enabled()
+    corpus_ar = _CORPUS_WITH_PRINCIPLES_AR if principles_on else _CORPUS_AR
 
     try:
         topic_ev = {
             "type": "status",
-            "text": f"جاري البحث في الأنظمة والتعاميم والخدمات: {query[:80]}...",
+            "text": f"جاري البحث في {corpus_ar}: {query[:80]}...",
         }
         events.append(topic_ev)
         # Stream the topic line LIVE. Only this one line is streamed — the ~50
@@ -214,15 +264,20 @@ async def _search_regulations_pipeline_inner(
                 filter_sectors_future, label=query[:60],
             )
 
-        # Step 3: topic RPC across all four source types.
+        # Step 3: topic RPC across all four source types (+ the principle
+        # side-call in the same gate slot when the flag is on).
         events.append({
             "type": "status",
-            "text": "جاري البحث في قاعدة بيانات الأنظمة والتعاميم والخدمات...",
+            "text": f"جاري البحث في قاعدة بيانات {corpus_ar}...",
         })
-        rows, wait_ms = await _search_topics_rpc(deps.supabase, embedding, sectors)
+        rows, principle_rows, wait_ms = await _search_topics_rpc(
+            deps.supabase, embedding, sectors, with_principles=principles_on,
+        )
         gate_wait_ms += wait_ms
 
         # 0 rows WITH a sector filter → retry once unfiltered (+ Arabic notice).
+        # Keyed on the MAIN rows only: the principle side-call took no sector
+        # filter (D7), so it is neither the trigger nor repeated.
         if not rows and sectors:
             logger.info(
                 "topic search: 0 rows with sectors %s — retrying unfiltered",
@@ -235,8 +290,12 @@ async def _search_regulations_pipeline_inner(
                     "جاري البحث بدون تصفية..."
                 ),
             })
-            rows, wait_ms = await _search_topics_rpc(deps.supabase, embedding, None)
+            rows, _, wait_ms = await _search_topics_rpc(deps.supabase, embedding, None)
             gate_wait_ms += wait_ms
+
+        # Principle rows join the ONE pool before the sort: they compete in the
+        # TOP_K cut by score like every other type. ``[]`` with the flag off.
+        rows = [*rows, *principle_rows]
 
         if not rows:
             events.append({
@@ -298,17 +357,23 @@ async def _search_regulations_pipeline_inner(
             r["source_id"] for r in merged
             if r.get("source_type") == "service"
         ]
+        principle_ids = [
+            r["source_id"] for r in merged
+            if r.get("source_type") == PRINCIPLE_TYPE
+        ]
 
-        chunk_map, circular_map, service_map = await asyncio.gather(
+        chunk_map, circular_map, service_map, principle_map = await asyncio.gather(
             _fetch_by_ids(deps.supabase, "chunks_v2", CHUNK_SELECT_TOPICS, chunk_ids),
             _fetch_by_ids(deps.supabase, "circulars", CIRCULAR_SELECT, circular_ids),
             _fetch_by_ids(deps.supabase, "services", SERVICE_SELECT, service_ids),
+            _fetch_principles(deps.supabase, principle_ids),
         )
 
         # Step 6: Band + tag. Precise for the top-5 CHUNK rows only (D12); simple
-        # for the rest of the chunks; flat for circular/service. ``_rrf`` = the
-        # RPC score copied directly. Every row carries source_type + merged RPC
-        # provenance forward (Wave 2a's type-aware adapter reads these).
+        # for the rest of the chunks; flat for circular/service/principle.
+        # ``_rrf`` = the RPC score copied directly. Every row carries
+        # source_type + merged RPC provenance forward (Wave 2a's type-aware
+        # adapter reads these).
         result_rows: list[dict] = []
         chunk_rank = 0
         for r in merged:
@@ -327,6 +392,11 @@ async def _search_regulations_pipeline_inner(
                 row["_mode"] = "flat"
             elif source_type == "service":
                 row = service_map.get(sid)
+                if row is None:
+                    continue
+                row["_mode"] = "flat"
+            elif source_type == PRINCIPLE_TYPE:
+                row = principle_map.get(sid)
                 if row is None:
                     continue
                 row["_mode"] = "flat"
@@ -362,17 +432,18 @@ async def _search_regulations_pipeline_inner(
         n_chunk = sum(1 for r in result_rows if r.get("source_type") in _CHUNK_TYPES)
         n_circular = sum(1 for r in result_rows if r.get("source_type") == "circular")
         n_service = sum(1 for r in result_rows if r.get("source_type") == "service")
+        n_principle = sum(1 for r in result_rows if r.get("source_type") == PRINCIPLE_TYPE)
         logger.info(
-            "Topic search '%s': %d rows (%d chunk / %d circular / %d service)"
-            " max_score=%.3f gate_wait=%.0fms",
+            "Topic search '%s': %d rows (%d chunk / %d circular / %d service"
+            " / %d principle of %d retrieved) max_score=%.3f gate_wait=%.0fms",
             query[:60], len(result_rows), n_chunk, n_circular, n_service,
-            max_score, gate_wait_ms,
+            n_principle, len(principle_rows), max_score, gate_wait_ms,
         )
         events.append({
             "type": "status",
             "text": (
                 f"تم استرجاع {len(result_rows)} نتيجة من "
-                f"الأنظمة والتعاميم والخدمات."
+                f"{corpus_ar}."
             ),
         })
 
@@ -404,7 +475,7 @@ async def _search_regulations_pipeline_inner(
         )
         events.append({
             "type": "status",
-            "text": "حدث خطأ أثناء البحث في الأنظمة والتعاميم والخدمات.",
+            "text": f"حدث خطأ أثناء البحث في {corpus_ar}.",
         })
         return SearchOutcome(
             rows=[], count=0,
@@ -429,7 +500,7 @@ async def _search_regulations_pipeline_inner(
         )
         events.append({
             "type": "status",
-            "text": "حدث خطأ أثناء البحث في الأنظمة والتعاميم والخدمات.",
+            "text": f"حدث خطأ أثناء البحث في {corpus_ar}.",
         })
         return SearchOutcome(
             rows=[], count=0,
@@ -445,13 +516,21 @@ async def _search_topics_rpc(
     supabase: Any,
     embedding: list[float],
     sectors: list[str] | None,
-) -> tuple[list[dict], float]:
+    *,
+    with_principles: bool = False,
+) -> tuple[list[dict], list[dict], float]:
     """Call :data:`TOPICS_RPC` across all four source types.
 
     ``p_per_type`` = :data:`PER_TYPE` (per-type quota). ``p_sectors`` is passed
     ONLY when ``sectors`` is a non-empty list — an empty list must never reach the
     RPC (``sectors && '{}'`` is always false → zero rows). Rows come back ordered
     by ``score`` DESC, one per chunk.
+
+    ``with_principles`` adds the principle side-call (:data:`PRINCIPLE_RPC`,
+    ``p_types=[official_principle]``, ``p_per_type`` = :data:`PRINCIPLE_PER_QUERY`,
+    never ``p_sectors`` — D7) AFTER the main call and inside the same gate slot.
+    It is isolated: whatever it raises is logged and read as "no principles".
+    It cannot fail the main call, and a main-call failure skips it.
 
     Runs inside the shared DB concurrency gate (2026-08-22). The per-phase
     ``asyncio.Semaphore(state.concurrency)`` in ``loop.py`` stays — it caps
@@ -463,14 +542,15 @@ async def _search_topics_rpc(
     ``httpx.ReadTimeout``.
 
     Returns:
-        ``(rows, gate_wait_ms)`` — the RPC rows plus how long this call sat
-        queued on the gate before it was let through.
+        ``(rows, principle_rows, gate_wait_ms)`` — the main RPC rows, the
+        principle side-call's rows (``[]`` when not asked for or failed), and how
+        long this call sat queued on the gate before it was let through.
 
     Raises:
         Whatever the transport or the gate raises (``httpx.ReadTimeout``,
-        ``SearchGateTimeout``, …). The pipeline above is the single place that
-        converts a raise into a typed ``SearchOutcome``; keeping this helper
-        honest means the conversion happens exactly once.
+        ``SearchGateTimeout``, …) on the MAIN call. The pipeline above is the
+        single place that converts a raise into a typed ``SearchOutcome``;
+        keeping this helper honest means the conversion happens exactly once.
     """
     def _call() -> list[dict]:
         params: dict = {
@@ -482,9 +562,31 @@ async def _search_topics_rpc(
         result = supabase.rpc(TOPICS_RPC, params).execute()
         return result.data or []
 
+    def _call_principles() -> list[dict]:
+        params = {
+            "p_query_embedding": embedding,
+            "p_types": [PRINCIPLE_TYPE],
+            "p_per_type": PRINCIPLE_PER_QUERY,
+        }
+        result = supabase.rpc(PRINCIPLE_RPC, params).execute()
+        # The type filter is the RPC's; re-checked so nothing else can ride in
+        # on this call and claim a precise slot.
+        return [r for r in (result.data or []) if r.get("source_type") == PRINCIPLE_TYPE]
+
     try:
         async with search_gate() as gate_wait_ms:
-            return (await asyncio.to_thread(_call), gate_wait_ms)
+            rows = await asyncio.to_thread(_call)
+            principle_rows: list[dict] = []
+            if with_principles:
+                try:
+                    principle_rows = await asyncio.to_thread(_call_principles)
+                except Exception as e:
+                    logger.warning(
+                        "%s principle side-call failed — continuing without "
+                        "principles: %s: %s", PRINCIPLE_RPC, type(e).__name__, e,
+                        exc_info=True,
+                    )
+            return (rows, principle_rows, gate_wait_ms)
     except SearchGateTimeout:
         # No traceback: the RPC never ran, and ``db_gate`` has already logged
         # the wait and the limit. A stack trace here would only suggest the
@@ -506,7 +608,7 @@ async def _fetch_by_ids(
 ) -> dict[str, dict]:
     """Batched ``in_("id", …)`` fetch of ``columns`` from ``table``.
 
-    One shared mechanism for all three content tables — the per-type column
+    One shared mechanism for every content table — the per-type column
     lists are payload trims, not per-type logic. Returns a ``{id: row}`` map;
     ids absent from the table simply do not appear.
     """
@@ -535,3 +637,20 @@ async def _fetch_by_ids(
             if rid:
                 out[rid] = row
     return out
+
+
+async def _fetch_principles(supabase: Any, ids: list[str]) -> dict[str, dict]:
+    """``official_principles`` content fetch, as fail-soft as the side-call.
+
+    A failure here drops this sub-query's principle rows (they find no content
+    row and are skipped in Step 6) and leaves every other row and
+    ``SearchOutcome.error`` alone. ``[]`` ids make no call at all.
+    """
+    try:
+        return await _fetch_by_ids(supabase, "official_principles", PRINCIPLE_SELECT, ids)
+    except Exception as e:
+        logger.warning(
+            "official_principles fetch failed — principles dropped from this "
+            "sub-query: %s: %s", type(e).__name__, e,
+        )
+        return {}

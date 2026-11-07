@@ -16,9 +16,15 @@ Each domain emits its own namespaced ``ref_id``:
     - compliance  -> ``"compliance:<sha1(service_ref)[:16]>"``  (services)
     - circulars   -> ``"circular:<circulars.id>"``
     - cases       -> ``"case:<db_id>"``
-Because the prefixes are disjoint, cross-DOMAIN dedup is a no-op; the merger
-still uses a single ``grouped`` dict keyed by ``ref_id`` for simplicity. The
-shared ``compliance:`` prefix still lets a service surfaced by more than one
+    - principles  -> ``"principle:<official_principles.id>"`` — minted by BOTH
+                     adapters (reg and case) for the same principle
+The merger uses a single ``grouped`` dict keyed by ``ref_id`` ACROSS both
+executors. For the four single-executor prefixes that makes cross-executor
+dedup a no-op; for ``principle:`` it is load-bearing (plan D1): a principle the
+reg reranker AND the case reranker kept collapses into one result whose
+``appears_in_sub_queries`` spans both phases' global indices, whose relevance is
+the stronger of the two and whose reasoning joins both. The shared
+``compliance:`` prefix still lets a service surfaced by more than one
 reg_compliance sub-query dedup to one ref.
 
 Sub-query indexing
@@ -27,10 +33,10 @@ Sub-queries carry a **global** index across the phases in absorption order:
 regulations first, then cases. So if reg absorbs 3 sub-queries, the first
 case sub-query lands at global index 3.
 
-Dedup semantics (within a domain)
---------------------------------
-When the same ``ref_id`` appears in multiple sub-queries of the same
-domain the merger:
+Dedup semantics
+---------------
+When the same ``ref_id`` appears in multiple sub-queries — of one executor, or
+(principles only) of both — the merger:
     - unions ``appears_in_sub_queries`` (sorted ascending),
     - lifts ``relevance`` to ``max("high" > "medium")``,
     - joins ``reasoning`` with ``"؛ "`` preserving first-seen order and
@@ -42,7 +48,7 @@ Tier split & ordering
 After dedup the merger partitions results by ``relevance`` into
 ``high_results`` and ``medium_results``. Each tier is sorted by
 ``(-DOMAIN_RANK[domain], -rrf_max)`` so higher-ranked domains (default:
-regulations > cases > compliance) surface first.
+regulations > principles > cases > circulars > compliance) surface first.
 """
 from __future__ import annotations
 
@@ -56,6 +62,7 @@ from agents.deep_search_v4.ura.schema import (
     CircularURAResult,
     ComplianceURAResult,
     Domain,
+    PrincipleURAResult,
     RegURAResult,
     UnifiedRetrievalArtifact,
 )
@@ -65,9 +72,14 @@ logger = logging.getLogger(__name__)
 # Module-level rank tables. Tweak DOMAIN_RANK in Wave D if the default
 # ordering needs to change (e.g. surface cases before regulations for
 # precedent-heavy queries). Absolute values are irrelevant -- only the relative
-# order matters (regulations > cases > circulars > compliance).
+# order matters (regulations > principles > cases > circulars > compliance).
+# An official principle sits between the statute and the individual ruling: it
+# is the authoritative judicial reading the rulings apply. ``articles`` has no
+# rank on purpose — the only article in a URA is the Article 40 pin, appended
+# after this sort (``ura/pinned.py``) so it can never take a low [n].
 DOMAIN_RANK: dict[str, int] = {
-    "regulations": 4,
+    "regulations": 5,
+    "principles": 4,
     "cases": 3,
     "circulars": 2,
     "compliance": 1,
@@ -105,7 +117,11 @@ _RELEVANCE_RANK: dict[str, int] = {"high": 2, "medium": 1}
 SUBQUERY_KEEP_WARN_THRESHOLD = 15
 
 _DomainResult = Union[
-    RegURAResult, ComplianceURAResult, CircularURAResult, CaseURAResult
+    RegURAResult,
+    ComplianceURAResult,
+    CircularURAResult,
+    CaseURAResult,
+    PrincipleURAResult,
 ]
 
 

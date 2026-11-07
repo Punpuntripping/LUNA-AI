@@ -1,6 +1,8 @@
 import { StyleSheet, View } from "react-native";
 
 import {
+  principleBodyLine,
+  principleDecisionLine,
   referenceLabel,
   referenceLibraryExitLabel,
   referencePrimaryUrl,
@@ -25,6 +27,7 @@ const DOMAIN_LABEL: Record<ReferenceDomain, string> = {
   circulars: "تعميم",
   articles: "مادة",
   regulation_docs: "نظام",
+  principles: "مبدأ قضائي",
 };
 
 export function referenceTypeLabel(ref: Reference): string {
@@ -59,6 +62,9 @@ export function ReferenceCard({ reference, onViewSource, showExits = true, snipp
   // The snippet is a raw markdown excerpt (`# …`, `## …`, `**…**`) — a
   // preview is plain text; the reader below renders the source itself.
   const snippet = plainSnippet(reference.snippet);
+  // Official principle only ("" otherwise) — same two lines as the web card.
+  const principleBody = principleBodyLine(reference);
+  const principleDecision = principleDecisionLine(reference);
 
   return (
     <View
@@ -89,6 +95,16 @@ export function ReferenceCard({ reference, onViewSource, showExits = true, snipp
           <AppText variant="sm" weight={600}>
             {referenceLabel(reference)}
           </AppText>
+          {principleBody ? (
+            <AppText variant="xs" tone="muted">
+              {principleBody}
+            </AppText>
+          ) : null}
+          {principleDecision ? (
+            <AppText variant="xs" tone="muted">
+              {principleDecision}
+            </AppText>
+          ) : null}
           {snippet ? (
             <AppText variant="xs" tone="secondary" numberOfLines={snippetLines}>
               {snippet}

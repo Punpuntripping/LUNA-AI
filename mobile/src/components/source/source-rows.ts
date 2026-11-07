@@ -1,4 +1,9 @@
-import type { SourceView } from "@contracts";
+import {
+  principleDecisionLines,
+  principlePagesLabel,
+  principleSourceText,
+  type SourceView,
+} from "@contracts";
 
 import { chunkMarkdown } from "./chunk-markdown";
 
@@ -40,6 +45,8 @@ export interface SourceRowOptions {
 /** The text «نسخ المحتوى» copies — what is on screen. Same rule as the web. */
 export function extractSourceContent(view: SourceView): string {
   if (view.source_type === "case") return view.summary || view.content || "";
+  // A principle's body is `text` (+ its decision lines) — it has no `content`.
+  if (view.source_type === "official_principle") return principleSourceText(view);
   if ("content" in view && typeof view.content === "string") return view.content;
   return "";
 }
@@ -107,6 +114,18 @@ export function sourceRows(view: SourceView, { hasFullTextExit, definiteType }: 
       const num = view.article_num?.trim();
       const heading = [num ? `المادة ${num}` : "نص المادة", view.regulation_title?.trim()].filter(Boolean).join(" — ");
       return [{ kind: "label", key: "label", text: heading }, ...mdRows(content, "md")];
+    }
+    case "official_principle": {
+      // The rule text leads, then one line per decision, then the page — the
+      // web's «المصدر» box. NOT `content` (that is the copy payload, which
+      // already folds these lines in). The PDF is the action bar's exit.
+      const rows: SourceRow[] = [...mdRows((view.text ?? "").trim(), "md")];
+      const decisions = principleDecisionLines(view);
+      const pages = principlePagesLabel(view.pages);
+      if (decisions.length > 0 || pages) rows.push({ kind: "label", key: "source-label", text: "المصدر" });
+      decisions.forEach((line, i) => rows.push({ kind: "note", key: `decision-${i}`, text: line }));
+      if (pages) rows.push({ kind: "note", key: "pages", text: pages });
+      return rows;
     }
     case "regulation_summary":
       return [

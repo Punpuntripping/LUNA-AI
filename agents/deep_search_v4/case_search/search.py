@@ -39,6 +39,7 @@ raised.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -94,6 +95,38 @@ CASE_HEADER_FIELDS: tuple[str, ...] = (
 
 # Content truncation for case formatting
 MAX_CONTENT_CHARS = 5_000
+
+# -- Official judicial principles (.claude/plans/official_principles_refs.md §3.2)
+#
+# On a `principle`-channel sub-query, and only there, a second
+# `search_case_topics` call runs against the `official_principle` kind with the
+# SAME embedding. Its rows carry `case_id NULL` and group by
+# `attrs.principle_id` (`group_principle_rows`), never by case. No sector
+# filter (decision D7 — the 38-sector mapping is a separate track).
+#
+# The 40 are TOPIC rows, not principles: a principle has several topic rows
+# plus its rule text at `topic_index=-1`, so they collapse to fewer distinct
+# principles before the cut to 8. Not yet measured live — tune both together.
+PRINCIPLE_KIND = "official_principle"
+PRINCIPLE_CHANNEL = "principle"
+PRINCIPLE_MATCH_COUNT = 40
+PRINCIPLE_CANDIDATES = 8
+
+
+def official_principles_enabled() -> bool:
+    """``OFFICIAL_PRINCIPLES_ENABLED`` — the retrieval side-call's gate.
+
+    Read through ``getattr`` with a ``False`` default so this module works
+    against a ``Settings`` that predates the field, and ``False`` when settings
+    cannot load at all (bare test env). Off ⇒ the side-call never runs and the
+    sub-query's outcome is exactly what it was before the feature.
+    """
+    try:
+        from shared.config import get_settings
+
+        return bool(getattr(get_settings(), "OFFICIAL_PRINCIPLES_ENABLED", False))
+    except Exception:  # noqa: BLE001 — settings unavailable ⇒ feature off
+        return False
 
 
 async def search_cases_pipeline(
@@ -533,14 +566,43 @@ async def _search_case_section_inner(
         # legible in the span.
         return CaseSearchOutcome(error="UnknownChannel")
 
+    # Official principles ride along on the `principle` channel only, behind
+    # the flag. Off (or another channel) ⇒ the single ruling call below runs
+    # exactly as before.
+    want_principles = (
+        query.channel == PRINCIPLE_CHANNEL and official_principles_enabled()
+    )
+    principle_rows: list[dict] = []
+    principle_error: str | None = None
+
     try:
-        rows, gate_wait_ms = await search_case_topics_rpc(
+        ruling_call = search_case_topics_rpc(
             deps.supabase,
             kind=kind,
             embedding=embedding,
             sectors=sectors or None,
             match_count=match_count,
         )
+        if want_principles:
+            # Concurrent, each on its own `search_gate` slot. `_principle_rows`
+            # never raises — a dead principle call must not cost the rulings.
+            # `return_exceptions=True` so a dead RULING call does not leave the
+            # principle task running unobserved; it is re-raised into the
+            # `except` below, which handles it exactly as before.
+            ruling_res, principle_res = await asyncio.gather(
+                ruling_call,
+                _principle_rows(deps.supabase, embedding, query.text),
+                return_exceptions=True,
+            )
+            if isinstance(ruling_res, BaseException):
+                raise ruling_res
+            rows, gate_wait_ms = ruling_res
+            if isinstance(principle_res, BaseException):  # e.g. cancelled
+                principle_error = type(principle_res).__name__
+            else:
+                principle_rows, principle_error = principle_res
+        else:
+            rows, gate_wait_ms = await ruling_call
     except Exception as e:
         # THE 2026-08-22 SITE. This used to live inside `search_case_topics_rpc`
         # as `except Exception: return []`, which made `httpx.ReadTimeout`
@@ -597,7 +659,7 @@ async def _search_case_section_inner(
         query.channel, kind, topic_rows, len(rows), len(candidates),
         max_score, gate_wait_ms, query.text[:60],
     )
-    return CaseSearchOutcome(
+    outcome = CaseSearchOutcome(
         candidates=candidates,
         count=len(candidates),
         max_score=max_score,
@@ -606,6 +668,62 @@ async def _search_case_section_inner(
         topic_rows_kept=len(rows),
         gate_wait_ms=gate_wait_ms,
     )
+
+    # Step 6: official principles — grouped by principle, not by case. The
+    # same score threshold applies (a principle survives if any of its rows
+    # clears it); the ruling scores above are deliberately left untouched.
+    if want_principles:
+        kept_principle_rows = principle_rows
+        if deps.score_threshold > 0:
+            kept_principle_rows = [
+                r for r in principle_rows
+                if (r.get("score") or 0.0) >= deps.score_threshold
+            ]
+        outcome.principles = group_principle_rows(kept_principle_rows, query.channel)
+        outcome.principle_searched = True
+        outcome.principle_rows = len(principle_rows)
+        outcome.principle_error = principle_error
+        logger.info(
+            "search_case_section [%s/%s]: %d principle rows -> %d principles%s "
+            "for '%s'",
+            query.channel, PRINCIPLE_KIND, len(principle_rows),
+            len(outcome.principles),
+            f" (side-call failed: {principle_error})" if principle_error else "",
+            query.text[:60],
+        )
+    return outcome
+
+
+async def _principle_rows(
+    supabase: Any,
+    embedding: list[float],
+    query_text: str,
+) -> tuple[list[dict], str | None]:
+    """The official-principle side-call → ``(rows, error_type_name)``. Never raises.
+
+    Isolated on purpose: a dead principle call is logged and costs this
+    sub-query its principles, never its rulings — the ruling call it runs
+    beside owns the sub-query's fate (`CaseSearchOutcome.error`). No sector
+    filter (D7). Goes through `search_case_topics_rpc`, so it queues on the
+    same process-wide `search_gate` as every other search RPC.
+    """
+    try:
+        rows, _gate_wait_ms = await search_case_topics_rpc(
+            supabase,
+            kind=PRINCIPLE_KIND,
+            embedding=embedding,
+            sectors=None,
+            match_count=PRINCIPLE_MATCH_COUNT,
+        )
+        return rows, None
+    except Exception as e:  # noqa: BLE001 — isolation is the point
+        logger.error(
+            "search_case_section [principle/%s]: side-call died (%s: %s) for "
+            "'%s' — continuing with the rulings",
+            PRINCIPLE_KIND, type(e).__name__, e, query_text[:60],
+            exc_info=True,
+        )
+        return [], type(e).__name__
 
 
 def _max_row_score(rows: list[dict[str, Any]]) -> float:
@@ -652,6 +770,9 @@ def group_topic_rows(
 
     Returns:
         Ranked list of ChannelCandidate (one per distinct case_id).
+
+    Rows with no `case_id` are skipped — that is every `official_principle`
+    row, which `group_principle_rows` groups by principle instead.
     """
     from .models import ChannelCandidate
 
@@ -715,6 +836,119 @@ def group_topic_rows(
     return candidates
 
 
+def _row_attrs(row: dict[str, Any]) -> dict[str, Any]:
+    """A topic row's `attrs` as a dict — jsonb normally, a JSON string tolerated."""
+    attrs = row.get("attrs")
+    if isinstance(attrs, dict):
+        return attrs
+    if isinstance(attrs, str) and attrs.strip():
+        try:
+            parsed = json.loads(attrs)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def group_principle_rows(
+    rows: list[dict[str, Any]],
+    channel: str,
+    *,
+    limit: int = PRINCIPLE_CANDIDATES,
+) -> list["ChannelCandidate"]:
+    """Group `official_principle` topic rows into one candidate per principle.
+
+    The `search_case_topics('official_principle', …)` branch returns `case_id
+    NULL` on every row, so `group_topic_rows` would drop them all; here the key
+    is `attrs.principle_id` (top-level `principle_id` tolerated). Per principle:
+
+    - score = its best topic row's score (best-scoring topic wins);
+    - the rule text = the RPC's `short_summary` (the same on every row of one
+      principle), else the `topic_index=-1` row's text, which IS the rule;
+    - the header the RPC joins on — `court` (issuing bodies joined «، »),
+      `court_level` (`supreme`), `case_number` (decision numbers),
+      `date_hijri` (decision dates) — is carried for forensics only; the
+      reranker view shows the chapter and the rule and nothing else (D4).
+
+    Ranked by score, insertion order breaking ties, and cut to `limit`
+    (`PRINCIPLE_CANDIDATES`). Every candidate is tagged
+    `candidate_kind="official_principle"` and its `case_id` is the
+    principle's id. Rows with no principle id are skipped.
+    """
+    from .models import CANDIDATE_KIND_PRINCIPLE, ChannelCandidate
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        attrs = _row_attrs(row)
+        principle_id = str(
+            attrs.get("principle_id") or row.get("principle_id") or ""
+        ).strip()
+        if not principle_id:
+            continue
+        score = float(row.get("score") or 0.0)
+        topic_text = (row.get("topic_text") or row.get("text") or "").strip()
+        entry = grouped.get(principle_id)
+        if entry is None:
+            entry = {
+                "row": {
+                    "principle_id": principle_id,
+                    "principle_no": attrs.get("principle_no"),
+                    "chapter": str(attrs.get("chapter") or "").strip(),
+                    "court": row.get("court"),
+                    "court_level": row.get("court_level") or "supreme",
+                    "case_number": row.get("case_number"),
+                    "date_hijri": row.get("date_hijri"),
+                    "short_summary": "",
+                },
+                "topics": [],
+                "score": score,
+                "order": len(grouped),
+            }
+            grouped[principle_id] = entry
+        if score > entry["score"]:
+            entry["score"] = score
+        header = entry["row"]
+        if not header["short_summary"]:
+            header["short_summary"] = str(row.get("short_summary") or "").strip()
+        if not header["short_summary"] and row.get("topic_index") == -1:
+            header["short_summary"] = topic_text
+        entry["topics"].append({
+            "topic_ref": row.get("topic_ref") or "",
+            "topic_index": row.get("topic_index"),
+            "text": topic_text,
+            "attrs": attrs,
+            "score": score,
+            "kind": row.get("kind") or PRINCIPLE_KIND,
+        })
+
+    ordered = sorted(
+        grouped.items(),
+        key=lambda kv: (-kv[1]["score"], kv[1]["order"]),
+    )[: max(0, limit)]
+
+    candidates: list[ChannelCandidate] = []
+    for i, (principle_id, entry) in enumerate(ordered, start=1):
+        row = dict(entry["row"])
+        row["score"] = entry["score"]
+        candidates.append(
+            ChannelCandidate(
+                case_id=principle_id,
+                channel=channel,
+                rank=i,
+                score=entry["score"],
+                row=row,
+                topics=sorted(
+                    entry["topics"],
+                    key=lambda t: float(t.get("score") or 0.0),
+                    reverse=True,
+                ),
+                candidate_kind=CANDIDATE_KIND_PRINCIPLE,
+            )
+        )
+    return candidates
+
+
 async def search_case_topics_rpc(
     supabase: Any,
     *,
@@ -729,6 +963,8 @@ async def search_case_topics_rpc(
 
         search_case_topics(
             p_kind            case_topic_kind,   -- principle | fact | basis
+                                                 -- | official_principle (case_id
+                                                 --   NULL; see group_principle_rows)
             p_query_embedding vector(1024),
             p_sectors         text[] DEFAULT NULL,
             p_match_count     int    DEFAULT 60

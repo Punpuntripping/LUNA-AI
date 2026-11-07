@@ -9,10 +9,12 @@ content-fetch dispatch (which table, which column list, which ids).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agents.deep_search_v4.reg_compliance_search import search as search_mod
 from agents.deep_search_v4.reg_compliance_search.models import RegComplianceSearchDeps
 
 
@@ -174,6 +176,43 @@ def service_content(source_id: str, **over) -> dict:
 def regulation_meta_row(reg_id: str, name: str = "نظام العمل", scope: str = "نطاق النظام") -> dict:
     """A ``regulations_v2`` meta row (clean_title/title/scope for the chunk unfold)."""
     return {"id": reg_id, "clean_title": name, "title": name, "scope": scope}
+
+
+def principle_content(source_id: str, **over) -> dict:
+    """An ``official_principles`` content row (PRINCIPLE_SELECT columns)."""
+    base = {
+        "id": source_id,
+        "principle_ref": f"18329_p_{source_id}",
+        "entity_ref": "18329",
+        "principle_no": 12,
+        "chapter_no": 3,
+        "chapter_title": "الوعد",
+        "text": f"الوعد ملزم للواعد قضاءً إذا دخل الموعود بسببه في كلفة ({source_id}).",
+        "citations": [{"body": "ك ع", "decision_no": "123", "date_hijri": "1435/5/1"}],
+        "issuing_bodies": ["ك ع"],
+        "issuing_body_names": ["المحكمة العليا"],
+        "source": {"source_url": "https://example.gov.sa/book.pdf", "pages": [343]},
+    }
+    base.update(over)
+    return base
+
+
+# -- Flag fixtures ------------------------------------------------------------
+
+
+def principles_flag(enabled: bool | None) -> SimpleNamespace:
+    """A settings stand-in; ``None`` = the setting does not exist at all."""
+    if enabled is None:
+        return SimpleNamespace()
+    return SimpleNamespace(OFFICIAL_PRINCIPLES_ENABLED=enabled)
+
+
+@pytest.fixture(autouse=True)
+def _official_principles_off(monkeypatch):
+    """Every test starts with ``OFFICIAL_PRINCIPLES_ENABLED`` off, whatever the
+    local ``.env`` says — the flag-off pipeline is what the older tests pin.
+    Tests that want the side-call re-patch ``search_mod.get_settings``."""
+    monkeypatch.setattr(search_mod, "get_settings", lambda: principles_flag(False))
 
 
 # -- Deps fixtures ------------------------------------------------------------

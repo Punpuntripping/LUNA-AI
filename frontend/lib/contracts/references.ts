@@ -21,6 +21,17 @@
  * - `regulation_docs`  — a WHOLE نظام (`regulations_v2.id`), `ref_id` =
  *                        `regdoc:<uuid>`
  *
+ * And one deep_search addition:
+ *
+ * - `principles`       — one official judicial principle «مبدأ قضائي»
+ *                        (`official_principles.id`), `ref_id` =
+ *                        `principle:<uuid>`. Shared by BOTH deep-search
+ *                        executors (regulations and cases), which is why it is
+ *                        its own wing and not a `cases` row: the merger dedups
+ *                        the two finds on this one `ref_id`. No library page —
+ *                        `library_url` is always null; the only exit is the
+ *                        source PDF on `url`.
+ *
  * ⚠ NEVER give either of them the `reg:` prefix. `domain='regulations'` hard-
  * assumes the id is a `chunks_v2.id`; a regulation/article uuid passes the uuid
  * check, inserts cleanly, then resolves to nothing on read and renders a dead
@@ -37,7 +48,8 @@ export type ReferenceDomain =
   | 'cases'
   | 'circulars'
   | 'articles'
-  | 'regulation_docs';
+  | 'regulation_docs'
+  | 'principles';
 
 export type ReferenceSourceType =
   | 'article'
@@ -53,7 +65,9 @@ export type ReferenceSourceType =
   // the backend's Pydantic discriminated union duplicate discriminator values
   // (an import-time crash) and the frontend union a silent wrong-arm match.
   | 'article_full'
-  | 'regulation_summary';
+  | 'regulation_summary'
+  // deep_search official judicial principle («مبدأ قضائي»), domain `principles`.
+  | 'official_principle';
 
 /** One resolved cross-reference from a regulation chunk to a target unit. */
 export interface CrossRef {
@@ -267,6 +281,37 @@ export type SourceView =
       /** ``regulations_v2.landing_url`` — the ONE external exit. */
       regulation_source_url: string;
     }
+  // ---- deep_search official principle ---------------------------------------
+  // Same ⚠ as the simple_search pair above: this arm MUST stay above the
+  // permissive legacy arm, and its discriminator must never overlap it.
+  | {
+      /**
+       * ONE official judicial principle (`official_principles`), opened FREE —
+       * the reveal answers `balance: null` like a policy-open service and
+       * writes nothing to «مكتبتي».
+       *
+       * ⚠ The body is `text`, NOT `content`. `extractSourceContent` therefore
+       * needs (and has) its own branch for this arm — the generic
+       * `"content" in view` fall-through would copy nothing.
+       */
+      source_type: 'official_principle';
+      /** «المبدأ رقم 23 — الوعد»; «مبدأ قضائي» when the row has no number. */
+      title: string;
+      /** «الباب» — "" when the corpus has no chapters (e.g. 17486). */
+      chapter: string;
+      /** The rule text, verbatim. */
+      text: string;
+      /**
+       * The decisions the principle was drawn from, one per citation. Every
+       * field is Latin-digit text from `official_principles.citations`; `body`
+       * is the issuing body's FULL name, never the «م ق د» code.
+       */
+      decisions: { body: string; decision_no: string; date_hijri: string }[];
+      /** Page(s) in the source book — rendered as text («ص 343»). May be []. */
+      pages: number[];
+      /** The source PDF (`source->>'source_url'`) — the ONE external exit. */
+      url: string;
+    }
   // Legacy variants — retained for reload of pre-URA-v3.0 artifacts.
   | {
       source_type: 'article' | 'section' | 'regulation';
@@ -309,6 +354,15 @@ export interface Reference {
    */
   case_number?: string;
   hijri_year?: string;
+  /**
+   * The decision(s) behind an official principle — «القرار 162/5 بتاريخ
+   * 24/3/1415هـ», several joined « · ». Latin digits. Rendered under the
+   * principle card's issuing-body line and appended to its copy label.
+   *
+   * Optional and present on the wire for every domain, but only `principles`
+   * populates it; absent on blog snapshots frozen before it shipped.
+   */
+  decision_line?: string;
   /**
    * `regulations_v2.doc_type_raw` — the document's own Arabic type
    * (لائحة / تنظيم / دليل / مواصفة قياسية / …). Rendered as the card's type

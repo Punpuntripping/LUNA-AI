@@ -12,6 +12,12 @@ it; this module only builds the questions and turns the answers into the
 A ``score`` answer is the expected level index (0..4). Keep rules (D9, the same
 for every decider): keep if score >= 1.5, ``high`` if score >= 2.5, otherwise
 ``medium``. Zero keeps is a valid answer (D4) — there is no reconsider retry.
+
+Official judicial principles (``official_principles_refs.md`` §3.3) carry no
+النظام / نطاق النظام and no الجهة, so the tested SCOPE-FIRST rubric has nothing
+to read for them. Their questions alone get :data:`PRINCIPLE_CLAUSE` (judge the
+rule's subject instead); every other question stays the A/B's verbatim wording,
+and a batch with no principle in it is byte-identical to the tested request.
 """
 from __future__ import annotations
 
@@ -41,6 +47,20 @@ LEVELS5 = [
     "high — directly answers part of the sub-query: a condition, exception, penalty, deadline or obligation asked about",
     "critical — the governing operative rule that directly decides exactly what the sub-query asks",
 ]
+
+# -- Official judicial principle (NOT part of the tested wording) ---------------
+#
+# Added on top of RUBRIC5, only to the question of a ``### [Cn] مبدأ قضائي رسمي``
+# candidate. Same spirit as the qwen prompt's Kind 4: subject in place of scope,
+# kept on subject, top levels only when it decides the mechanism.
+
+PRINCIPLE_CLAUSE = (
+    "This candidate is an OFFICIAL JUDICIAL PRINCIPLE (مبدأ قضائي رسمي): an authoritative rule distilled by "
+    "the highest judicial body. It has no النظام / نطاق النظام and no الجهة — judge SCOPE by its SUBJECT "
+    "instead: its الباب and what the rule itself governs, against the sub-query's matter. Off-subject = not "
+    "relevant, however closely the words match. On-subject = at least medium (the answer would cite it); "
+    "high or critical only when the rule decides the very mechanism the sub-query asks about."
+)
 
 # -- Keep rules (D9) -------------------------------------------------------------
 
@@ -74,22 +94,30 @@ SUFFICIENT_QUESTION: dict[str, Any] = {
 NOT_COVERED_NOTE = "لم تغطِّ نتائج البحث هذا الاستعلام الفرعي تغطيةً كافية؛ قد يكون الحكم الحاكم غير موجود فيها."
 
 
-def _score_question(label: str) -> dict[str, Any]:
+def _score_question(label: str, *, principle: bool = False) -> dict[str, Any]:
+    rubric = f"{RUBRIC5}\n\n{PRINCIPLE_CLAUSE}" if principle else RUBRIC5
     return {
         "type": "score",
-        "instructions": f"{RUBRIC5}\n\nRate ONLY the candidate whose header is `### [{label}]`.",
+        "instructions": f"{rubric}\n\nRate ONLY the candidate whose header is `### [{label}]`.",
         "criteria": LEVELS5,
     }
 
 
-def build_questions(labels: list[str]) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def build_questions(
+    labels: list[str],
+    principle_labels: frozenset[str] | set[str] = frozenset(),
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """``(questions, required)`` for one sub-query, in ``labels`` order.
 
     ``labels`` are the block labels in render order (``C1``…``Cn``) — the order
     their ``### [Cn]`` headers appear in the state. Every question is required:
     a candidate left unscored is a decider failure (D2), not a drop.
+    ``principle_labels`` are the official-principle candidates among them; only
+    their questions carry :data:`PRINCIPLE_CLAUSE`.
     """
-    questions = {lab: _score_question(lab) for lab in labels}
+    questions = {
+        lab: _score_question(lab, principle=lab in principle_labels) for lab in labels
+    }
     if ASK_SUFFICIENT:
         questions[SUFFICIENT_KEY] = SUFFICIENT_QUESTION
     return questions, list(questions)

@@ -110,7 +110,10 @@ _FAMILY_SOURCE_TABLE: dict[str, str] = {
 
 # Citation ref_id prefixes minted by the URA adapters -> stripped to recover
 # the bare id for the forensic fallback. (``reg:<uuid>`` -> ``<uuid>``.)
-_REF_PREFIXES: tuple[str, ...] = ("reg:", "case:", "compliance:")
+# ``principle:<official_principles.id>`` is minted by BOTH the reg and the case
+# adapter (official_principles_refs.md D1), so either family's fallback row may
+# carry one.
+_REF_PREFIXES: tuple[str, ...] = ("reg:", "case:", "compliance:", "principle:")
 
 
 def _strip_ref_prefix(ref_id: str) -> str:

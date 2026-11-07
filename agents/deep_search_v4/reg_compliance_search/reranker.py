@@ -5,7 +5,8 @@ Architecture: a classification-only LLM (no tools). Per sub-query,
 
 1. Renders each search-result row as a labelled markdown block, dispatched on
    ``source_type``: regulation/appendix chunks render PRECISE (top rank band) or
-   SIMPLE, while circulars and services render as flat one-hop blocks. The mode
+   SIMPLE, while circulars, services and official judicial principles render as
+   flat one-hop blocks. The mode
    is decided by ``search.py`` and carried on each row as ``_mode``; the reranker
    does the actual unfold + render here so it owns the ``label -> row`` map.
 2. Asks the LLM, in a SINGLE pass, to emit one entry only for each chunk it
@@ -64,18 +65,22 @@ from .models import (
 from .prompts import build_reranker_user_message, get_reranker_prompt
 from .unfold_reranker import (
     _format_circular_block,
+    _format_principle_block,
     _format_service_block,
     format_chunk,
+    principle_title,
     unfold_chunk_precise,
     unfold_chunk_simple,
 )
 
 # Source types that flow through the chunk unfold path (regulation body +
-# appendix). Circular / service rows are flat and take their own block builders.
+# appendix). Circular / service / principle rows are flat and take their own
+# block builders.
 _CHUNK_SOURCE_TYPES = ("regulation", "appendix", "chunk")
 
 # Content snippet cap for the forensic ``RerankedResult.content`` on flat
 # (circular/service) rows — logging only; the URA stage re-fetches full content.
+# A principle's rule text is short (≤ ~860 chars) and is kept whole.
 _FLAT_CONTENT_SNIPPET = 1_000
 
 # Old-law chunks kept ON TOP of ``max_keep`` while a law is in transition. They
@@ -152,7 +157,8 @@ def create_reranker_agent(
 #     "label":       "C7",                 stable handle shown to the LLM
 #     "chunk":       {content row},         the fetched row (chunk / circular /
 #                                           service) incl. merged RPC provenance
-#     "source_type": "regulation"|"appendix"|"circular"|"service",
+#     "source_type": "regulation"|"appendix"|"circular"|"service"|
+#                    "official_principle",
 #     "mode":        "precise" | "simple" | "flat",
 #     "rrf":         float,
 #     "unfolded":    {dict from unfold_chunk_*} | None (None for flat rows),
@@ -160,8 +166,9 @@ def create_reranker_agent(
 #   }
 #
 # The block builder dispatches on the row's ``source_type`` (set by search.py):
-# chunk rows go through the two-shape unfold; circular / service rows are flat
-# (the row IS the reranker view) and take their dedicated block formatters.
+# chunk rows go through the two-shape unfold; circular / service / principle
+# rows are flat (the row IS the reranker view) and take their dedicated block
+# formatters.
 
 
 def _make_block(
@@ -174,13 +181,27 @@ def _make_block(
 ) -> dict[str, Any]:
     """Unfold + render one content row into a labelled reranker block (blocking).
 
-    Dispatches on ``row["source_type"]``: circular/service rows render flat via
-    their block builders (no DB hop); regulation/appendix rows go through the
-    chunk unfold path (precise/simple per ``mode``). ``old_chunk_gate`` is
-    ``supersessions`` / ``sub_query`` / ``today``, forwarded to the unfolders.
+    Dispatches on ``row["source_type"]``: circular/service/principle rows render
+    flat via their block builders (no DB hop); regulation/appendix rows go
+    through the chunk unfold path (precise/simple per ``mode``).
+    ``old_chunk_gate`` is ``supersessions`` / ``sub_query`` / ``today``,
+    forwarded to the unfolders.
     """
     rrf = float(rrf or 0.0)
     source_type = row.get("source_type", "regulation")
+
+    if source_type == "official_principle":
+        # The rule text + its الباب only — no score in the block (D4); ``rrf``
+        # still rides on the block for the cap sort.
+        return {
+            "label": label,
+            "chunk": row,
+            "source_type": source_type,
+            "mode": "flat",
+            "rrf": rrf,
+            "unfolded": None,
+            "markdown": _format_principle_block(row, label),
+        }
 
     if source_type == "circular":
         return {
@@ -245,13 +266,17 @@ def _dropped_row(
     row = block.get("chunk", {})
     unfolded = block.get("unfolded") or {}
     source_type = block.get("source_type", "chunk")
-    title = (
-        unfolded.get("title")
-        or row.get("title")
-        or row.get("service_name_ar")
-        or row.get("intro_title")
-        or ""
-    )
+    if source_type == "official_principle":
+        # A principle row has no ``title`` column; «المبدأ رقم N — {الباب}».
+        title = principle_title(row)
+    else:
+        title = (
+            unfolded.get("title")
+            or row.get("title")
+            or row.get("service_name_ar")
+            or row.get("intro_title")
+            or ""
+        )
     return {
         "db_id": row.get("id", "") or "",
         "title": title,
@@ -267,8 +292,9 @@ def _assemble_result(block: dict[str, Any], decision: dict[str, Any]) -> Reranke
     Dispatches on the block's ``source_type``. Regulation/appendix chunks keep
     the legacy ``source_type="chunk"`` shape (the existing ``reg_compliance_to_rqr`` path is
     unchanged; the regulation-vs-appendix distinction rides on ``source_row``).
-    Circular/service rows carry their own ``source_type`` and the full fetched
-    row in ``source_row`` for Wave 2a's type-aware adapter.
+    Circular/service/principle rows carry their own ``source_type`` and the full
+    fetched row in ``source_row`` for Wave 2a's type-aware adapter. A principle's
+    ``content`` is its rule text; ``regulation_title`` stays empty (no parent law).
     """
     row = block["chunk"]
     source_type = block.get("source_type", "chunk")
@@ -296,6 +322,17 @@ def _assemble_result(block: dict[str, Any], decision: dict[str, Any]) -> Reranke
             source_type="service",
             title=(row.get("service_name_ar") or row.get("intro_title") or "").strip(),
             content=(row.get("service_context") or "")[:_FLAT_CONTENT_SNIPPET],
+            relevance=relevance,
+            reasoning=reasoning,
+            db_id=db_id,
+            rrf=rrf,
+            source_row=dict(row),
+        )
+    if source_type == "official_principle":
+        return RerankedResult(
+            source_type="official_principle",
+            title=principle_title(row),
+            content=(row.get("text") or "").strip(),
             relevance=relevance,
             reasoning=reasoning,
             db_id=db_id,
@@ -379,13 +416,15 @@ async def _run_decider(
     user_msg: str,
     labels: list[str],
     models: list[str],
+    principle_labels: frozenset[str] = frozenset(),
 ) -> tuple[_decider.DeciderReply, RegRerankerClassification, dict[str, float]] | None:
     """One decider request for the sub-query → ``(reply, classification, scores)``.
 
     ``None`` = every decider failed (or answered malformed) → the caller runs
     qwen. Never raises: a decider bug must cost speed, not the sub-query.
+    ``principle_labels`` get the principle clause on their questions.
     """
-    questions, required = decider_rules.build_questions(labels)
+    questions, required = decider_rules.build_questions(labels, principle_labels)
     try:
         reply = await _decider.decide(user_msg, questions, required=required, models=models)
         if reply is None:
@@ -522,7 +561,13 @@ async def run_reranker_for_query(
     # including its zero-keep reconsider retry (D4). ``None`` → qwen, unchanged.
     decider_models = _decider_models(engine, model_override)
     if decider_models:
-        decided = await _run_decider(query, user_msg, list(by_label), decider_models)
+        principle_labels = frozenset(
+            lbl for lbl, b in by_label.items()
+            if b["source_type"] == "official_principle"
+        )
+        decided = await _run_decider(
+            query, user_msg, list(by_label), decider_models, principle_labels,
+        )
         if decided is not None:
             reply, classification, decider_scores = decided
             usage_entries.append(reply.usage_entry)

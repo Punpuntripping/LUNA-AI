@@ -7,8 +7,9 @@ deduplicated results by ``ref_id`` and tier-split them into ``high_results`` /
 1. Walks ``ura.high_results`` then ``ura.medium_results`` (so high-relevance
    refs get lower citation numbers).
 2. Dispatches on the typed discriminated union (``RegURAResult`` /
-   ``ComplianceURAResult`` / ``CircularURAResult`` / ``CaseURAResult``) to build
-   a ``Reference`` per URA result — no dict lookups, no cross-domain dedup.
+   ``ComplianceURAResult`` / ``CircularURAResult`` / ``CaseURAResult`` /
+   ``PrincipleURAResult`` / ``ArticleURAResult``) to build a ``Reference`` per
+   URA result — no dict lookups, no cross-domain dedup.
 3. Assigns 1-based citation numbers in iteration order.
 4. Returns a parallel mapping ``ref.n -> appears_in_sub_queries`` (sorted)
    so the post-validator can do coverage checks.
@@ -28,13 +29,19 @@ from typing import Any, Iterable
 
 from agents.deep_search_v4.reg_compliance_search.models import RerankedResult
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
-from agents.deep_search_v4.source_viewer import build_source_view
+from agents.deep_search_v4.source_viewer import article_full_title, build_source_view
+from agents.deep_search_v4.ura.principles import (
+    PRINCIPLE_LABEL_AR,
+    principle_decision_lines_for_prompt,
+)
 from agents.deep_search_v4.ura.schema import (
     AggregatorItem,
+    ArticleURAResult,
     CaseURAResult,
     CircularURAResult,
     ComplianceURAResult,
     CrossRef,
+    PrincipleURAResult,
     RegURAResult,
     ReferenceView,
     URAResultBase,
@@ -244,6 +251,12 @@ def render_aggregator_content(item: AggregatorItem) -> str:
       DERIVED structured summary, not the ruling text (D2). The court line is
       omitted when ``court`` is empty; the parenthetical when ``court_level`` is
       empty or unrecognised; the year line when the row has no year.
+    - principles:  ``مبدأ قضائي رسمي — المبدأ رقم N (الباب: …)`` / the rule /
+      one ``القرار: {decision_no} بتاريخ {date_hijri}هـ — {body}`` line per
+      decision (plan D5). Number, chapter and decisions are each optional — a
+      corpus may carry none of them; with no decision the issuing bodies (if
+      known) get a ``الجهة المصدرة:`` line instead.
+    - articles:    ``المادة 40 من {نظام}`` / the مادة text (the Article 40 pin).
     """
     parts: list[str] = []
     if item.domain == "regulations":
@@ -285,6 +298,25 @@ def render_aggregator_content(item: AggregatorItem) -> str:
             text = _render_case_referenced_regulation(rr)
             if text:
                 parts.append(text)
+    elif item.domain == "principles":
+        header = "مبدأ قضائي رسمي"
+        if item.principle_no is not None:
+            header += f" — المبدأ رقم {item.principle_no}"
+        chapter = (item.principle_chapter or "").strip()
+        if chapter:
+            header += f" (الباب: {chapter})"
+        parts.append(header)
+        if item.principle_text:
+            parts.append(item.principle_text.strip())
+        decision_lines = principle_decision_lines_for_prompt(item.principle_decisions)
+        if decision_lines:
+            parts.append("\n".join(decision_lines))
+        elif (item.entity_name or "").strip():
+            parts.append(f"الجهة المصدرة: {item.entity_name.strip()}")
+    elif item.domain == "articles":
+        parts.append(article_full_title(item.article_number, item.reg_title))
+        if item.article_content:
+            parts.append(item.article_content.strip())
     return "\n\n".join(p for p in parts if p)
 
 
@@ -398,6 +430,14 @@ def build_snippet(result, max_chars: int = 500) -> str:
         # — routing through render_aggregator_content would let the header's
         # trailing newline truncate the snippet before the body.
         source = getattr(result, "content", "") or ""
+    elif isinstance(result, PrincipleURAResult):
+        # The rule itself — not the «مبدأ قضائي رسمي» header, for the same
+        # reason as circulars above.
+        source = result.text or ""
+    elif isinstance(result, ArticleURAResult):
+        # The مادة body — the same snippet fuel the backend's ``articles``
+        # shell feeds this function (its ``.content``).
+        source = result.content or ""
     else:
         # Legacy RerankedResult
         source = (
@@ -559,6 +599,46 @@ def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
             case_number=(view.case_number or view.judgment_number or "").strip(),
             hijri_year=hijri_year(view.date_hijri) or "",
             cross_refs=case_refs,
+        )
+
+    if view.domain == "principles":
+        # An official judicial principle (plan §3.5). The issuing bodies are the
+        # "parent" label (regulation_title slot, like a circular's entity), the
+        # card title names the principle by number and chapter, the decisions
+        # ride their own line, and the official exit is the source PDF.
+        return Reference(
+            n=n,
+            source_type="official_principle",
+            regulation_title=view.entity_name or "",
+            title=view.principle_title or PRINCIPLE_LABEL_AR,
+            snippet=snippet,
+            relevance=view.relevance,
+            ref_id=view.ref_id,
+            domain="principles",
+            entity_name=view.entity_name or "",
+            url=view.url or "",
+            decision_line=view.decision_line or "",
+        )
+
+    if view.domain == "articles":
+        # ONE مادة — the Article 40 pin. Field for field the shape the backend
+        # rebuilds an ``articles`` reference with
+        # (``references_service._reference_from_article_shell``), which is also
+        # simple_search's (``simple_search.runner.build_references``) bar the
+        # title: ``article_full_title`` gives «المادة 40 من {نظام}», the label
+        # the reloaded panel and the popup header both print.
+        return Reference(
+            n=n,
+            source_type="article_full",
+            regulation_title=view.reg_title or "",
+            article_num=view.article_number or None,
+            title=article_full_title(view.article_number, view.reg_title),
+            snippet=snippet,
+            relevance=view.relevance,
+            ref_id=view.ref_id,
+            domain="articles",
+            landing_url=view.landing_url or "",
+            doc_type=view.doc_type or "",
         )
 
     # Defensive: unknown URA domain. Build a minimal Reference so callers keep

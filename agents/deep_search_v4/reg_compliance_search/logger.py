@@ -388,9 +388,10 @@ def save_reranker_md(
         lines.append("")
         for i, res in enumerate(query_result.results, 1):
             rel_label = "عالية" if res.relevance == "high" else "متوسطة"
-            type_label = {"article": "مادة", "section": "باب/فصل"}.get(
-                res.source_type, "مقطع"
-            )
+            type_label = {
+                "article": "مادة", "section": "باب/فصل",
+                "official_principle": "مبدأ قضائي",
+            }.get(res.source_type, "مقطع")
             lines.append(f"### {i}. [{type_label}] {res.title} (صلة: {rel_label})")
             if res.regulation_title:
                 lines.append(f"- **النظام:** {res.regulation_title}")

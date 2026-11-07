@@ -460,6 +460,9 @@ _REVEAL_PREFIX_DOMAIN = {
     "circular": "circulars",         # circular:<circulars.id>
     "article": "articles",           # article:<articles_v2.id>
     "regdoc": "regulation_docs",     # regdoc:<regulations_v2.id>
+    # official_principles.id — free to open (``always_free``), so no charge is
+    # at stake, but the pair must still agree or the body build refuses it.
+    "principle": "principles",       # principle:<official_principles.id>
 }
 
 

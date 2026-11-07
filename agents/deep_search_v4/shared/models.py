@@ -13,15 +13,27 @@ from dataclasses import dataclass, field
 from typing import Literal, Union
 
 from agents.deep_search_v4.ura.schema import (
+    ArticleURAResult,
     CaseURAResult,
     CircularURAResult,
     ComplianceURAResult,
+    PrincipleURAResult,
     RegURAResult,
 )
 
-Domain = Literal["regulations", "compliance", "circulars", "cases"]
+# Mirrors ``ura.schema.Domain``. ``principles`` is the one domain BOTH executors
+# produce (official judicial principles); ``articles`` only ever comes from the
+# Article 40 pin, never from an executor.
+Domain = Literal[
+    "regulations", "compliance", "circulars", "cases", "principles", "articles"
+]
 DomainResult = Union[
-    RegURAResult, ComplianceURAResult, CircularURAResult, CaseURAResult
+    RegURAResult,
+    ComplianceURAResult,
+    CircularURAResult,
+    CaseURAResult,
+    PrincipleURAResult,
+    ArticleURAResult,
 ]
 
 
@@ -57,7 +69,8 @@ class RerankerQueryResult:
     # downstream and is NOT what we persist here.
     #
     # kept_forensic   -- 1:1 with ``results``. Each entry:
-    #   {source_table: "chunks"|"cases"|"services", ref_id: <bare UUID>,
+    #   {source_table: "chunks"|"cases"|"services"|"circulars"|
+    #    "official_principles", ref_id: <bare UUID>,
     #    title: str, relevance: "high"|"medium", source_type: str, reasoning: str}
     # dropped_forensic -- LLM-dropped + cap-truncated results only. Each entry:
     #   {source_table, ref_id: <bare UUID>, title, drop_reason: "llm"|"cap",

@@ -4,7 +4,12 @@ import { test } from "node:test";
 import { parseRefusal, refusalCardCopy, type RefusalCtas } from "../library-refusal";
 import {
   officialUrl,
+  principleBodyLine,
+  principleDecisionLines,
+  principlePagesLabel,
+  principleSourceText,
   referenceCopyLabel,
+  referenceLabel,
   referenceLibraryExitLabel,
 } from "../reference-labels";
 import { appendReferencesForCopy } from "../references-copy";
@@ -70,6 +75,65 @@ test("copy labels + «المراجع» block", () => {
   );
   assert.equal(appendReferencesForCopy("  ", [reg]), "المراجع\n1-نظام العمل");
   assert.equal(appendReferencesForCopy("x", []), "x");
+});
+
+test("official principles: label, copy label, exits, source view lines", () => {
+  const body = "مجلس القضاء الأعلى بهيئته الدائمة";
+  const p = ref({
+    n: 3,
+    domain: "principles",
+    source_type: "official_principle",
+    ref_id: "principle:00000000-0000-0000-0000-000000000001",
+    title: "المبدأ رقم 23 — الوعد",
+    regulation_title: body,
+    entity_name: body,
+    url: "https://drive.example/book.pdf",
+    decision_line: "القرار 162/5 بتاريخ 24/3/1415هـ",
+  });
+  assert.equal(referenceCopyLabel(p), `المبدأ رقم 23 — الوعد — ${body}، القرار 162/5 بتاريخ 24/3/1415هـ`);
+  // Empty parts drop out; the body is never duplicated.
+  assert.equal(referenceCopyLabel(ref({ ...p, decision_line: undefined })), `المبدأ رقم 23 — الوعد — ${body}`);
+  assert.equal(
+    referenceCopyLabel(ref({ ...p, entity_name: "", regulation_title: "" })),
+    "المبدأ رقم 23 — الوعد — القرار 162/5 بتاريخ 24/3/1415هـ",
+  );
+  assert.equal(referenceCopyLabel(ref({ ...p, title: `مبدأ — ${body}` })).split(body).length, 2);
+  // A titleless principle never borrows the body's name as its title.
+  assert.equal(referenceLabel(ref({ ...p, title: "" })), "مبدأ قضائي");
+  assert.equal(principleBodyLine(p), body);
+  assert.equal(principleBodyLine(ref({})), "");
+  // The official exit is the source PDF, from the row or (fallback) the view.
+  assert.equal(officialUrl(p), "https://drive.example/book.pdf");
+  const view: SourceView = {
+    source_type: "official_principle",
+    title: "المبدأ رقم 23 — الوعد",
+    chapter: "الوعد",
+    text: "الوعد ملزم ديانةً لا قضاءً.",
+    decisions: [
+      { body, decision_no: "162/5", date_hijri: "24/3/1415" },
+      { body: "المحكمة العليا", decision_no: "", date_hijri: "1/2/1440هـ" },
+    ],
+    pages: [344, 343],
+    url: "https://drive.example/view.pdf",
+  };
+  assert.equal(officialUrl(ref({ ...p, url: "" }), view), "https://drive.example/view.pdf");
+  assert.equal(referenceLibraryExitLabel(p), "فتح المبدأ في ريحان");
+  assert.deepEqual(principleDecisionLines(view), [
+    `${body} — القرار 162/5 بتاريخ 24/3/1415هـ`,
+    "المحكمة العليا — بتاريخ 1/2/1440هـ",
+  ]);
+  assert.equal(principlePagesLabel(view.pages), "ص 343–344");
+  assert.equal(principlePagesLabel([343]), "ص 343");
+  assert.equal(principlePagesLabel([350, 343]), "ص 343، 350");
+  assert.equal(principlePagesLabel([]), "");
+  assert.equal(
+    principleSourceText(view),
+    `الوعد ملزم ديانةً لا قضاءً.
+
+${body} — القرار 162/5 بتاريخ 24/3/1415هـ
+المحكمة العليا — بتاريخ 1/2/1440هـ
+ص 343–344`,
+  );
 });
 
 test("parseRefusal is defensive", () => {

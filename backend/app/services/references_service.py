@@ -9,20 +9,27 @@ existing source tables via the URA-enrichment helpers and ``source_viewer``.
 Migration 050: two-key design.
 
 - ``item_id`` (UUID, nullable) — source row PK. ``chunks_v2.id``,
-  ``cases.id``, ``services.id``, ``circulars.id``, ``articles_v2.id`` or
-  ``regulations_v2.id``. The preferred join key for cross-WI queries ("which
-  WIs cite this chunk?").
+  ``cases.id``, ``services.id``, ``circulars.id``, ``articles_v2.id``,
+  ``regulations_v2.id`` or ``official_principles.id``. The preferred join key
+  for cross-WI queries ("which WIs cite this chunk?").
 - ``ref_id`` (TEXT, always set) — the emitted identifier
   (``reg:<uuid>`` | ``case:<case_ref>`` | ``compliance:<sha1[:16]>`` |
-  ``circular:<uuid>`` | ``article:<uuid>`` | ``regdoc:<uuid>``). The durable
+  ``circular:<uuid>`` | ``article:<uuid>`` | ``regdoc:<uuid>`` |
+  ``principle:<uuid>``). The durable
   fallback when item_id failed to resolve, and the forensic-traceability key
   into ``retrieval_artifacts``.
 
-Migration 136 (simple_search, plan §6.1a) added the last two: ``articles`` (ONE
+Migration 136 (simple_search, plan §6.1a) added two more: ``articles`` (ONE
 مادة, ``article:<articles_v2.id>``) and ``regulation_docs`` (a WHOLE نظام,
 ``regdoc:<regulations_v2.id>``). Both carry their OWN prefix because ``reg:``
 hard-assumes a ``chunks_v2.id`` — reusing it inserts cleanly and then renders a
 dead stub, silently (§9 trap 4).
+
+Migration 212 (official_principles_refs.md §3.6) added ``principles`` — ONE
+official judicial principle («مبدأ قضائي»), ``principle:<official_principles.id>``,
+which either deep-search executor can cite. Deep search also writes ``articles``
+now (the Article 40 pin, ``ura/pinned.py``) in simple_search's exact shape, so
+that domain needs nothing new here.
 
 Public surface:
     fetch_item_references(supabase, wi_id, *, used_only=False,
@@ -87,10 +94,21 @@ from agents.deep_search_v4.ura.enrich import (
     _enrich_cases,
     _enrich_regulations,
 )
+# The ONE principle shell builder + hydrator every producer shares (reg adapter,
+# case adapter, enrich_ura) — so a reloaded card is built exactly as the live
+# turn built it. ``hydrate_principles`` is ASYNC: un-awaited it silently does
+# nothing and every card becomes a stub.
+from agents.deep_search_v4.ura.principles import (
+    PRINCIPLE_REF_PREFIX,
+    hydrate_principles,
+    principle_from_row,
+    principle_id_from_ref,
+)
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
     CircularURAResult,
     ComplianceURAResult,
+    PrincipleURAResult,
     RegURAResult,
     URAResultBase,
     cap_circular_content,
@@ -188,8 +206,10 @@ class RegulationDocRefShell:
     appears_in_sub_queries: list[int] = field(default_factory=list)
 
 
-# Every shape ``shells_by_n`` can hold. ``URAResultBase`` covers the four
-# deep_search domains; the two dataclasses above cover simple_search.
+# Every shape ``shells_by_n`` can hold. ``URAResultBase`` covers the five
+# deep_search domains (principles included — ``PrincipleURAResult`` is a real
+# URA member, so it needs no dataclass of its own); the two dataclasses above
+# cover simple_search.
 RefShell = Union[URAResultBase, ArticleRefShell, RegulationDocRefShell]
 
 
@@ -338,7 +358,7 @@ async def _load_references(
     # ``_stub_reference`` in the same change — never in one of the three.
     by_domain: dict[str, list[dict]] = {
         "regulations": [], "compliance": [], "cases": [], "circulars": [],
-        "articles": [], "regulation_docs": [],
+        "articles": [], "regulation_docs": [], "principles": [],
     }
     for row in rows:
         domain = row.get("domain")
@@ -378,6 +398,11 @@ async def _load_references(
             supabase, by_domain["regulation_docs"]
         )
         shells_by_n.update(regdoc_shells)
+    if by_domain["principles"]:
+        principle_shells = await _build_principle_shells(
+            supabase, by_domain["principles"]
+        )
+        shells_by_n.update(principle_shells)
 
     # Walk rows in order and build one Reference per shell.
     ordered_rows = sorted(rows, key=lambda r: int(r["n"]))
@@ -564,6 +589,12 @@ async def build_reference_source_view(
         shells = await _build_article_shells(supabase, [row])  # type: ignore[assignment]
     elif domain == "regulation_docs":
         shells = await _build_regdoc_shells(supabase, [row])  # type: ignore[assignment]
+    elif domain == "principles":
+        # The hydrated shell already carries the rule, the chapter, every
+        # decision and the source pages/PDF, so ``build_source_view`` builds the
+        # ``PrincipleSourceView`` with no second read. Free to open (plan D8) —
+        # that is the resolver's call, not this function's.
+        shells = await _build_principle_shells(supabase, [row])  # type: ignore[assignment]
     else:
         logger.warning("build_reference_source_view: unknown domain %r", domain)
         return None
@@ -582,8 +613,9 @@ async def build_reference_source_view(
 def _reference_from_shell(n: int, shell: RefShell) -> Reference:
     """Project ANY read-path shell onto a numbered ``Reference``.
 
-    The four deep_search domains go through ``preprocessor._reference_from_ura``
-    (the load-bearing ``ReferenceView -> Reference`` mapping, untouched). The two
+    The five deep_search domains (principles included) go through
+    ``preprocessor._reference_from_ura`` (the load-bearing ``ReferenceView ->
+    Reference`` mapping, untouched). The two
     simple_search domains are projected here because they have no URA member to
     project FROM — see ``RefShell``.
     """
@@ -1158,6 +1190,75 @@ async def _build_regdoc_shells(
     return shells_by_n
 
 
+def _principle_id_from_row(row: dict) -> str:
+    """Return ``official_principles.id`` (uuid text) for a ``principles`` row.
+
+    Prefers ``item_id`` (persist mints it from the ``principle:<uuid>`` ref_id);
+    falls back to parsing that ref_id. Mirrors ``_circular_id_from_row`` — with
+    one extra guard: the fallback must be a uuid. ``official_principles.id`` is a
+    ``uuid`` column, so a malformed tail inside the batched ``in_`` would 400 the
+    WHOLE batch and stub every principle on the panel, not just the bad one.
+    """
+    item_id = row.get("item_id")
+    if item_id:
+        return str(item_id)
+    candidate = principle_id_from_ref(row.get("ref_id") or "")
+    return candidate if _looks_like_uuid(candidate) else ""
+
+
+async def _build_principle_shells(
+    supabase: SupabaseClient,
+    rows: list[dict],
+) -> dict[int, PrincipleURAResult]:
+    """Build :class:`PrincipleURAResult` shells and hydrate them in ONE read.
+
+    Each row becomes a bare shell through ``ura.principles.principle_from_row``
+    — the builder the reg adapter, the case adapter and ``enrich_ura`` all share
+    — keeping the row's own ``n`` / ``ref_id`` / ``relevance``. Then ONE batched
+    ``official_principles`` read (``hydrate_principles``, which runs its sync
+    fetch under ``asyncio.to_thread`` and is fail-soft) fills the rule, chapter,
+    number, decisions, bodies and source on every shell at once. That is the
+    same hydration the live turn ran, so the reloaded card and the popup say
+    exactly what they said when the answer was written.
+
+    Like ``_build_reg_shells``, a shell whose row came back empty (principle
+    re-ingested under a new id, or the read failed) is PRUNED so the caller
+    falls back to a stub card rather than a blank «مبدأ قضائي» with nothing
+    under it. Plan §7: ids are uuid5(principle_ref), so a re-run of the loader
+    keeps them stable as long as the refs are.
+    """
+    shells_by_n: dict[int, PrincipleURAResult] = {}
+    for row in rows:
+        principle_id = _principle_id_from_row(row)
+        if not principle_id:
+            continue
+        ref_id = (row.get("ref_id") or "").strip()
+        if not ref_id.startswith(PRINCIPLE_REF_PREFIX):
+            # Re-mint so ``source_viewer`` / ``hydrate_principles`` can always
+            # re-parse ``principle:<uuid>`` off the shell.
+            ref_id = f"{PRINCIPLE_REF_PREFIX}{principle_id}"
+        shells_by_n[int(row["n"])] = principle_from_row(
+            {"id": principle_id},
+            ref_id=ref_id,
+            relevance=row.get("relevance", "medium"),
+        )
+
+    if not shells_by_n:
+        return {}
+
+    try:
+        await hydrate_principles(supabase, list(shells_by_n.values()))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("references_service: principle hydration failed: %s", exc)
+
+    # Prune: no rule and no number → the row is gone → stub card.
+    return {
+        n: shell
+        for n, shell in shells_by_n.items()
+        if (shell.text or "").strip() or shell.principle_no is not None
+    }
+
+
 def _fetch_articles_by_id(
     supabase: SupabaseClient,
     article_ids: Sequence[str],
@@ -1318,6 +1419,9 @@ def _stub_reference(row: dict) -> Reference:
         "circulars": "circular",
         "articles": "article_full",
         "regulation_docs": "regulation_summary",
+        # A stub principle must NOT fall back to ``regulation`` — it would render
+        # through the legacy arm under the wrong chip (§9 trap 3 again).
+        "principles": "official_principle",
     }.get(domain, "regulation")
     return Reference(
         n=int(row["n"]),
@@ -1470,6 +1574,13 @@ def persist_item_references(
                 if ref.ref_id.startswith(_REGDOC_PREFIX)
                 else ref.ref_id
             )
+            item_uuid = candidate if _looks_like_uuid(candidate) else None
+        elif ref.domain == "principles":
+            # ref_id = "principle:<official_principles.id>" — the PK rides in
+            # directly (the same id from either executor, plan D1). No bare-id
+            # fallback: ``principle_id_from_ref`` answers "" for any other prefix,
+            # so a mis-prefixed ref writes item_id=NULL and keeps its ref_id.
+            candidate = principle_id_from_ref(ref.ref_id)
             item_uuid = candidate if _looks_like_uuid(candidate) else None
         else:
             # EXPLICIT. This chain had no ``else`` until 2026-08-15, so a ref

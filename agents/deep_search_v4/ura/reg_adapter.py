@@ -22,6 +22,11 @@ for rows assembled before the source_row plumbing landed:
                              ``compliance:<sha1(service_ref)>`` so a service
                              surfaced by more than one reg_compliance sub-query
                              dedups to one URA ref).
+    official_principle    -> ``PrincipleURAResult`` (domain ``principles``,
+                             ref_id ``principle:<official_principles.id>`` —
+                             the SAME id the case adapter mints for the same
+                             principle, so a principle both executors kept
+                             dedups to one [n] in the merger; plan D1).
 
 The per-sub-query ``SharedRQR`` keeps ``domain="regulations"`` (the executor
 loop's identity); the merger tiers by each *result's* own ``.domain``, so a
@@ -39,9 +44,15 @@ from agents.deep_search_v4.reg_compliance_search.unfold_reranker import _circula
 from agents.deep_search_v4.shared.models import (
     RerankerQueryResult as SharedRQR,
 )
+from agents.deep_search_v4.ura.principles import (
+    PRINCIPLE_SOURCE_TYPE,
+    principle_from_row,
+    principle_title,
+)
 from agents.deep_search_v4.ura.schema import (
     CircularURAResult,
     ComplianceURAResult,
+    PrincipleURAResult,
     RegURAResult,
     cap_circular_content,
 )
@@ -60,7 +71,11 @@ _SOURCE_TABLE = {
     "chunk": "chunks",
     "circular": "circulars",
     "service": "services",
+    PRINCIPLE_SOURCE_TYPE: "official_principles",
 }
+
+# Every topic type this adapter routes by name; anything else is a reg chunk.
+_KNOWN_TYPES = ("regulation", "appendix", "circular", "service", PRINCIPLE_SOURCE_TYPE)
 
 
 def _true_source_type(r, row: dict) -> str:
@@ -68,14 +83,15 @@ def _true_source_type(r, row: dict) -> str:
 
     Prefers the RPC's ``source_row["source_type"]``; falls back to the
     ``RerankedResult.source_type`` for legacy rows with an empty source_row.
-    Everything that is not clearly a circular/service/appendix is treated as a
-    regulation chunk (the byte-identical legacy reg path).
+    Everything that is not clearly a circular/service/appendix/official
+    principle is treated as a regulation chunk (the byte-identical legacy reg
+    path).
     """
     t = (row.get("source_type") or "").strip().lower()
-    if t in ("regulation", "appendix", "circular", "service"):
+    if t in _KNOWN_TYPES:
         return t
     rr = (getattr(r, "source_type", "") or "").strip().lower()
-    if rr in ("circular", "service"):
+    if rr in ("circular", "service", PRINCIPLE_SOURCE_TYPE):
         return rr
     return "regulation"
 
@@ -204,6 +220,39 @@ def _build_service(r, row: dict, db_id: str) -> tuple[ComplianceURAResult | None
     return typed, forensic
 
 
+def _build_principle(r, row: dict, db_id: str) -> tuple[PrincipleURAResult, dict]:
+    """Official principle row -> ``PrincipleURAResult`` + forensic dict (D1).
+
+    ``db_id`` is ``official_principles.id``. The search row carries every column
+    (``PRINCIPLE_SELECT``), so the shell is complete here; ``enrich_ura``
+    re-reads it anyway so a case-side shell for the same principle ends up
+    identical. ``r.content`` (the rule text) backs up a row with no ``text``.
+    """
+    full = dict(row or {})
+    full["id"] = str(full.get("id") or "").strip() or db_id
+    if not str(full.get("text") or "").strip():
+        full["text"] = getattr(r, "content", "") or ""
+    typed = principle_from_row(
+        full,
+        ref_id=f"principle:{db_id}",
+        relevance=r.relevance,
+        reasoning=r.reasoning or "",
+        rrf=float(getattr(r, "rrf", 0.0) or 0.0),
+    )
+    forensic = {
+        "source_table": "official_principles",
+        "ref_id": db_id,
+        "title": (
+            (getattr(r, "title", "") or "").strip()
+            or principle_title(typed.principle_no, typed.chapter_title)
+        ),
+        "relevance": r.relevance,
+        "source_type": PRINCIPLE_SOURCE_TYPE,
+        "reasoning": r.reasoning or "",
+    }
+    return typed, forensic
+
+
 def reg_compliance_to_rqr(reg_rqrs: list[RegRQR]) -> list[SharedRQR]:
     """Convert reg_search reranker output into shared ``RerankerQueryResult``s.
 
@@ -227,6 +276,8 @@ def reg_compliance_to_rqr(reg_rqrs: list[RegRQR]) -> list[SharedRQR]:
                 typed, forensic = _build_circular(r, row, db_id)
             elif true_type == "service":
                 typed, forensic = _build_service(r, row, db_id)
+            elif true_type == PRINCIPLE_SOURCE_TYPE:
+                typed, forensic = _build_principle(r, row, db_id)
             else:  # regulation / appendix / legacy chunk
                 typed, forensic = _build_reg(r, row, db_id, true_type)
 

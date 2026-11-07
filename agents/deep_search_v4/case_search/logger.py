@@ -293,6 +293,9 @@ def save_reranker_query_md(
             court_info = res.court or ""
             if res.city:
                 court_info += f" — {res.city}"
+            # An official principle names itself by its title, not by a court.
+            if getattr(res, "candidate_kind", "case") == "official_principle":
+                court_info = res.title or court_info
             lines.append(f"{i}. **{court_info}** ({res.relevance})")
             if res.case_number:
                 lines.append(f"   Case: {res.case_number}")

@@ -77,6 +77,7 @@ from .models import (
     SearchResult,
 )
 from .search import search_regulations_pipeline
+from .unfold_reranker import principle_title
 
 logger = logging.getLogger(__name__)
 
@@ -873,29 +874,40 @@ async def run_reg_search(
 def _render_chunks_summary(chunks: list[dict]) -> str:
     """Render search-result rows into a compact markdown summary.
 
-    search.py returns mixed-type content rows (chunk / circular / service). The
-    per-query markdown log (``save_search_query_md``) still wants a text body, so
-    we render a lightweight, source-type-aware digest of each row here.
+    search.py returns mixed-type content rows (chunk / circular / service /
+    official_principle). The per-query markdown log (``save_search_query_md``)
+    still wants a text body, so we render a lightweight, source-type-aware digest
+    of each row here.
     """
     if not chunks:
         return "_(لا توجد نتائج)_"
     parts: list[str] = [f"## نتائج البحث — {len(chunks)} نتيجة", ""]
     for i, ch in enumerate(chunks, 1):
         source_type = ch.get("source_type", "regulation")
-        title = (
-            ch.get("title")
-            or ch.get("service_name_ar")
-            or ch.get("intro_title")
-            or "(بدون عنوان)"
-        )
+        if source_type == "official_principle":
+            # No ``title`` column on a principle row: «المبدأ رقم N — {الباب}».
+            title = principle_title(ch)
+        else:
+            title = (
+                ch.get("title")
+                or ch.get("service_name_ar")
+                or ch.get("intro_title")
+                or "(بدون عنوان)"
+            )
         mode = ch.get("_mode", "simple")
         rrf = ch.get("_rrf", 0.0)
-        ref = ch.get("chunk_ref") or ch.get("circ_ref") or ch.get("service_ref") or ""
+        ref = (
+            ch.get("chunk_ref") or ch.get("circ_ref") or ch.get("service_ref")
+            or ch.get("principle_ref") or ""
+        )
         parts.append(f"### {i}. [{source_type}] {title}")
         parts.append(f"- ref: `{ref}`")
         parts.append(f"- id: `{ch.get('id', '')}`")
         parts.append(f"- mode: `{mode}` | rrf: {float(rrf or 0.0):.4f}")
-        body = ch.get("summary") or ch.get("service_context") or ch.get("content") or ""
+        body = (
+            ch.get("summary") or ch.get("service_context") or ch.get("content")
+            or ch.get("text") or ""
+        )
         if body:
             parts.append(f"\n> {body[:500]}")
         parts.append("")

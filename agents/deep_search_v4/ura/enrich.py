@@ -31,8 +31,14 @@ Per-domain query count:
                    a fetched chunk carries ``has_images`` — 1.6% of regulation
                    citations — so on 98.4% of turns it is not issued at all.
     cases       -- 2 logical fetches (cases, entities), each batched by 150.
+    principles  -- 1 logical fetch (official_principles), batched by 150 —
+                   ``ura/principles.hydrate_principles``. A reg-side shell is
+                   already complete and a case-side one carries the rule text
+                   only; the re-read makes both identical.
     compliance  -- 0 (the adapter already carries every field).
     circulars   -- 0 (the adapter carries the capped content + entity name).
+    articles    -- 0 (the Article 40 pin arrives fully hydrated, and runs
+                   after this stage anyway).
 """
 from __future__ import annotations
 
@@ -42,6 +48,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
+from agents.deep_search_v4.ura.principles import hydrate_principles
 
 # The figure instead of the filename. ONE implementation, shared with the public
 # library and the مراجع popup, so the reader view and the model view of the same
@@ -837,7 +844,8 @@ async def enrich_ura(ura, supabase) -> None:
     Args:
         ura: A ``UnifiedRetrievalArtifact``. ``high_results`` / ``medium_results``
             hold the kept, tiered results. Mutated in place; reg results with an
-            empty ``chunk_content`` are dropped from those two lists.
+            empty ``chunk_content`` and principles with an empty rule ``text``
+            are dropped from those two lists.
         supabase: The **sync service-role** Supabase client. Do not pass the
             anon client -- RLS would silently empty every ``in_(...)`` query.
 
@@ -855,6 +863,7 @@ async def enrich_ura(ura, supabase) -> None:
     # Split kept results by domain.
     reg_results: list = []
     case_results: list = []
+    principle_results: list = []
     for res in kept:
         domain = getattr(res, "domain", None)
         if domain == "regulations":
@@ -864,6 +873,8 @@ async def enrich_ura(ura, supabase) -> None:
             reg_results.append(res)
         elif domain == "cases":
             case_results.append(res)
+        elif domain == "principles":
+            principle_results.append(res)
         # compliance / circulars -> no-op. The type-aware reg_adapter already
         # carries every field (service_context / structured payload, circular
         # content). Never route these through chunks_v2 — their ids are
@@ -879,17 +890,28 @@ async def enrich_ura(ura, supabase) -> None:
         await _enrich_cases(case_results, supabase)
     except Exception as e:
         logger.warning("enrich_ura: case enrichment failed: %s", e)
+    try:
+        # One batched read for every principle, whichever executor kept it.
+        await hydrate_principles(supabase, principle_results)
+    except Exception as e:
+        logger.warning("enrich_ura: principle enrichment failed: %s", e)
 
-    # -- Empty-filter: drop reg results with a blank chunk_content ------------
+    # -- Empty-filter: drop reg results with a blank chunk_content, and
+    # principles with no rule text (nothing to cite) --------------------------
     # Rebuild high_results / medium_results in place.
+    body_field_by_domain = {"regulations": "chunk_content", "principles": "text"}
+
     def _drop_empty_regs(results: list) -> list:
         kept_out: list = []
         for res in results:
-            if getattr(res, "domain", None) == "regulations":
-                content = getattr(res, "chunk_content", "") or ""
+            domain = getattr(res, "domain", None) or ""
+            body_field = body_field_by_domain.get(domain)
+            if body_field:
+                content = getattr(res, body_field, "") or ""
                 if not content.strip():
                     logger.warning(
-                        "enrich_ura: dropping empty-body reg result %s",
+                        "enrich_ura: dropping empty-body %s result %s",
+                        domain,
                         getattr(res, "ref_id", "?"),
                     )
                     continue

@@ -851,6 +851,9 @@ _BODY_FIELDS: tuple[str, ...] = (
     "case_content",
     "short_summary",
     "content",
+    # ``PrincipleURAResult.text`` — the rule of an official judicial principle
+    # (its body field is ``text``, not ``content``; no other URA domain has one).
+    "text",
 )
 
 # Body carriers nested one level down: resolved cross-referenced مادة bodies on
