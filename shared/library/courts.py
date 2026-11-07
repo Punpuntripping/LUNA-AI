@@ -3,7 +3,7 @@
 `public.cases.court` is free text straight from the source feeds: **30 distinct
 values on 30,531 rows**, where the same judicial body appears under many spellings
 that differ only by CITY («… في مدينة جدة» / «… في مدينة الرياض» / «… في مدينة
-الدمام»). This module is the digest: it collapses those 30 raw strings into **12
+الدمام»). This module is the digest: it collapses those 30 raw strings into **13
 browsable buckets** and is the ONLY normalizer for court names in the codebase.
 
 Two rules the user set (2026-08-08):
@@ -58,6 +58,7 @@ FEED_MOJ = "moj"                # وزارة العدل — 20,671 rows, sectors
 FEED_BOG = "board_of_grievances"  # ديوان المظالم — 4,669 rows, no sectors, NO citation mesh
 FEED_ZATCA = "zatca"            # هيئة الزكاة والضريبة — 4,966 rows, no sectors, partial mesh
 FEED_INSURANCE = "insurance"    # لجان التأمين — 225 rows, no sectors, NO citation mesh
+FEED_LABOR = "labor_commission"  # هيئة تسوية الخلافات العمالية (entity 40048) — 474 rows, no dates
 
 # ─── The map ──────────────────────────────────────────────────────────────────
 # slug → (Arabic label, raw `cases.court` variants, source feed)
@@ -120,6 +121,17 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
         ),
         FEED_ZATCA,
     ),
+    # 474 — entity 40048, ingested 2026-11-05: الهيئة العليا, two circuits, 1431–1432هـ.
+    # Its own section, NOT merged into المحكمة العمالية: the commissions held
+    # labour jurisdiction before it moved to the labour courts (40048/CLAUDE.md).
+    "هيئة-تسوية-الخلافات-العمالية": (
+        "هيئة تسوية الخلافات العمالية",
+        (
+            "الهيئة العليا لتسوية الخلافات العمالية — الدائرة الأولى",
+            "الهيئة العليا لتسوية الخلافات العمالية — الدائرة الثانية",
+        ),
+        FEED_LABOR,
+    ),
     # 225 — the whole insurance corpus. Separate from the tax لجان (user decision).
     "لجان-التأمين": (
         "لجان الفصل في المنازعات التأمينية",
@@ -150,7 +162,7 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
 
 # ─── Derived lookups ──────────────────────────────────────────────────────────
 COURT_ORDER: list[str] = list(_COURTS)
-"""The 12 court slugs in browse (volume) order."""
+"""The 13 court slugs in browse (volume) order."""
 
 COURT_LABELS: dict[str, str] = {slug: label for slug, (label, _v, _f) in _COURTS.items()}
 """slug → Arabic display label. This is the H1 and the switcher label."""
@@ -202,7 +214,7 @@ if _reserved_collision:
 
 
 def court_for_slug(slug: Optional[str]) -> Optional[str]:
-    """Arabic label for a court slug, or ``None`` if it is not one of the 12.
+    """Arabic label for a court slug, or ``None`` if it is not one of the 13.
 
     Returns ``None`` for reserved segments even if a future edit added them to the
     map. Callers treat ``None`` as a 404 and MUST NOT issue a DB round-trip for it.
@@ -267,6 +279,7 @@ __all__ = [
     "FEED_BOG",
     "FEED_ZATCA",
     "FEED_INSURANCE",
+    "FEED_LABOR",
     "COURT_ORDER",
     "COURT_LABELS",
     "COURT_VARIANTS",

@@ -272,6 +272,7 @@ from shared.library.courts import (
     COURT_LABELS,
     FEED_BOG,
     FEED_INSURANCE,
+    FEED_LABOR,
     FEED_MOJ,
     FEED_ZATCA,
     feed_for_court,
@@ -370,12 +371,13 @@ _LIST_PREVIEW = 50
 _FEED_OTHER = "(unclaimed)"
 
 # Processing / reporting order. Volume-descending, mirroring COURT_ORDER's rule.
-_FEED_ORDER = (FEED_MOJ, FEED_ZATCA, FEED_BOG, FEED_INSURANCE, _FEED_OTHER)
+_FEED_ORDER = (FEED_MOJ, FEED_ZATCA, FEED_BOG, FEED_LABOR, FEED_INSURANCE, _FEED_OTHER)
 
 _FEED_LABELS: dict[str, str] = {
     FEED_MOJ: "وزارة العدل",
     FEED_ZATCA: "لجان الزكاة والضريبة",
     FEED_BOG: "ديوان المظالم",
+    FEED_LABOR: "هيئة تسوية الخلافات العمالية",
     FEED_INSURANCE: "لجان التأمين",
     _FEED_OTHER: "(محاكم غير مصنّفة)",
 }
@@ -391,6 +393,8 @@ _FEED_ALIASES: dict[str, str] = {
     "zatca": FEED_ZATCA,
     "tax": FEED_ZATCA,
     "insurance": FEED_INSURANCE,
+    "labor": FEED_LABOR,
+    "labour": FEED_LABOR,
     "other": _FEED_OTHER,
 }
 
@@ -418,6 +422,9 @@ _ALLOC_REST = "rest"
 # (`--limit 200` would go 224 → trimmed to ~160 of 200 seats, crowding out the
 # other three feeds). Use `--feed-alloc insurance=all` to force the literal form.
 _FEED_ALLOCATION: dict[str, Any] = {
+    # 0.05 clears the 453 eligible labour rulings at --limit 10000, same
+    # reasoning as insurance's share (added 2026-11-07).
+    FEED_LABOR: 0.05,
     FEED_INSURANCE: 0.03,
     FEED_BOG: 0.10,
     FEED_ZATCA: 0.10,
@@ -460,6 +467,9 @@ _FEED_ALLOCATION: dict[str, Any] = {
 # index ~700 others. That is why this is a constant and not a set of flags
 # someone has to remember.
 _INDEX_FEED_ALLOCATION: dict[str, Any] = {
+    # 0 = off Google. Owner 2026-11-07: everything published after the
+    # 3,000 stays unlisted, so a re-run of --indexable leaves this feed out.
+    FEED_LABOR: 0,
     FEED_INSURANCE: _ALLOC_ALL,
     FEED_BOG: 0.22,
     FEED_ZATCA: 0.20,

@@ -1,4 +1,4 @@
-// The 12 court buckets of the /judgments wing — «الجهة القضائية».
+// The 13 court buckets of the /judgments wing — «الجهة القضائية».
 //
 // ⚠ `shared/library/courts.py` IS THE SOURCE OF TRUTH. This file is a MIRROR of
 // its `_COURTS` dict: the slug keys, the Arabic labels, and — critically — the
@@ -33,7 +33,7 @@
 // the corpus.
 
 /**
- * `[slug, label]` for the 12 buckets, in the Python module's insertion order.
+ * `[slug, label]` for the 13 buckets, in the Python module's insertion order.
  *
  * One tuple per bucket rather than two parallel literals ON PURPOSE: the slug
  * and its label are the same Arabic text differing only by the hyphens, and
@@ -53,6 +53,8 @@ const COURTS = [
   ["لجان-ضريبة-القيمة-المضافة", "لجان ضريبة القيمة المضافة"],
   // 1,063
   ["لجان-ضريبة-الدخل-والزكاة", "لجان ضريبة الدخل والزكاة"],
+  // 474 — entity 40048 (2026-11-05), its own section, not المحكمة العمالية.
+  ["هيئة-تسوية-الخلافات-العمالية", "هيئة تسوية الخلافات العمالية"],
   // 225
   ["لجان-التأمين", "لجان الفصل في المنازعات التأمينية"],
   // 165
@@ -71,7 +73,7 @@ const COURTS = [
 /** The closed slug vocabulary, as a type. */
 export type CourtSlug = (typeof COURTS)[number][0];
 
-/** The 12 slugs in browse (corpus-volume) order. Never re-sort. */
+/** The 13 slugs in browse (corpus-volume) order. Never re-sort. */
 export const COURT_ORDER: readonly CourtSlug[] = COURTS.map(([slug]) => slug);
 
 /** slug → Arabic display label. This is the H1 and the switcher label. */

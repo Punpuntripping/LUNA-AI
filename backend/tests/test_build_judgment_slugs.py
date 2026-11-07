@@ -47,6 +47,7 @@ _SPEC.loader.exec_module(bjs)
 from shared.library.courts import (  # noqa: E402
     FEED_BOG,
     FEED_INSURANCE,
+    FEED_LABOR,
     FEED_MOJ,
     FEED_ZATCA,
 )
@@ -59,6 +60,9 @@ LIVE_SUPPLY = {
     FEED_ZATCA: 4_934,
     FEED_BOG: 4_501,
     FEED_INSURANCE: 224,
+    # Added 2026-11-07, after the measurement above: the labour feed did not
+    # exist then, so 0 keeps the §3.1 table exact. Its own test uses real supply.
+    FEED_LABOR: 0,
     bjs._FEED_OTHER: 0,
 }
 
@@ -80,6 +84,21 @@ class TestFeedQuotas:
         assert q[FEED_ZATCA] == 1_000
         assert q[FEED_MOJ] == 7_776
         assert sum(q.values()) == 10_000
+
+    def test_labor_feed_clears_its_whole_supply_at_10000(self):
+        """0.05 of 10,000 = 500 seats for the 453 eligible labour rulings (2026-11-07):
+        all of them land, and the other feeds keep their plan-table quotas."""
+        supply = {**LIVE_SUPPLY, FEED_LABOR: 453}
+        q = bjs._feed_quotas(10_000, supply, bjs._FEED_ALLOCATION)
+        assert q[FEED_LABOR] == 453
+        assert q[FEED_BOG] == 1_000 and q[FEED_ZATCA] == 1_000 and q[FEED_INSURANCE] == 224
+        assert sum(q.values()) == 10_000
+
+    def test_labor_feed_is_never_indexable_by_default(self):
+        """Owner 2026-11-07: new publishes stay off Google, so a re-run of
+        --indexable gives the labour feed no seats."""
+        supply = {**LIVE_SUPPLY, FEED_LABOR: 453}
+        assert bjs._feed_quotas(3_000, supply, bjs._INDEX_FEED_ALLOCATION)[FEED_LABOR] == 0
 
     def test_shortfall_redistributes_instead_of_under_filling(self):
         """لجان التأمين is asked for 300 and holds 224. The 76-row gap must land
