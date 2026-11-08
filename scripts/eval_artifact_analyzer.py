@@ -45,6 +45,18 @@ CONVO = "9c647ef6-7d1e-4450-94c1-1aafe88d39f5"
 USER = "0d0a97d4-dc22-4ebc-8520-26b4314b4783"
 _LAST_MESSAGE = "d657fc7d-5492-42d1-8c80-ee5212ace184"
 
+# A follow-up asking whether a rule reaches bodies the search never looked for.
+# Production said «sufficient» from the rule's silence (artifact_analyzer_scope_full_text.md §1).
+_SCOPE_CONVO = "bc48e2ed-5501-40bc-b117-b5f93a95761e"
+_SCOPE_USER = "c5f4cff0-0517-43f0-af59-a9905deab22c"
+_SCOPE_MESSAGE = "ef1a1294-0e5a-4fce-a1ef-d55399e7f0de"
+
+# Demo account. A report citing a ruling whose full text holds a detail its
+# summary leaves out (artifact_analyzer_scope_full_text.md §6).
+_RULING_CONVO = "039bba3f-48e7-4c07-9bb0-fd80eaef9c36"
+_RULING_USER = "32c10d30-9d2a-4d50-966a-f397c1e3efae"
+_RULING_MESSAGE = "af1daaae-fccb-4008-8524-8144ea506e70"
+
 _LOADED_NAMES = re.compile(r"^(.*_API_KEY|SUPABASE_URL|SUPABASE_SERVICE_KEY|SUPABASE_SERVICE_ROLE_KEY)$")
 _DUMMIES = {
     "SUPABASE_ANON_KEY": "unused",
@@ -91,7 +103,33 @@ GOLD = [
     Case("repealed_text", CONVO, USER, _LAST_MESSAGE,
          question="وش تقول المادة 60 من النظام القديم عن حجز الحساب الجاري؟",
          expected=("sufficient",), note="should open the chunk and keep the repeal status"),
+    Case("scope_other_body", _SCOPE_CONVO, _SCOPE_USER, _SCOPE_MESSAGE,
+         expected=("partial", "insufficient"),
+         note="asks about bodies the search never looked for; silence is not an answer"),
+    Case("ruling_detail", _RULING_CONVO, _RULING_USER, _RULING_MESSAGE,
+         question=(
+             "في الحكم الذي رُفض فيه دفاع صاحب العمل بالمادة 80، متى جرى التحقيق مع "
+             "العامل، وهل قال وكيل الشركة إن قرار الفصل وصل إلى العامل؟"
+         ),
+         expected=("sufficient",),
+         note="the answer is in the ruling's full text, not its summary: run with --full-text"),
 ]
+
+
+def load_cases_file(path: str) -> list[Case]:
+    """Cases from a JSON list of {id, conversation_id, user_id, message_id[, question, expected, note]}.
+
+    For replaying real production turns. The file holds ids only; keep it out of the repo.
+    """
+    rows = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [
+        Case(
+            str(r["id"]), r["conversation_id"], r["user_id"], r["message_id"],
+            question=r.get("question"),
+            expected=tuple(r.get("expected") or ()), note=str(r.get("note") or ""),
+        )
+        for r in rows
+    ]
 
 
 class _ReadOnlyQuery:
@@ -226,10 +264,18 @@ async def run_case(case: Case, client: Any, gate: asyncio.Semaphore) -> dict:
         "degraded": result.degraded,
         "restatement": result.restatement,
         "quotes": [
-            {"text": q.text, "source": q.source_name, "status": q.status, "uncited": q.uncited}
+            {"text": q.text, "source": q.source_name, "status": q.status, "uncited": q.uncited,
+             "domain": q.domain}
             for q in result.quotes
         ],
         "missing": result.missing,
+        "outside_search": result.outside_search,
+        "full_read_n": result.full_read_n,
+        "reading_errors": [
+            {"report_text": c.report_text, "corrected_text": c.corrected_text, "source": c.source_name}
+            for c in result.reading_errors
+        ],
+        "reading_errors_dropped": result.reading_errors_dropped,
         "ask_user": result.ask_user,
         "predicts": bool(_PREDICTS.search(said)),
         "quotes_dropped": result.quotes_dropped,
@@ -299,10 +345,12 @@ async def main_async(args: argparse.Namespace) -> int:
     client = ReadOnlyClient(get_supabase_client())
     if args.router:
         return await run_router_cases(client, args.repeat, args.concurrency)
-    cases = list(GOLD)
+    cases = [] if args.cases_file and not args.only else list(GOLD)
     if args.only:
         wanted = set(args.only.split(","))
         cases = [c for c in cases if c.id in wanted]
+    if args.cases_file:
+        cases += load_cases_file(args.cases_file)
     if args.sample:
         from datetime import datetime, timedelta, timezone
 
@@ -317,13 +365,14 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.out:
         Path(args.out).write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"{'case':<15}{'verdict':<14}{'rules from':<14}{'ok':<6}{'quotes':<8}{'open':<6}{'sec':<7}{'$':<9}pred")
+    print(f"{'case':<15}{'verdict':<14}{'rules from':<14}{'ok':<6}{'quotes':<8}{'open':<6}{'full':<6}{'fix':<5}{'sec':<7}{'$':<9}pred")
     for r in results:
         ok = {True: "yes", False: "NO", None: "-"}[r["passed"]]
         before = r["before_rules"] if r["before_rules"] != r["verdict"] else ""
         print(
             f"{r['id']:<15}{r['verdict']:<14}{str(before):<14}{ok:<6}{len(r['quotes']):<8}"
-            f"{r['opened_n']:<6}{r['seconds']:<7}{r['cost_usd']:<9}{'YES' if r['predicts'] else ''}"
+            f"{r['opened_n']:<6}{r['full_read_n']:<6}{len(r['reading_errors']):<5}"
+            f"{r['seconds']:<7}{r['cost_usd']:<9}{'YES' if r['predicts'] else ''}"
             f"{'  DEGRADED' if r['degraded'] else ''}"
         )
     graded = [r for r in results if r["passed"] is not None]
@@ -342,14 +391,26 @@ def main() -> int:
     parser.add_argument("--out", help="JSON of full results. Holds user content: keep it out of the repo.")
     parser.add_argument("--only", help="Comma-separated gold case ids.")
     parser.add_argument("--sample", type=int, default=0, help="Add N recent real follow-ups, unlabelled.")
+    parser.add_argument(
+        "--cases-file",
+        help="JSON list of real turns to replay (ids only). Alone, it runs just these; "
+             "with --only, the named gold cases too.",
+    )
     parser.add_argument("--concurrency", type=int, default=3)
     parser.add_argument("--router", action="store_true", help="Grade the real router's routing instead.")
+    parser.add_argument(
+        "--full-text", action="store_true",
+        help="Turn read_full_text on (ARTIFACT_ANALYZER_FULL_TEXT_ENABLED) for this run.",
+    )
     parser.add_argument(
         "--repeat", type=int, default=1,
         help="Run each case N times. Verdicts vary between runs, so one pass proves little.",
     )
     args = parser.parse_args()
     load_env(args.env_file)
+    # Before the first settings read: they are cached for the process.
+    os.environ["ARTIFACT_ANALYZER_FULL_TEXT_ENABLED"] = "true" if args.full_text else "false"
+    os.environ.pop("ARTIFACT_ANALYZER_FULL_TEXT_USERS", None)
     return asyncio.run(main_async(args))
 
 

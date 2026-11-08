@@ -125,6 +125,7 @@ async def write_prior_report_reply(
         missing=list(result.missing),
         ask_user=list(result.ask_user),
         version_rule=RESPONDER_VERSION_RULE if result.transition_line else "",
+        corrections=list(result.reading_errors),
     )
     # The analyzer's lighter reasoning, not the responder slot's: here it writes one
     # or two sentences over quotes that code prints. Live, on medium it spent 7k-10k

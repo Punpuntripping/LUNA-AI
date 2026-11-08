@@ -99,6 +99,7 @@ from agents.deep_search_v4.ura.principles import (
     principle_title,
 )
 from agents.deep_search_v4.ura.schema import CaseURAResult
+from agents.utils.reading_corrections import KEY as CORRECTIONS_KEY, with_corrections
 from shared.seo.judgment_naming import judgment_subject
 # The WI preview lock — the SAME decision and cut the backend applies to the
 # web / app (shared/, so agents/ never imports backend/ for it).
@@ -331,7 +332,8 @@ def _fetch_item(
         "title, content_md, wi_seq, kind, created_by, created_at, metadata, "
         "created_while_paid"
         if with_lock_columns
-        else "title, content_md"
+        # Only the saved reading corrections, not the whole metadata.
+        else f"title, content_md, {CORRECTIONS_KEY}:metadata->{CORRECTIONS_KEY}"
     )
     try:
         resp = (
@@ -876,7 +878,12 @@ def unfold_parts(
     )
     if item is None:
         return None
-    content_md = item.get("content_md") or ""
+    # A report's saved reading corrections follow its text (plan
+    # artifact_analyzer_scope_full_text.md §4.4); the card itself is unchanged.
+    content_md = with_corrections(
+        item.get("content_md") or "",
+        item.get(CORRECTIONS_KEY) or item.get("metadata"),
+    )
     lines = resolve_used_sources(supabase, item_id, snippet_max_chars=snippet_max_chars)
     if lock_policy is None or not is_locked(item, lock_policy):
         return UnfoldParts(render_unfold_md(content_md, lines))

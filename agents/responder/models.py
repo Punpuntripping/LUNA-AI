@@ -381,6 +381,9 @@ class PriorReportArtifact:
     ask_user: list[str] = field(default_factory=list)
     #: ``supersession.RESPONDER_VERSION_RULE`` during a transition, else empty.
     version_rule: str = ""
+    #: Reading corrections (``ReadingCorrection``): a report sentence the full
+    #: text showed wrong. The reply says each one as a correction of our reading.
+    corrections: list[Any] = field(default_factory=list)
 
 
 ArtifactPackage = Union[

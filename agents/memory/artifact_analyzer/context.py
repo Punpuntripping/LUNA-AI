@@ -20,6 +20,8 @@ from agents.deep_search_v4.ura.principles import (
     principle_decision_line,
     principle_title,
 )
+from agents.deep_search_v4.ura.services_unfold import build_service_aggregator_content
+from agents.utils.reading_corrections import entries_of, render_block
 from backend.app.services.masking_service import encode_active
 from shared.library.supersession import (
     aggregator_status,
@@ -33,6 +35,7 @@ from .models import (
     MAX_REPORTS_WITHOUT_PICK,
     AnalyzerCall,
     ReportRow,
+    SearchScope,
     SourceRow,
     VerifiedQuote,
 )
@@ -40,7 +43,19 @@ from .tools import DOMAIN_TABLES
 
 logger = logging.getLogger(__name__)
 
+#: ``produced_by`` key → what that search covers. Services, circulars and
+#: official principles all come through the regulation search's topic lookup;
+#: ``compliance_search`` is the retired loop and never runs, so it is not listed.
+_SEARCH_GROUPS = (
+    ("reg_search", "regulations", "الأنظمة واللوائح والتعاميم والخدمات الحكومية"),
+    ("case_search", "cases", "الأحكام القضائية"),
+)
+_QUERY_DOMAIN = {"regulations": "الأنظمة", "cases": "الأحكام"}
+_NO_SEARCH_RECORD = "لا يوجد سجل لهذا البحث"
+
 _NO_SUMMARY = "(لا يوجد ملخص)"
+#: On a service the model can read in full with ``read_full_text``.
+_HAS_GUIDE = "**له دليل شامل**"
 _NO_TITLE = "بدون عنوان"
 _CIRCULAR_HEAD_CHARS = 200
 _SERVICE_HEAD_CHARS = 600
@@ -79,12 +94,16 @@ def load_reports(supabase: Any, call: AnalyzerCall) -> list[ReportRow]:
     if call.reports_before:
         query = query.lt("created_at", call.reports_before)
     rows = query.order("created_at", desc=True).execute().data or []
+    chosen = select_reports(rows, call.picked_item_ids)
+    uras = _load_uras(supabase, [str(r["item_id"]) for r in chosen], call.user_id)
 
     reports: list[ReportRow] = []
-    for i, row in enumerate(select_reports(rows, call.picked_item_ids), start=1):
+    for i, row in enumerate(chosen, start=1):
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         confidence = metadata.get("confidence")
         gaps = metadata.get("gaps")
+        ura = uras.get(str(row["item_id"])) or {}
+        saved = entries_of(metadata)
         reports.append(ReportRow(
             label=f"R{i}",
             item_id=str(row["item_id"]),
@@ -96,8 +115,56 @@ def load_reports(supabase: Any, call: AnalyzerCall) -> list[ReportRow]:
             confidence=confidence if confidence in ("high", "medium", "low") else "medium",
             gaps=[encode_active(str(g)) for g in gaps] if isinstance(gaps, list) else [],
             summary=encode_active(row.get("summary") or ""),
+            searched=search_scope(ura),
+            ura=ura,
+            corrections=encode_active(render_block(saved)),
+            corrected_texts=[encode_active(str(e["report_text"])) for e in saved],
         ))
     return reports
+
+
+def _load_uras(supabase: Any, item_ids: list[str], user_id: str) -> dict[str, dict]:
+    """Each report's stored search result. The write is best-effort, so one may be missing."""
+    if not item_ids:
+        return {}
+    rows = (
+        supabase.table("retrieval_artifacts")
+        .select("artifact_id, ura_json")
+        .in_("artifact_id", item_ids)
+        .eq("user_id", user_id)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+    ) or []
+    return {
+        str(r["artifact_id"]): r["ura_json"]
+        for r in rows if isinstance(r.get("ura_json"), dict)
+    }
+
+
+def search_scope(ura: Mapping[str, Any]) -> SearchScope | None:
+    """What the search looked for, or None when it left no record of its queries."""
+    sub_queries = [q for q in ura.get("sub_queries") or [] if isinstance(q, Mapping)]
+    queries = [
+        (_QUERY_DOMAIN.get(str(q.get("domain") or ""), ""), encode_active(str(q.get("query") or "").strip()))
+        for q in sub_queries
+        if str(q.get("query") or "").strip()
+    ]
+    if not queries:
+        return None
+    produced = ura.get("produced_by") if isinstance(ura.get("produced_by"), Mapping) else None
+    if produced is None:
+        # Older results: the queries' own domains say which searches ran.
+        domains = {str(q.get("domain") or "") for q in sub_queries}
+        ran = {key: domain in domains for key, domain, _ in _SEARCH_GROUPS}
+    else:
+        ran = {key: bool(produced.get(key)) for key, _, _ in _SEARCH_GROUPS}
+    return SearchScope(
+        queries=queries,
+        searched_in=[label for key, _, label in _SEARCH_GROUPS if ran[key]],
+        not_searched_in=[label for key, _, label in _SEARCH_GROUPS if not ran[key]],
+        sectors=[str(s) for s in ura.get("sector_filter") or [] if str(s).strip()],
+    )
 
 
 def _ref_tail(ref_id: str) -> str:
@@ -123,6 +190,62 @@ def _stored_text(domain: str, row: Mapping[str, Any]) -> str:
         if row.get(key):
             return str(row[key])
     return ""
+
+
+def _search_view(domain: str, row: Mapping[str, Any]) -> str:
+    """The text the aggregator read for a ruling or a service (read_full_text).
+
+    A ruling's is ``case_content``: ``cases.summary`` clipped, as stored. A
+    service's is rebuilt from the stored row with the aggregator's own builder.
+    """
+    if domain == "cases":
+        return str(row.get("case_content") or "")
+    if domain == "compliance":
+        return build_service_aggregator_content(
+            service_name=str(row.get("service_name") or ""),
+            intro_title=str(row.get("intro_title") or ""),
+            provider_name=str(row.get("provider_name") or ""),
+            intro_description=str(row.get("intro_description") or ""),
+            steps=row.get("steps") or [],
+            requirements=row.get("requirements") or [],
+            required_documents=row.get("required_documents") or [],
+            service_url=str(row.get("service_url") or ""),
+            url=str(row.get("url") or ""),
+            fallback_context=str(row.get("service_context") or ""),
+        )
+    return ""
+
+
+def _guided_services(supabase: Any, service_refs: list[str]) -> dict[str, str]:
+    """service_ref → services.id, for the services that have «الدليل الشامل»."""
+    if not service_refs:
+        return {}
+    try:
+        services = (
+            supabase.table("services")
+            .select("id, service_ref")
+            .in_("service_ref", service_refs)
+            .execute()
+            .data
+        ) or []
+        ref_by_id = {str(r["id"]): str(r["service_ref"]) for r in services}
+        if not ref_by_id:
+            return {}
+        guides = (
+            supabase.table("service_guides")
+            .select("service_id")
+            .in_("service_id", list(ref_by_id))
+            .eq("is_canonical", True)
+            .execute()
+            .data
+        ) or []
+    except Exception as exc:  # noqa: BLE001 — without it the service is read as before
+        logger.warning("artifact_analyzer: guide lookup failed: %s", exc)
+        return {}
+    return {
+        ref_by_id[str(g["service_id"])]: str(g["service_id"])
+        for g in guides if str(g.get("service_id")) in ref_by_id
+    }
 
 
 def _source_name(domain: str, row: Mapping[str, Any], chunk: Mapping[str, Any]) -> str:
@@ -216,11 +339,14 @@ def _render_block(source: SourceRow, row: Mapping[str, Any], chunk: Mapping[str,
             lines.append(f"**القرار**: {_esc(decisions)}")
         lines.append(_esc(str(row.get("text") or "")[:_PRINCIPLE_HEAD_CHARS]))
         return "\n".join(lines)
-    return "\n".join([
+    lines = [
         f"### [{source.label}] خدمة: {_esc(source.name)}{head}",
         f"**الجهة**: {_esc(row.get('provider_name'))}",
-        _esc(str(row.get("service_context") or "")[:_SERVICE_HEAD_CHARS]),
-    ])
+    ]
+    if source.has_guide:
+        lines.append(_HAS_GUIDE)
+    lines.append(_esc(str(row.get("service_context") or "")[:_SERVICE_HEAD_CHARS]))
+    return "\n".join(lines)
 
 
 def _load_chunks(supabase: Any, chunk_ids: list[str]) -> dict[str, dict]:
@@ -241,24 +367,24 @@ def _load_chunks(supabase: Any, chunk_ids: list[str]) -> dict[str, dict]:
     return {str(r["id"]): r for r in rows}
 
 
-def load_sources(supabase: Any, reports: Sequence[ReportRow], user_id: str) -> list[SourceRow]:
+def load_sources(
+    supabase: Any,
+    reports: Sequence[ReportRow],
+    *,
+    full_text: bool = False,
+) -> list[SourceRow]:
     """One deduplicated list: ``[n]`` restarts per report, so the same circular
     can be R1[34] and R2[12]. Code keeps the label map; the model never sees an id.
+
+    Reads each report's search result from ``ReportRow.ura``, which ``load_reports``
+    already fetched under the user filter. With ``full_text`` on, services that
+    have «الدليل الشامل» are marked, so the model knows it can read them in full.
     """
     if not reports:
         return []
     labels = {r.item_id: r.label for r in reports}
     ids = list(labels)
 
-    artifacts = (
-        supabase.table("retrieval_artifacts")
-        .select("artifact_id, ura_json")
-        .in_("artifact_id", ids)
-        .eq("user_id", user_id)
-        .is_("deleted_at", "null")
-        .execute()
-        .data
-    ) or []
     refs = (
         supabase.table("workspace_item_references")
         .select("wi_id, n, ref_id, domain, item_id, used")
@@ -278,11 +404,10 @@ def load_sources(supabase: Any, reports: Sequence[ReportRow], user_id: str) -> l
             cited.setdefault(ref_id, []).append((labels[str(ref["wi_id"])], int(ref["n"])))
 
     # Newest report first, then high before medium, so labels read in that order.
-    by_artifact = {str(a["artifact_id"]): a.get("ura_json") or {} for a in artifacts}
     ordered: dict[str, dict] = {}
     found_in: dict[str, list[str]] = {}
     for report in reports:
-        ura = by_artifact.get(report.item_id) or {}
+        ura = report.ura
         for row in (ura.get("high_results") or []) + (ura.get("medium_results") or []):
             ref_id = str(row.get("ref_id") or "")
             if ref_id:
@@ -306,7 +431,7 @@ def load_sources(supabase: Any, reports: Sequence[ReportRow], user_id: str) -> l
     ]
     chunks = _load_chunks(supabase, chunk_ids)
 
-    sources: list[SourceRow] = []
+    built: list[tuple[SourceRow, Mapping[str, Any], Mapping[str, Any]]] = []
     for i, (ref_id, row) in enumerate(ordered.items(), start=1):
         domain = str(row.get("domain") or "")
         chunk = chunks.get(_ref_tail(ref_id), {}) if domain == "regulations" else {}
@@ -322,10 +447,21 @@ def load_sources(supabase: Any, reports: Sequence[ReportRow], user_id: str) -> l
             regulation_id=str(chunk.get("regulation_id") or ""),
             cited_in=cited.get(ref_id, []),
             report_ids=found_in.get(ref_id, []),
+            search_view=_search_view(domain, row),
         )
+        built.append((source, row, chunk))
+
+    if full_text:
+        guided = _guided_services(supabase, [
+            s.open_key for s, _, _ in built if s.domain == "compliance" and s.open_key
+        ])
+        for source, _, _ in built:
+            if source.domain == "compliance":
+                source.guide_service_id = guided.get(source.open_key, "")
+
+    for source, row, chunk in built:
         source.block = _render_block(source, row, chunk)
-        sources.append(source)
-    return sources
+    return [source for source, _, _ in built]
 
 
 def law_change_line(supabase: Any, quotes: Sequence[VerifiedQuote]) -> str:
@@ -350,6 +486,23 @@ def law_change_line(supabase: Any, quotes: Sequence[VerifiedQuote]) -> str:
         return ""
 
 
+def _render_searched(scope: SearchScope | None) -> str:
+    if scope is None:
+        return f"<searched>{_NO_SEARCH_RECORD}</searched>"
+    lines = ["<searched>"]
+    if scope.searched_in:
+        lines.append(f"<searched_in>{_esc('، '.join(scope.searched_in))}</searched_in>")
+    if scope.not_searched_in:
+        lines.append(f"<not_searched_in>{_esc('، '.join(scope.not_searched_in))}</not_searched_in>")
+    if scope.sectors:
+        lines.append(f"<sectors>{_esc('، '.join(scope.sectors))}</sectors>")
+    for where, text in scope.queries:
+        attr = f' in="{where}"' if where else ""
+        lines.append(f"<query{attr}>{_esc(text)}</query>")
+    lines.append("</searched>")
+    return "\n".join(lines)
+
+
 def _render_report(report: ReportRow) -> str:
     # Reports published before gaps were saved carry them in their summary.
     if report.gaps:
@@ -362,10 +515,19 @@ def _render_report(report: ReportRow) -> str:
         f'<report label="{report.label}" confidence="{report.confidence}">\n'
         f"<title>{_esc(report.title)}</title>\n"
         f"<asked>{_esc(report.describe_query)}</asked>\n"
+        f"{_render_searched(report.searched)}\n"
         f"<content_md>\n{_esc(report.content_md)}\n</content_md>\n"
         f"<gaps>\n{gaps}\n</gaps>\n"
+        f"{_render_corrections(report)}"
         f"</report>"
     )
+
+
+def _render_corrections(report: ReportRow) -> str:
+    """Errors a full text already showed in this report, so none is flagged twice."""
+    if not report.corrections:
+        return ""
+    return f"<corrections>\n{_esc(report.corrections)}\n</corrections>\n"
 
 
 def _conversation_rows(messages: Sequence[Any]) -> list[Any]:

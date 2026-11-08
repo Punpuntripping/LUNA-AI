@@ -5,6 +5,7 @@ import {
   BookText,
   FileText,
   FileSearch,
+  Gavel,
   ImageIcon,
   AlertCircle,
   PenLine,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react";
 import { memo, useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipTrigger,
@@ -41,6 +42,7 @@ import { TemplatesUsedLine } from "@/components/chat/TemplatesUsedLine";
 import { WiBadge } from "@/components/workspace/WiBadge";
 import { getDoneAt } from "@/components/analytics/run-tracker";
 import { useAnswerSeen } from "@/components/analytics/useAnswerSeen";
+import { parseLibraryLinks, type LibraryLink } from "@/lib/contracts/library-links";
 import type {
   Attachment,
   Message,
@@ -174,6 +176,10 @@ export const MessageBubble = memo(function MessageBubble({
   const openIds = hasArtifacts
     ? [...artifactIds!, ...referencedOnly]
     : referencedOnly;
+  // «اقرأ الحكم كاملًا»: the ruling pages this reply quotes or corrects
+  // (persisted ``metadata.library_links``; it arrives with the refetch at done).
+  const libraryLinks =
+    !isUser && !isAgentQuestion ? parseLibraryLinks(message.metadata?.library_links) : [];
   // «القوالب المستخدمة في الكتابة»: any settled assistant answer whose turn
   // drafted something — never mid-stream, never on a failed row or the
   // agent_question callout.
@@ -524,13 +530,14 @@ export const MessageBubble = memo(function MessageBubble({
               hover. Hidden during streaming — the SSE events attach to the
               assistant message_id and the bubble re-renders with them once
               settled. */}
-          {!isCurrentlyStreaming && openIds.length > 0 && (
+          {!isCurrentlyStreaming && (openIds.length > 0 || libraryLinks.length > 0) && (
             <div className="flex flex-wrap items-center gap-1.5 mt-3">
               <ArtifactChip
                 artifactIds={openIds}
                 artifactLookup={artifactLookup}
                 onOpenArtifact={onOpenArtifact}
               />
+              <LibraryLinkButtons links={libraryLinks} />
             </div>
           )}
 
@@ -844,6 +851,38 @@ function ArtifactChip({
         })}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * «اقرأ الحكم كاملًا» — one outline button per ruling the reply's text comes
+ * from, beside the green «افتح …» CTA (which stays the loudest thing in the
+ * row). Opens the ruling's library page in a new tab so the chat stays put.
+ * With two or more, each names its ruling, or they would read as duplicates.
+ */
+function LibraryLinkButtons({ links }: { links: LibraryLink[] }) {
+  if (links.length === 0) return null;
+  const named = links.length > 1;
+  return (
+    <>
+      {links.map((link) => (
+        <a
+          key={link.url}
+          href={link.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={cn(
+            buttonVariants({ variant: "outline", size: "sm" }),
+            "h-8 max-w-full gap-1.5 px-3 text-xs"
+          )}
+        >
+          <Gavel className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">
+            {named && link.title ? `${link.label}: ${link.title}` : link.label}
+          </span>
+        </a>
+      ))}
+    </>
   );
 }
 

@@ -58,11 +58,34 @@ class MissingLLM(BaseModel):
     )
 
 
+class ReadingErrorLLM(BaseModel):
+    report: str = Field(description="The report label, for example R1.")
+    report_text: str = Field(
+        description="The report's words that the full text contradicts, copied exactly.",
+    )
+    source: str = Field(
+        description="The label of the source you read with read_full_text, for example S7.",
+    )
+    full_text: str = Field(
+        description="The full text's words that show what is right, copied exactly.",
+    )
+
+
 class AnalyzerOutputLLM(BaseModel):
     restatement: str = Field(
         description=(
             "The user's actual question in clear Arabic, with every fact the "
             "conversation has established (dates, amounts, type of debt, parties)."
+        ),
+    )
+    outside_search: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Each point the user asks about in this message that no query in <searched> "
+            "looked for and that no passage you quote settles in its own words. A passage "
+            "that names what it covers does not settle what it leaves out. Never a side "
+            "issue the user did not ask about, and never a gap a report already listed: "
+            "that was looked for, so it goes in missing. Empty when every point was looked for."
         ),
     )
     changes_governing_law: bool = Field(
@@ -86,7 +109,31 @@ class AnalyzerOutputLLM(BaseModel):
     rationale: str = Field(default="", description="Short reason. Logged, never shown.")
 
 
+class AnalyzerOutputFullLLM(AnalyzerOutputLLM):
+    """The output when ``read_full_text`` is on. Off, the schema stays as it was."""
+
+    reading_errors: list[ReadingErrorLLM] = Field(
+        default_factory=list,
+        description=(
+            "Each place where a full text you read with read_full_text contradicts what "
+            "a report says. A detail the report left out is not one. Empty when none."
+        ),
+    )
+
+
 # ── Loaded context ───────────────────────────────────────────────────────────
+
+
+@dataclass
+class SearchScope:
+    """What one prior search looked for. A report knows only what these reached."""
+
+    #: (where the query searched, its text), in the search's own order. Encoded.
+    queries: list[tuple[str, str]] = field(default_factory=list)
+    searched_in: list[str] = field(default_factory=list)
+    not_searched_in: list[str] = field(default_factory=list)
+    #: The sector filter the search ran under. Empty = no filter.
+    sectors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -102,6 +149,14 @@ class ReportRow:
     confidence: str
     gaps: list[str]
     summary: str
+    #: None when the search left no record of its queries.
+    searched: SearchScope | None = None
+    #: The stored search result, loaded once and read again for the sources.
+    ura: dict[str, Any] = field(default_factory=dict, repr=False)
+    #: Saved reading corrections, rendered (encoded). "" when none.
+    corrections: str = ""
+    #: The report's words each saved correction shows wrong (encoded). Never quotable.
+    corrected_texts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -127,6 +182,15 @@ class SourceRow:
     cited_in: list[tuple[str, int]] = field(default_factory=list)
     #: Reports whose search kept this source, newest first.
     report_ids: list[str] = field(default_factory=list)
+    #: What the search read: the text the report was written from. Rulings and
+    #: services only; never quotable.
+    search_view: str = ""
+    #: ``services.id`` of a service that has «الدليل الشامل», else "".
+    guide_service_id: str = ""
+
+    @property
+    def has_guide(self) -> bool:
+        return bool(self.guide_service_id)
 
 
 # ── Call and result ──────────────────────────────────────────────────────────
@@ -171,6 +235,26 @@ class VerifiedQuote:
     report_id: str | None = None
     #: Laws behind this quote, for the law-change notice.
     regulation_ids: list[str] = field(default_factory=list)
+    #: Where a source quote comes from: the domain and its key (case_ref for a
+    #: ruling). Empty for a report's own words.
+    domain: str = ""
+    open_key: str = ""
+    #: Source labels a report sentence cites (D10). Internal: never shown.
+    cited_labels: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ReadingCorrection:
+    """A report sentence the full text contradicts, both sides proven verbatim."""
+
+    report_id: str
+    #: The report's words, as the model read them (encoded under وضع السرية).
+    report_text: str
+    #: The full text's words. Read from the source table, so never encoded.
+    corrected_text: str
+    source_name: str
+    domain: str
+    open_key: str
 
 
 class CoveredQuote(BaseModel):
@@ -200,6 +284,12 @@ class AnalyzerResult:
     degraded: bool = False
     #: What the model said before the rules ran. Telemetry only.
     verdict_before_rules: Verdict | None = None
+    #: Points no prior search looked for. Already merged into ``missing``.
+    outside_search: list[str] = field(default_factory=list)
+    #: Verified reading errors. Their full-text side is already in ``quotes``.
+    reading_errors: list[ReadingCorrection] = field(default_factory=list)
+    reading_errors_dropped: int = 0
+    full_read_n: int = 0
     quotes_dropped: int = 0
     reports_n: int = 0
     sources_n: int = 0

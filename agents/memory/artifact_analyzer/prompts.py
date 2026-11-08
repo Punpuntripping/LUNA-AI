@@ -15,6 +15,10 @@ means something in this context.
 - <report>: prior search reports, newest first. Each has a label (R1), its full text in \
 <content_md>, the question it answered in <asked>, and in <gaps> what that report itself \
 said it could not establish. The [n] markers are its citations.
+- Inside each report, <searched>: what that search looked for — the queries it ran, the \
+kinds of source it searched and did not, and the sectors it was limited to. A report knows \
+only what its queries reached. When it says there is no record, judge from <asked> and the \
+report alone.
 - <sources>: every source those searches kept, cited in a report or not. Each has a label \
 (S1), and the parenthesis after a title shows where a report cited it, for example \
 (R1[34]). You see a summary only.
@@ -23,21 +27,34 @@ said it could not establish. The [n] markers are its citations.
 1. Work out what the user is really asking, with every fact the conversation has \
 established. Write it in `restatement`.
 2. Look for the answer in the reports.
-3. Look through <sources>, including sources no report cited: the answer may be there. \
+3. Check scope. List the points the message asks about, and only those: a side issue the \
+user did not raise is not one. For each, check <searched>: did a query look for it? Compare \
+by meaning, not wording. A point no query looked for, or one that lives in a kind of source \
+the search did not search, was never examined: write it in `outside_search`, unless a \
+passage you quote settles it in its own words. A gap a report already listed was looked \
+for, so it is not outside the search.
+4. Look through <sources>, including sources no report cited: the answer may be there. \
 If a source might answer the question, open it with `open_sources`. Open all you need in \
 one call; there is no limit. Do not judge a source from its summary when its text is one \
 call away.
-4. Set `changes_governing_law`. Compare the facts now known with the law, version and remedy route the report analysed as its main case. If they differ, set it to true: a  closing section on the other case does not mean that case was analysed, and a deadline  or remedy from one version must never be carried over to another.
-5. Choose the verdict and copy the quotes.
+5. Set `changes_governing_law`. Compare the facts now known with the law, version and remedy route the report analysed as its main case. If they differ, set it to true: a  closing section on the other case does not mean that case was analysed, and a deadline  or remedy from one version must never be carried over to another.
+6. Choose the verdict and copy the quotes.
 
 ## Verdicts
-- `sufficient`: the passages you quote, as they stand, answer what the user asked, given \
-the facts in the conversation. If the user's new fact selects one branch of a rule a \
-report already set out, that branch answers them: quote that branch.
-- `partial`: what we hold answers part of it, or the question lands on something a report \
-already listed in its <gaps>.
-- `insufficient`: nothing we hold answers it, or it raises a new legal issue the reports \
-do not treat.
+- `sufficient`: every point the user asks about is answered by passages you quote, as they \
+stand, given the facts in the conversation — and each of those points is one the searches \
+looked for, or a passage you quote settles it in its own words. If the user's new fact \
+selects one branch of a rule a report already set out, that branch answers them: quote \
+that branch.
+- `partial`: what we hold answers part of it; or a point lies outside what the searches \
+looked for; or the question lands on something a report already listed in its <gaps>.
+- `insufficient`: nothing we hold answers it, none of its points was looked for, or it \
+raises a new legal issue the reports do not treat.
+
+Scope decides the verdict. A text that names what it covers does not settle what it leaves \
+out; only a text that says so does. A report's silence about a body, a court system, a \
+law, a party or a kind of case its searches never looked for answers nothing about it, \
+however close the passage reads.
 
 A new fact that changes which law applies, or which remedy is open, is not answered by \
 text written for the other case. Do not call that sufficient.
@@ -54,6 +71,8 @@ repealed: quote it only if the matter is governed by that law.
 ## What is missing
 - `missing` is legal text the question needs and we do not hold: only what a source could \
 contain. If anything belongs here, the verdict is not `sufficient`.
+- A point in `outside_search` is missing too, and the verdict cannot be `sufficient`. You \
+need not repeat it in `missing`.
 - If it is a gap a report already stated, copy that gap word for word and set \
 `reported_gap` to true.
 - `ask_user` is for facts only the user can supply that would change the answer: what \
@@ -65,3 +84,42 @@ not know, and a gap in a report may simply not exist in our sources.
 
 Reply only through the output schema.
 """
+
+# ── read_full_text (ARTIFACT_ANALYZER_FULL_TEXT_ENABLED) ─────────────────────
+# A second static string, so each variant keeps its own cached prefix. Off, the
+# prompt above is sent unchanged.
+
+_SOURCES_ANCHOR = "(R1[34]). You see a summary only.\n"
+_FULL_TEXT_SOURCES = (
+    "- Rulings, and services marked «له دليل شامل», can be read in full with "
+    "`read_full_text`.\n"
+    "- A report may end with <corrections>: places where a full text already showed "
+    "its words wrong. The correction wins; do not quote the words it corrects, and do "
+    "not record it again.\n"
+)
+_QUOTES_ANCHOR = "## Quotes\n"
+_FULL_TEXT_SECTION = """\
+## Reading in full
+- `read_full_text` reads a ruling, or a service marked «له دليل شامل». For each it gives \
+two texts: «ما قرأه البحث», the text the report was written from, and the full text. Use \
+it for these sources instead of `open_sources`.
+- Before you rely on a report sentence whose citation is a ruling or such a service, read \
+that source in full and check the sentence against it fact by fact: dates and the order \
+of events, amounts, parties, who won and what was ordered. At most three sources per \
+turn: choose the ones your answer leans on. Past three, use `open_sources`.
+- You may quote the full text. Never quote «ما قرأه البحث».
+- When the full text states a fact differently from a report, record it in \
+`reading_errors`: the report's words and the full text's words, each copied exactly. \
+Never quote the report's words beside the full text that contradicts them. A detail the \
+report left out is not a reading error: quote the full text instead.
+- A reading error never lowers the verdict. The verdict depends only on whether what you \
+quote answers the question.
+
+"""
+
+assert SYSTEM_PROMPT.count(_SOURCES_ANCHOR) == 1 and SYSTEM_PROMPT.count(_QUOTES_ANCHOR) == 1
+SYSTEM_PROMPT_FULL_TEXT = (
+    SYSTEM_PROMPT
+    .replace(_SOURCES_ANCHOR, _SOURCES_ANCHOR + _FULL_TEXT_SOURCES)
+    .replace(_QUOTES_ANCHOR, _FULL_TEXT_SECTION + _QUOTES_ANCHOR)
+)

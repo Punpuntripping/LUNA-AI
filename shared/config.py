@@ -483,6 +483,11 @@ class Settings(BaseSettings):
     # ARTIFACT_ANALYZER_USERS: comma-separated users.user_id; empty = everyone.
     ARTIFACT_ANALYZER_ENABLED: bool = False
     ARTIFACT_ANALYZER_USERS: Optional[str] = None
+    # read_full_text (plan artifact_analyzer_scope_full_text.md §4): the analyzer
+    # reads rulings and guided services in full, and saves reading corrections.
+    # Off: no tool, the prompt without its section, nothing saved. USERS as above.
+    ARTIFACT_ANALYZER_FULL_TEXT_ENABLED: bool = False
+    ARTIFACT_ANALYZER_FULL_TEXT_USERS: Optional[str] = None
 
     # ── Official judicial principles — .claude/plans/official_principles_refs.md
     # Gates RETRIEVAL only: the reg and case executors' principle side-calls and

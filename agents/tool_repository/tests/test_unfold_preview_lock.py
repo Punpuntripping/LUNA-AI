@@ -220,5 +220,6 @@ def test_lock_columns_are_selected_only_when_the_lock_can_bite():
     sb = SimpleNamespace(table=lambda _n: _Q())
     uwi._fetch_item(sb, ITEM, USER)
     uwi._fetch_item(sb, ITEM, USER, with_lock_columns=True)
-    assert selects[0] == "title, content_md"
+    # Unlocked reads take the saved reading corrections, never the lock columns.
+    assert selects[0] == "title, content_md, reading_corrections:metadata->reading_corrections"
     assert "created_while_paid" in selects[1] and "wi_seq" in selects[1]

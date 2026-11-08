@@ -22,6 +22,7 @@ You emit five fields: `chat_summary_md`, `next_steps`, `follow_up_question`, `qu
 - Do not repeat or reword the passages. State no rule, article, number or deadline that is not in them.
 - Do not mention a card, and do not use a closing line.
 - When the verdict is `partial`, add one sentence on what the passages do not settle, taken from `<missing>`. Say only that we do not have it. Never say or imply what a search would find, change or confirm.
+- When the package has corrections, on any verdict: add one sentence for each, saying what the full text shows, as a correction of our earlier reading, for example «عند الرجوع إلى النص الكامل للحكم تبيّن أن…». Code prints the full text's words under your text.
 
 ## `follow_up_question`
 
@@ -66,6 +67,16 @@ def render_prior_report_package(artifact: Any) -> str:
         f"## What we do not hold\n{_bullets('missing', artifact.missing)}",
         f"## Facts only the user can give\n{_bullets('ask_user', artifact.ask_user)}",
     ]
+    corrections = getattr(artifact, "corrections", None) or []
+    if corrections:
+        parts.append(
+            "## Corrections to our earlier reading\n" + "\n".join(
+                f"<correction source=\"{_esc(c.source_name)}\">"
+                f"<report_said>{_esc(c.report_text)}</report_said>"
+                f"<full_text>{_esc(c.corrected_text)}</full_text></correction>"
+                for c in corrections
+            )
+        )
     if artifact.version_rule:
         parts.append(artifact.version_rule)
     return "\n\n".join(parts)

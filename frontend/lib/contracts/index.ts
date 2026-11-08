@@ -24,6 +24,7 @@ export * from "./wi-preview";
 
 // Pure helpers (mobile Phase 2 — see README "What lives here").
 export * from "./citations";
+export * from "./library-links";
 export * from "./library-refusal";
 export * from "./markdown/images";
 export * from "./markdown/plain-text";

@@ -68,7 +68,7 @@ def _db(**over: Any) -> FakeDB:
 
 def _deps(db: FakeDB) -> AnalyzerDeps:
     reports = load_reports(db, _call())
-    sources = load_sources(db, reports, USER)
+    sources = load_sources(db, reports)
     return AnalyzerDeps(
         supabase=db, user_id=USER, conversation_id=CONVO,
         reports={r.label: r for r in reports},
@@ -81,7 +81,7 @@ def test_the_tool_can_open_a_principle_by_its_rule_column() -> None:
 
 
 def test_a_principle_is_offered_with_its_own_block_and_name() -> None:
-    (source,) = load_sources(_db(), load_reports(_db(), _call()), USER)
+    (source,) = load_sources(_db(), load_reports(_db(), _call()))
     assert source.domain == "principles"
     assert source.open_key == P2_ID
     assert source.name == "المبدأ رقم 2 — الأصول والقواعد — الهيئة القضائية العليا"
@@ -99,7 +99,7 @@ def test_a_principle_is_offered_with_its_own_block_and_name() -> None:
 
 def test_a_cited_principle_with_no_search_row_still_reads_as_one() -> None:
     db = _db(retrieval_artifacts=[])
-    (source,) = load_sources(db, load_reports(db, _call()), USER)
+    (source,) = load_sources(db, load_reports(db, _call()))
     assert source.name == "مبدأ قضائي"
     assert source.block.splitlines()[0] == "### [S1] مبدأ قضائي رسمي: مبدأ قضائي  (R1[7])"
 

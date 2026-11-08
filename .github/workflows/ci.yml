@@ -94,6 +94,8 @@ jobs:
             agents/tests/test_today_context.py \
             agents/tests/test_search_publish_gaps.py \
             agents/tests/test_artifact_analyzer.py \
+            agents/tests/test_artifact_analyzer_full_text.py \
+            agents/tests/test_reading_corrections.py \
             agents/tests/test_reply_guard.py \
             agents/tests/test_prior_report_reply.py \
             agents/tests/test_prior_check_flow.py

@@ -37,6 +37,7 @@ from agents.utils.conversation_memory import (
     render_conversation_memory,
 )
 from agents.utils.history import messages_to_history, provenance_item_ids
+from agents.utils.reading_corrections import KEY as CORRECTIONS_KEY, with_corrections
 from pydantic_ai.messages import ModelMessage
 from shared.identity import resolve_call_name
 from shared.workspace.preview_lock import LockPolicy, is_locked, preview_cut
@@ -347,7 +348,8 @@ def _load_workspace_item_summaries(
     """
     columns = (
         "item_id, wi_seq, kind, title, summary, content_md, created_at, "
-        "doc_type:metadata->>doc_type"
+        "doc_type:metadata->>doc_type, "
+        f"{CORRECTIONS_KEY}:metadata->{CORRECTIONS_KEY}"
     )
     if wi_lock_policy is not None:
         # What the lock decides on; selected only when it can bite.
@@ -404,12 +406,18 @@ def _load_workspace_item_summaries(
                 else row.get("content_md") or ""
             ),
             "_preview_locked": is_locked(row, wi_lock_policy),
+            "_corrections": row.get(CORRECTIONS_KEY),
         })
 
     _apply_summary_fallback(summaries)
     for s in summaries:
         s.pop("_content_md", None)
         s.pop("_preview_locked", None)
+        # A report's saved reading corrections follow its summary, so the router
+        # does not answer from a sentence a full text showed wrong.
+        corrections = s.pop("_corrections", None)
+        if corrections:
+            s["summary"] = with_corrections(s.get("summary") or "", corrections) or s.get("summary")
     return summaries, compaction_summary_md
 
 

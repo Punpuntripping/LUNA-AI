@@ -105,6 +105,7 @@ from agents.paused_runs import (
 )
 from agents.utils.conversation_memory import memory_enabled
 from agents.utils.prior_coverage import analyzer_enabled
+from agents.utils.reading_corrections import with_corrections
 from agents.utils.reply_guard import ReplyGuard, scrub_reply
 from agents.utils.usage_sink import bind_run_id, collect_llm_calls, record_call
 from shared.observability import get_logfire
@@ -325,7 +326,11 @@ def _load_attached_items(
                         wi_seq=d.get("wi_seq"),
                         kind=d.get("kind") or "unknown",
                         title=d.get("title") or "",
-                        content_md=d.get("content_md") or "",
+                        # A report carries its saved reading corrections, so the
+                        # planner and the writer read the note with the text.
+                        content_md=with_corrections(
+                            d.get("content_md") or "", d.get("metadata"),
+                        ),
                         # The artifact_summarizer's summary — what a forwarded
                         # case document carries to the deep_search expanders
                         # (case_documents_forwarding.md §3.6). May be empty
@@ -805,7 +810,11 @@ def _load_prior_search_summaries(
                     wi_seq=row.get("wi_seq"),
                     title=encode_active(row.get("title") or ""),
                     describe_query=encode_active(row.get("describe_query") or ""),
-                    summary=encode_active(row.get("summary") or ""),
+                    # With the reading corrections saved on it, so a new search
+                    # does not lean on a sentence a full text showed wrong.
+                    summary=encode_active(
+                        with_corrections(row.get("summary") or "", metadata)
+                    ),
                     confidence=confidence,
                     created_at=row.get("created_at") or "",
                 )
@@ -2980,6 +2989,36 @@ async def _delivery_events(
     }
 
 
+async def _save_reading_corrections(
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    corrections: list,
+    message_id: str | None,
+) -> None:
+    """Save what the full text corrected as a note on each report (D13). Never raises.
+
+    The model read the report under وضع السرية, so its words are decoded first:
+    stored text is always real.
+    """
+    from agents.utils.reading_corrections import save
+    from backend.app.services.masking_service import active_codec, decode_text
+
+    codec = active_codec()
+    try:
+        await asyncio.to_thread(
+            save,
+            supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            corrections=corrections,
+            message_id=message_id,
+            decode=lambda text: decode_text(codec, text, emit=False),
+        )
+    except Exception as exc:  # noqa: BLE001 — the note is never worth the reply
+        logger.warning("reading corrections not saved: %s", exc)
+
+
 async def _run_prior_check(
     *,
     question: str,
@@ -3007,6 +3046,7 @@ async def _run_prior_check(
     """
     from agents.memory.artifact_analyzer import AnalyzerCall, analyze
     from agents.responder.prior_report import write_prior_report_reply
+    from agents.responder.ruling_links import ruling_links
 
     result = await analyze(
         AnalyzerCall(
@@ -3024,6 +3064,10 @@ async def _run_prior_check(
     )
     handoff = result.handoff()
     handoff_dict = handoff.model_dump() if handoff is not None else None
+    if result.reading_errors:
+        await _save_reading_corrections(
+            supabase, user_id, conversation_id, result.reading_errors, assistant_message_id,
+        )
 
     if result.verdict == "insufficient":
         yield {"type": "agent_selected", "agent_family": "deep_search"}
@@ -3063,6 +3107,10 @@ async def _run_prior_check(
     if result.verdict == "partial":
         # Read back next turn if the user accepts the offer to search.
         metadata["analyzer_handoff"] = handoff_dict
+    links = await ruling_links(supabase, result)
+    if links:
+        # «اقرأ الحكم كاملًا» under the reply (plan artifact_analyzer_scope_full_text.md D14).
+        metadata["library_links"] = links
     yield {"type": "reply_metadata", "metadata": metadata}
     async for ev in _delivery_events(reply, "prior_report", supabase, user_id, welcome):
         yield ev

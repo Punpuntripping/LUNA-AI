@@ -9,10 +9,11 @@ import asyncio
 import logging
 from typing import Any
 
+from agents.utils.prior_coverage import full_text_enabled
 from agents.utils.tracking import track_stage
 from backend.app.services.masking_service import active_codec, persist_new_mappings
 
-from .agent import ANALYZER_LIMITS, SLOT, create_artifact_analyzer
+from .agent import SLOT, create_artifact_analyzer, limits_for
 from .context import law_change_line, load_reports, load_sources, render_turn_message
 from .deps import AnalyzerDeps
 from .models import AnalyzerCall, AnalyzerOutputLLM, AnalyzerResult
@@ -40,13 +41,18 @@ async def analyze(call: AnalyzerCall, supabase: Any) -> AnalyzerResult:
             reports = await asyncio.to_thread(load_reports, supabase, call)
             if not reports:
                 return _degraded("no reports")
-            sources = await asyncio.to_thread(load_sources, supabase, reports, call.user_id)
+            full_text = full_text_enabled(call.user_id)
+            span.set(full_text=full_text)
+            sources = await asyncio.to_thread(
+                load_sources, supabase, reports, full_text=full_text,
+            )
 
             deps = AnalyzerDeps(
                 supabase=supabase,
                 user_id=call.user_id,
                 conversation_id=call.conversation_id,
                 case_id=call.case_id,
+                full_text=full_text,
                 reports={r.label: r for r in reports},
                 sources={s.label: s for s in sources},
             )
@@ -54,8 +60,8 @@ async def analyze(call: AnalyzerCall, supabase: Any) -> AnalyzerResult:
             # Fakes minted while encoding must exist before the LLM reads them.
             persist_new_mappings(supabase, call.user_id, active_codec())
 
-            run = await create_artifact_analyzer().run(
-                message, deps=deps, usage_limits=ANALYZER_LIMITS,
+            run = await create_artifact_analyzer(full_text).run(
+                message, deps=deps, usage_limits=limits_for(full_text),
             )
             span.record_run(run, slot=SLOT)
             if not isinstance(run.output, AnalyzerOutputLLM):
@@ -73,6 +79,10 @@ async def analyze(call: AnalyzerCall, supabase: Any) -> AnalyzerResult:
                 opened_n=result.opened_n,
                 quotes_n=len(result.quotes),
                 quotes_dropped=result.quotes_dropped,
+                outside_search_n=len(result.outside_search),
+                full_read_n=result.full_read_n,
+                reading_errors_n=len(result.reading_errors),
+                reading_errors_dropped=result.reading_errors_dropped,
                 reports_quoted_n=len({q.item_id for q in result.quotes if q.item_id}),
                 rationale=(run.output.rationale or "")[:300],
             )

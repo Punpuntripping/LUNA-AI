@@ -2,6 +2,7 @@
 // re-exports them from `@/types`).
 
 import type { AgentFamily, WorkspaceItemKind } from "./agents";
+import type { LibraryLink } from "./library-links";
 
 // ==========================================
 // MESSAGES
@@ -42,6 +43,12 @@ export interface MessageMetadata {
    * nothing. Validate with ``parseTemplatesUsed`` (lib/templates-used.ts).
    */
   templates_used?: TemplateUsed[];
+  /**
+   * «اقرأ الحكم كاملًا»: pages in our library this reply's text comes from
+   * (a ruling it quotes or corrects). Validate with ``parseLibraryLinks``
+   * (lib/contracts/library-links.ts).
+   */
+  library_links?: LibraryLink[];
   [key: string]: unknown;
 }
 
