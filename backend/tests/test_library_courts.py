@@ -236,11 +236,11 @@ def _is_arabic_refusal(res, status: int = 400) -> None:
 # ===========================================================================
 
 
-def test_every_one_of_the_thirteen_slugs_resolves() -> None:
+def test_every_one_of_the_fourteen_slugs_resolves() -> None:
     """The map is IMPORTED, never retyped: a 14th bucket added to
     ``shared/library/courts.py`` must not need a second edit in the API layer to
     become servable."""
-    assert len(COURT_ORDER) == 13
+    assert len(COURT_ORDER) == 14
     for slug in COURT_ORDER:
         variants, key = pl._court_section(slug)
         assert key == slug
@@ -471,14 +471,14 @@ def test_an_empty_court_section_reports_one_page_not_zero(stubs) -> None:
 # ===========================================================================
 
 
-def test_the_courts_endpoint_lists_all_thirteen_in_the_servers_order(stubs) -> None:
+def test_the_courts_endpoint_lists_all_fourteen_in_the_servers_order(stubs) -> None:
     """ORDER IS THE SERVER'S: corpus volume descending, i.e. ``COURT_ORDER``
     insertion order. Alphabetical would bury المحكمة التجارية (20,335) under
     المحكمة العامة (69), and the frontend renders the list as given."""
     body = _client().get(COURTS).json()
     assert [c["slug"] for c in body["courts"]] == COURT_ORDER
     assert [c["label"] for c in body["courts"]] == [COURT_LABELS[s] for s in COURT_ORDER]
-    assert len(body["courts"]) == 13
+    assert len(body["courts"]) == 14
 
 
 def test_a_court_tile_carries_its_published_count_and_page_count(stubs) -> None:

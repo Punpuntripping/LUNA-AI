@@ -28,6 +28,8 @@ import re
 import unicodedata
 from typing import Any, Mapping, Optional
 
+from shared.library.courts import court_for_slug, slug_for_court
+
 # ── slug alphabet ──────────────────────────────────────────────────────────
 # Deliberately identical to ``scripts/build_seo_slugs.py``'s ``slugify_ar`` so
 # judgment slugs sit in the same URL namespace style as every other wing. It is
@@ -192,7 +194,13 @@ def judgment_subject(row: Mapping[str, Any]) -> str:
         if line:
             return _truncate_words(line)
 
-    court = (row.get("court") or "").strip()
+    # The section label, not the raw string: the وزارة العدل feed stores the
+    # court as a bare adjective ('التجارية', 'العامة'), which would read
+    # «حكم التجارية رقم …». Rulings with no summary at all only became
+    # publishable on 2026-11-08 (the full-text fallback), so this is the
+    # first time the fallback reaches a page.
+    raw_court = (row.get("court") or "").strip()
+    court = court_for_slug(slug_for_court(raw_court)) or raw_court
     number = (row.get("case_number") or row.get("judgment_number") or "").strip()
     if court and number:
         return _truncate_words(f"حكم {court} رقم {number}")

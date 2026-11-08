@@ -3,7 +3,7 @@
 `public.cases.court` is free text straight from the source feeds: **30 distinct
 values on 30,531 rows**, where the same judicial body appears under many spellings
 that differ only by CITY («… في مدينة جدة» / «… في مدينة الرياض» / «… في مدينة
-الدمام»). This module is the digest: it collapses those 30 raw strings into **13
+الدمام»). This module is the digest: it collapses those 30 raw strings into **14
 browsable buckets** and is the ONLY normalizer for court names in the codebase.
 
 Two rules the user set (2026-08-08):
@@ -108,6 +108,10 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
         ),
         FEED_ZATCA,
     ),
+    # 1,249 — was 69 until 2026-11-08, when the 10-17 MOJ batch («مجموعة
+    # الأحكام القضائية», 1434–1435هـ) had «المحكمة العامة ب<city>» rewritten to the
+    # feed convention: court = 'العامة', city in `city`.
+    "المحكمة-العامة": ("المحكمة العامة", ("العامة",), FEED_MOJ),
     # 1,063 — income tax + the zakat/income appeal circuit (same subject matter).
     "لجان-ضريبة-الدخل-والزكاة": (
         "لجان ضريبة الدخل والزكاة",
@@ -152,8 +156,9 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
     ),
     # 106
     "محكمة-الاستئناف": ("محكمة الاستئناف", ("الاستئناف",), FEED_MOJ),
-    # 69
-    "المحكمة-العامة": ("المحكمة العامة", ("العامة",), FEED_MOJ),
+    # 64 — the 10-17 MOJ batch's criminal-court rulings (1434–1435هـ), rewritten
+    # to the feed convention 2026-11-08 («المحكمة الجزائية/الجزئية ب<city>» → 'الجزائية').
+    "المحكمة-الجزائية": ("المحكمة الجزائية", ("الجزائية",), FEED_MOJ),
     # 35 — the entire labour corpus. Shipped thin on purpose (user decision
     # 2026-08-08): the route is honest and stands as a visible marker that labour
     # judgments need SOURCING, which is a scraping job and not part of this work.
@@ -162,7 +167,7 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
 
 # ─── Derived lookups ──────────────────────────────────────────────────────────
 COURT_ORDER: list[str] = list(_COURTS)
-"""The 13 court slugs in browse (volume) order."""
+"""The 14 court slugs in browse (volume) order."""
 
 COURT_LABELS: dict[str, str] = {slug: label for slug, (label, _v, _f) in _COURTS.items()}
 """slug → Arabic display label. This is the H1 and the switcher label."""
@@ -214,7 +219,7 @@ if _reserved_collision:
 
 
 def court_for_slug(slug: Optional[str]) -> Optional[str]:
-    """Arabic label for a court slug, or ``None`` if it is not one of the 13.
+    """Arabic label for a court slug, or ``None`` if it is not one of the 14.
 
     Returns ``None`` for reserved segments even if a future edit added them to the
     map. Callers treat ``None`` as a 404 and MUST NOT issue a DB round-trip for it.

@@ -744,6 +744,90 @@ def _load_candidates(client) -> list[dict]:
     return rows
 
 
+# ── full-text fallback (owner 2026-11-08: «ingest all») ─────────────────────
+# The four gate columns are pipeline SUMMARIES; the page body is ``content``,
+# the ruling as issued (see library_service.get_judgment_doc). ~1,100 rulings
+# hold the full text but no usable summary (plain-paragraph or missing ملخص).
+# With ``--text-fallback`` they qualify on the text itself: at least this many
+# characters of ``content`` (the 44 stubs measured 2026-11-08 sit at ~150) and,
+# as for every row, a subject of _MIN_SUBJECT_WORDS words.
+_TEXT_FALLBACK_MIN_CHARS = 500
+_TEXT_FALLBACK_PAGE = 100  # content averages ~8.5k chars; keep each page small
+_TITLE_COLS = ("summary", "facts", "ruling")  # judgment_subject's later sources
+
+
+def _load_text_fallback_candidates(client) -> list[dict]:
+    """Rows that FAIL the four-column gate but carry the full ruling text.
+
+    Reads ``content`` only to measure it — it is dropped before the row is
+    returned, so the selection never holds ~10 MB of text. Same id-ordered
+    paging as :func:`_load_candidates`.
+    """
+    select = ", ".join(_CANDIDATE_COLS + _TITLE_COLS + ("content",))
+    gate_or = ",".join(f"{c}.is.null" for c in _REQUIRED_COLS)
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        res = (
+            client.table(CORPUS_TABLE)
+            .select(select)
+            .or_(gate_or)
+            .not_.is_("content", "null")
+            .order("id")
+            .range(offset, offset + _TEXT_FALLBACK_PAGE - 1)
+            .execute()
+        )
+        batch = res.data or []
+        for r in batch:
+            text = (r.pop("content", None) or "").strip()
+            # A title must come from SOME summary text: with none at all the
+            # subject degrades to «حكم <court> رقم unk05» (17 rows, 2026-11-08),
+            # which the owner chose to leave out.
+            titled = any((r.get(c) or "").strip() for c in ("short_summary",) + _TITLE_COLS)
+            if len(text) >= _TEXT_FALLBACK_MIN_CHARS and titled:
+                r["_text_fallback"] = True
+                rows.append(r)
+        if len(batch) < _TEXT_FALLBACK_PAGE:
+            break
+        offset += _TEXT_FALLBACK_PAGE
+    return rows
+
+
+# ── PDPL: block on a NUMBER, not on a phrase (owner 2026-11-08) ─────────────
+# library_judgment_pdpl_risk flags «الهوية الوطنية» even when the source masked
+# the number as «رقم (...)» — 2,825 of 3,040 flagged unpublished rulings were
+# that. ``--pdpl-number-only`` blocks a ruling only when an actual number is
+# there: a 10-digit 1/2-prefixed run (ASCII OR Arabic-Indic — the view checks
+# ASCII only), or an identity phrase followed by 4+ digits.
+_PDPL_ID10_RE = r"(^|[^0-9٠-٩])[12١٢][0-9٠-٩]{9}([^0-9٠-٩]|$)"
+_PDPL_PHRASE_NUM_RE = (
+    r"(رقم الهوية|الهوية الوطنية|السجل المدني|رقم الإقامة|جواز السفر)"
+    r"[[:space:]:/()–—-]*(رقم)?[[:space:]:/()–—-]*[0-9٠-٩]{4,}"
+)
+
+
+def _load_pdpl_number_ids(client) -> set[str]:
+    """Corpus ids whose text carries an identity NUMBER (see above)."""
+    out: set[str] = set()
+    for rx in (_PDPL_ID10_RE, _PDPL_PHRASE_NUM_RE):
+        offset = 0
+        while True:
+            res = (
+                client.table(CORPUS_TABLE)
+                .select("id")
+                .filter("content", "match", rx)
+                .order("id")
+                .range(offset, offset + _READ_PAGE - 1)
+                .execute()
+            )
+            batch = res.data or []
+            out.update(str(r["id"]) for r in batch if r.get("id"))
+            if len(batch) < _READ_PAGE:
+                break
+            offset += _READ_PAGE
+    return out
+
+
 def _load_refs_ids(client) -> set[str]:
     """Ids of ELIGIBLE judgments whose ``referenced_regulations`` is non-empty.
 
@@ -1186,6 +1270,7 @@ def select_sample(
     alloc: Optional[dict[str, Any]] = None,
     pool: Optional[set[str]] = None,
     exclude: Optional[set[str]] = None,
+    text_fallback: bool = False,
 ) -> tuple[list[dict], dict]:
     """Pick the ``limit`` judgments to publish. Deterministic and re-runnable.
 
@@ -1208,6 +1293,8 @@ def select_sample(
     """
     alloc = dict(alloc or _FEED_ALLOCATION)
     candidates = _load_candidates(client)
+    if text_fallback:
+        candidates += _load_text_fallback_candidates(client)
     if pool is not None:
         candidates = [r for r in candidates if str(r.get("id")) in pool]
     if exclude:
@@ -1328,6 +1415,8 @@ def select_sample(
         "candidates": len(candidates),
         "eligible": len(eligible),
         "rejected_subject": rejected_subject,
+        "text_fallback": sum(1 for r in eligible if r.get("_text_fallback")),
+        "text_fallback_selected": sum(1 for r in selected if r.get("_text_fallback")),
         "feed_supply": supply,
         "feed_quotas": feed_quotas,
         "per_feed": per_feed,
@@ -1528,21 +1617,31 @@ def cmd_publish(
     client, limit: int, apply: bool, base: str, alloc: Optional[dict[str, Any]] = None,
     *,
     exclude_pdpl_risk: bool = False,
+    pdpl_number_only: bool = False,
+    text_fallback: bool = False,
 ) -> None:
     """Select the rows, derive slugs, and (on ``--apply``) upsert the sidecar."""
     existing, taken = _load_existing(client)
-    exclude = _load_pdpl_risk_ids(client) if exclude_pdpl_risk else None
-    if exclude is not None:
+    exclude = None
+    if pdpl_number_only:
+        exclude = _load_pdpl_number_ids(client)
+        print(f"  excluding rulings with an identity NUMBER: {len(exclude)}")
+    elif exclude_pdpl_risk:
+        exclude = _load_pdpl_risk_ids(client)
         print(f"  excluding PDPL-flagged rulings: {len(exclude)}")
-    rows, stats = select_sample(client, limit, alloc, exclude=exclude)
+    rows, stats = select_sample(
+        client, limit, alloc, exclude=exclude, text_fallback=text_fallback
+    )
 
     print(
         f"\n--- candidate funnel ---\n"
         f"  eligible corpus rows      : {stats['candidates']}"
         f"  (has short_summary+facts+ruling+reasoning)\n"
         f"  rejected: weak subject    : {stats['rejected_subject']}\n"
-        f"  eligible for selection    : {stats['eligible']}\n"
+        f"  eligible for selection    : {stats['eligible']}"
+        f"  (full-text fallback: {stats['text_fallback']})\n"
         f"  selected this run         : {stats['selected']} (--limit {limit})"
+        f"  (full-text fallback: {stats['text_fallback_selected']})"
     )
     if stats["selected"] < limit:
         print(f"  NOTE: corpus could only supply {stats['selected']} of {limit} rows.")
@@ -1857,6 +1956,21 @@ def main() -> None:
         "bulk publish should not include them.",
     )
     ap.add_argument(
+        "--pdpl-number-only",
+        action="store_true",
+        help="like --exclude-pdpl-risk, but block a ruling only when its text "
+        "carries an identity NUMBER (10-digit 1/2-prefixed, ASCII or Arabic-Indic, "
+        "or a 4+ digit run right after an identity phrase). A phrase whose number "
+        "the source masked as «(...)» no longer blocks.",
+    )
+    ap.add_argument(
+        "--text-fallback",
+        action="store_true",
+        help="also take rulings missing a summary column when their full text "
+        f"(content) has >= {_TEXT_FALLBACK_MIN_CHARS} chars. The page body is the "
+        "text either way; the summary columns are only the gate.",
+    )
+    ap.add_argument(
         "--unpublish-all",
         action="store_true",
         help="clear ALL judgment slugs from the sidecar (requires --apply)",
@@ -1919,6 +2033,8 @@ def main() -> None:
         cmd_publish(
             client, args.limit, args.apply, base, alloc,
             exclude_pdpl_risk=args.exclude_pdpl_risk,
+            pdpl_number_only=args.pdpl_number_only,
+            text_fallback=args.text_fallback,
         )
     if not args.apply:
         print("(no rows written — re-run with --apply to persist)\n")

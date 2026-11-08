@@ -1,4 +1,4 @@
-// The 13 court buckets of the /judgments wing — «الجهة القضائية».
+// The 14 court buckets of the /judgments wing — «الجهة القضائية».
 //
 // ⚠ `shared/library/courts.py` IS THE SOURCE OF TRUTH. This file is a MIRROR of
 // its `_COURTS` dict: the slug keys, the Arabic labels, and — critically — the
@@ -33,7 +33,7 @@
 // the corpus.
 
 /**
- * `[slug, label]` for the 13 buckets, in the Python module's insertion order.
+ * `[slug, label]` for the 14 buckets, in the Python module's insertion order.
  *
  * One tuple per bucket rather than two parallel literals ON PURPOSE: the slug
  * and its label are the same Arabic text differing only by the hyphens, and
@@ -51,6 +51,8 @@ const COURTS = [
   ["ديوان-المظالم-إدارية", "ديوان المظالم — الدائرة الإدارية"],
   // 1,622
   ["لجان-ضريبة-القيمة-المضافة", "لجان ضريبة القيمة المضافة"],
+  // 1,249 — the 10-17 MOJ batch joined it 2026-11-08 (was 69).
+  ["المحكمة-العامة", "المحكمة العامة"],
   // 1,063
   ["لجان-ضريبة-الدخل-والزكاة", "لجان ضريبة الدخل والزكاة"],
   // 474 — entity 40048 (2026-11-05), its own section, not المحكمة العمالية.
@@ -63,8 +65,8 @@ const COURTS = [
   ["المحكمة-العليا", "المحكمة العليا"],
   // 106
   ["محكمة-الاستئناف", "محكمة الاستئناف"],
-  // 69
-  ["المحكمة-العامة", "المحكمة العامة"],
+  // 64 — criminal-court rulings from the 10-17 MOJ batch (2026-11-08).
+  ["المحكمة-الجزائية", "المحكمة الجزائية"],
   // 35 — the entire labour corpus. Thin on purpose: the section is honest and
   // stands as a visible marker that labour judgments need sourcing.
   ["المحكمة-العمالية", "المحكمة العمالية"],
@@ -73,7 +75,7 @@ const COURTS = [
 /** The closed slug vocabulary, as a type. */
 export type CourtSlug = (typeof COURTS)[number][0];
 
-/** The 13 slugs in browse (corpus-volume) order. Never re-sort. */
+/** The 14 slugs in browse (corpus-volume) order. Never re-sort. */
 export const COURT_ORDER: readonly CourtSlug[] = COURTS.map(([slug]) => slug);
 
 /** slug → Arabic display label. This is the H1 and the switcher label. */
