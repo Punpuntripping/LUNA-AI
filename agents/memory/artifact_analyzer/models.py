@@ -58,6 +58,23 @@ class MissingLLM(BaseModel):
     )
 
 
+class PointLLM(BaseModel):
+    point: str = Field(
+        description=(
+            "One point the user asks about in this message, as a short phrase. Never a "
+            "side issue the user did not raise."
+        ),
+    )
+    query: str = Field(
+        default="",
+        description=(
+            "The <query> in <searched> that asked about this legal question, copied word "
+            "for word. Empty when no query did: a query on another question in the same "
+            "dispute, or one in a kind of source the point does not live in, does not count."
+        ),
+    )
+
+
 class ReadingErrorLLM(BaseModel):
     report: str = Field(description="The report label, for example R1.")
     report_text: str = Field(
@@ -78,14 +95,12 @@ class AnalyzerOutputLLM(BaseModel):
             "conversation has established (dates, amounts, type of debt, parties)."
         ),
     )
-    outside_search: list[str] = Field(
-        default_factory=list,
+    points: list[PointLLM] = Field(
+        min_length=1,
         description=(
-            "Each point the user asks about in this message that no query in <searched> "
-            "looked for and that no passage you quote settles in its own words. A passage "
-            "that names what it covers does not settle what it leaves out. Never a side "
-            "issue the user did not ask about, and never a gap a report already listed: "
-            "that was looked for, so it goes in missing. Empty when every point was looked for."
+            "Each point the user asks about in this message, with the query that looked "
+            "for it. Code checks every query against <searched>: a point without one was "
+            "never examined, whatever a source we hold says about it."
         ),
     )
     changes_governing_law: bool = Field(
@@ -284,8 +299,10 @@ class AnalyzerResult:
     degraded: bool = False
     #: What the model said before the rules ran. Telemetry only.
     verdict_before_rules: Verdict | None = None
-    #: Points no prior search looked for. Already merged into ``missing``.
+    #: Points no prior query looked for. Already merged into ``missing``.
     outside_search: list[str] = field(default_factory=list)
+    #: Points the user asked about, as the model listed them.
+    points_n: int = 0
     #: Verified reading errors. Their full-text side is already in ``quotes``.
     reading_errors: list[ReadingCorrection] = field(default_factory=list)
     reading_errors_dropped: int = 0

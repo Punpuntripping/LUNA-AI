@@ -219,7 +219,7 @@ def sample_followups(client: Any, n: int, since: str) -> list[Case]:
 
 async def run_case(case: Case, client: Any, gate: asyncio.Semaphore) -> dict:
     from pydantic_ai import capture_run_messages
-    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
 
     from agents.memory.artifact_analyzer import AnalyzerCall, analyze
 
@@ -252,6 +252,16 @@ async def run_case(case: Case, client: Any, gate: asyncio.Semaphore) -> dict:
         + usage["out"] * _RATE_OUT
     ) / 1e6
 
+    # The points as the model last listed them, with the query it named for each:
+    # what a reviewer needs to tell a real match from a stretch.
+    points: list[dict] = []
+    for m in messages:
+        if isinstance(m, ModelResponse):
+            for part in m.parts:
+                args = part.args_as_dict() if isinstance(part, ToolCallPart) else {}
+                if isinstance(args.get("points"), list):
+                    points = args["points"]
+
     said = " ".join([result.restatement, *result.missing])
     return {
         "id": case.id,
@@ -270,6 +280,7 @@ async def run_case(case: Case, client: Any, gate: asyncio.Semaphore) -> dict:
         ],
         "missing": result.missing,
         "outside_search": result.outside_search,
+        "points": points,
         "full_read_n": result.full_read_n,
         "reading_errors": [
             {"report_text": c.report_text, "corrected_text": c.corrected_text, "source": c.source_name}

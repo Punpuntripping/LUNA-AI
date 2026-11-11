@@ -34,7 +34,15 @@ from agents.memory.artifact_analyzer.models import (
 from agents.memory.artifact_analyzer.prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_FULL_TEXT
 from agents.memory.artifact_analyzer.verify import finalize, unread_citations
 from agents.simple_search.unfold import GUIDE_SLICE_GAP_AR
-from agents.tests.test_artifact_analyzer import CONVO, USER, FakeDB, _call, _report_row
+from agents.tests.test_artifact_analyzer import (
+    CONVO,
+    POINT,
+    POINT_JSON,
+    USER,
+    FakeDB,
+    _call,
+    _report_row,
+)
 
 REPORT_SAYS = "حكمت المحكمة بإلزام المدعى عليه بدفع مئة ألف ريال"
 RULING_SAYS = "حكمت الدائرة بإلزام المدعى عليه بدفع خمسين ألف ريال"
@@ -118,7 +126,7 @@ def _read(deps: AnalyzerDeps, *keys: str) -> None:
 
 def _out(verdict: str = "sufficient", quotes: list | None = None, errors: list | None = None):
     return AnalyzerOutputFullLLM(
-        restatement="س", verdict=verdict, quotes=quotes or [], reading_errors=errors or [],
+        restatement="س", points=[POINT], verdict=verdict, quotes=quotes or [], reading_errors=errors or [],
     )
 
 
@@ -294,7 +302,10 @@ def test_no_check_when_the_tool_is_off_or_the_reads_are_used_up() -> None:
 
 
 def _final(quotes: list[dict], errors: list[dict] | None = None) -> dict:
-    out = {"restatement": "س", "verdict": "sufficient", "quotes": quotes, "missing": []}
+    out = {
+        "restatement": "س", "points": [POINT_JSON], "verdict": "sufficient",
+        "quotes": quotes, "missing": [],
+    }
     if errors is not None:
         out["reading_errors"] = errors
     return out

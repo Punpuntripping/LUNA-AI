@@ -21,7 +21,7 @@ from agents.memory.artifact_analyzer.deps import AnalyzerDeps
 from agents.memory.artifact_analyzer.models import AnalyzerOutputLLM, QuoteLLM
 from agents.memory.artifact_analyzer.tools import DOMAIN_TABLES, read_sources
 from agents.memory.artifact_analyzer.verify import finalize
-from agents.tests.test_artifact_analyzer import CONVO, USER, FakeDB, _call, _report_row
+from agents.tests.test_artifact_analyzer import CONVO, POINT, USER, FakeDB, _call, _report_row
 
 P2_ID = "64052e1b-17d9-511d-8508-ed401e624d1a"
 RULE = "الأصل براءة الذمة حتى يثبت ما يوجب الإدانة."
@@ -115,7 +115,9 @@ def test_opening_reads_the_table_and_falls_back_to_the_stored_rule() -> None:
 def test_a_principle_is_quotable_only_after_it_is_opened() -> None:
     deps = _deps(_db())
     quote = QuoteLLM(source="S1", text=RULE)
-    out = AnalyzerOutputLLM(restatement="س", verdict="sufficient", quotes=[quote], missing=[])
+    out = AnalyzerOutputLLM(
+        restatement="س", points=[POINT], verdict="sufficient", quotes=[quote], missing=[],
+    )
     assert finalize(deps, out).quotes == []
 
     deps.opened["S1"] = read_sources(deps, [deps.sources["S1"]])["S1"]

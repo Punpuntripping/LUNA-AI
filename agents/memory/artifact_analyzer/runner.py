@@ -80,6 +80,7 @@ async def analyze(call: AnalyzerCall, supabase: Any) -> AnalyzerResult:
                 quotes_n=len(result.quotes),
                 quotes_dropped=result.quotes_dropped,
                 outside_search_n=len(result.outside_search),
+                points_n=result.points_n,
                 full_read_n=result.full_read_n,
                 reading_errors_n=len(result.reading_errors),
                 reading_errors_dropped=result.reading_errors_dropped,

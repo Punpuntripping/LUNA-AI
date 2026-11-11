@@ -16,7 +16,7 @@ from .full_text import register_read_full_text
 from .models import AnalyzerOutputFullLLM, AnalyzerOutputLLM
 from .prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_FULL_TEXT
 from .tools import register_open_sources
-from .verify import unread_citations, unverified_quotes, unverified_reading_errors
+from .verify import unread_citations, unverified_points, unverified_quotes, unverified_reading_errors
 
 SLOT = "artifact_analyzer"
 
@@ -27,11 +27,11 @@ ANALYZER_LIMITS = UsageLimits(output_tokens_limit=OUTPUT_TOKENS_CAP, request_lim
 FULL_TEXT_LIMITS = UsageLimits(output_tokens_limit=OUTPUT_TOKENS_CAP, request_limit=8)
 
 _RETRY_MSG = (
-    "Reply through the output schema only (restatement, outside_search, verdict, quotes, "
+    "Reply through the output schema only (restatement, points, verdict, quotes, "
     "missing, ask_user, rationale), with no text outside it."
 )
 _RETRY_MSG_FULL_TEXT = (
-    "Reply through the output schema only (restatement, outside_search, verdict, quotes, "
+    "Reply through the output schema only (restatement, points, verdict, quotes, "
     "missing, ask_user, rationale, reading_errors), with no text outside it."
 )
 
@@ -49,6 +49,14 @@ def _retry_reasons(deps: AnalyzerDeps, value: AnalyzerOutputLLM) -> list[str]:
             "These quotes are not word for word in that report or opened "
             f"source:\n{listed}\nCopy the exact text, open the source first, "
             "or remove the quote and reconsider the verdict."
+        )
+    points = unverified_points(deps, value)
+    if points:
+        listed = "\n".join(f"- {p.point[:80]}: «{p.query[:120]}»" for p in points)
+        reasons.append(
+            "These queries are not word for word in <searched>:\n"
+            f"{listed}\nCopy the query exactly from <searched>, or leave `query` empty "
+            "when no query asked about that point."
         )
     errors = unverified_reading_errors(deps, value)
     if errors:

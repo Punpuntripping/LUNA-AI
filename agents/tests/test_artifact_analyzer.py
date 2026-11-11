@@ -27,6 +27,7 @@ from agents.memory.artifact_analyzer.models import (
     AnalyzerOutputLLM,
     AnalyzerResult,
     MissingLLM,
+    PointLLM,
     QuoteLLM,
     ReportRow,
     SourceRow,
@@ -34,7 +35,12 @@ from agents.memory.artifact_analyzer.models import (
 )
 from agents.memory.artifact_analyzer.prompts import SYSTEM_PROMPT
 from agents.memory.artifact_analyzer.tools import read_sources
-from agents.memory.artifact_analyzer.verify import finalize, normalize, unverified_quotes
+from agents.memory.artifact_analyzer.verify import (
+    finalize,
+    normalize,
+    unverified_points,
+    unverified_quotes,
+)
 
 USER = "user-1"
 CONVO = "convo-1"
@@ -159,9 +165,21 @@ def _deps(db: FakeDB | None = None) -> AnalyzerDeps:
     )
 
 
-def _out(verdict: str, quotes: list[QuoteLLM] | None = None, missing: list | None = None):
+#: The fixture's report has no record of its queries, so its <asked> is its only query.
+ASKED = "ما النسبة المستثناة؟"
+POINT = PointLLM(point="النسبة المستثناة من الراتب", query=ASKED)
+POINT_JSON = POINT.model_dump()
+
+
+def _out(
+    verdict: str,
+    quotes: list[QuoteLLM] | None = None,
+    missing: list | None = None,
+    points: list[PointLLM] | None = None,
+):
     return AnalyzerOutputLLM(
-        restatement="سؤال", verdict=verdict, quotes=quotes or [], missing=missing or [],
+        restatement="سؤال", points=points or [POINT], verdict=verdict,
+        quotes=quotes or [], missing=missing or [],
     )
 
 
@@ -575,6 +593,19 @@ def test_chunk_quote_is_not_held_back_by_a_low_confidence_report() -> None:
     assert finalize(deps, _out("sufficient", quotes)).verdict == "sufficient"
 
 
+def test_combining_marks_in_another_order_are_the_same_words() -> None:
+    """Stored shadda-then-damma, copied damma-then-shadda: an exact copy (12989be5 turn 3)."""
+    stored = "يعد\u0651\u064f الخلف الخاص حسن النية"
+    copied = "يعد\u064f\u0651 الخلف الخاص حسن النية"
+    deps = _deps()
+    deps.opened["S1"] = stored
+    (verified,) = finalize(deps, _out("sufficient", [QuoteLLM(source="S1", text=copied)])).quotes
+    assert verified.text == normalize(stored)
+    deps.reports["R1"].content_md = BODY + "\n\n" + stored + " [5]."
+    (from_report,) = finalize(deps, _out("sufficient", [QuoteLLM(source="R1", text=copied)])).quotes
+    assert from_report.source_name  # its citation still resolves
+
+
 def test_counters_and_duplicates() -> None:
     result = finalize(_deps(), _out("sufficient", [GOOD_QUOTE, GOOD_QUOTE, BAD_QUOTE]))
     assert len(result.quotes) == 1
@@ -610,40 +641,96 @@ def test_prompt_forbids_predicting_a_search() -> None:
 def test_prompt_makes_search_scope_part_of_the_verdict() -> None:
     assert "<searched>" in SYSTEM_PROMPT
     assert "Scope decides the verdict." in SYSTEM_PROMPT
-    assert "write it in `outside_search`" in SYSTEM_PROMPT
-    # General, never one topic: no court or body named.
+    assert "copy it word for word into `query`" in SYSTEM_PROMPT
+    # The two ways round the check that turns 14-17 of 12989be5 took.
+    assert "settles it in its own words" not in SYSTEM_PROMPT
+    assert "A report that cites a law has not set out every rule in it." in SYSTEM_PROMPT
+    # General, never one topic: no court, body or law named.
     assert "ديوان" not in SYSTEM_PROMPT and "المظالم" not in SYSTEM_PROMPT
+    assert "التسجيل العيني" not in SYSTEM_PROMPT
 
 
-def test_scope_is_checked_before_the_verdict_is_chosen() -> None:
+def test_points_are_listed_before_the_verdict_is_chosen() -> None:
     fields = list(AnalyzerOutputLLM.model_fields)
-    assert fields.index("outside_search") < fields.index("verdict")
+    assert fields.index("points") < fields.index("verdict")
 
 
-def test_a_point_no_search_looked_for_cannot_stay_sufficient() -> None:
-    out = _out("sufficient", [GOOD_QUOTE])
-    out.outside_search = ["نفاذ مبادئ جهة قضائية أخرى"]
-    result = finalize(_deps(), out)
+def test_an_answer_must_name_at_least_one_point() -> None:
+    with pytest.raises(ValueError):
+        AnalyzerOutputLLM(restatement="س", points=[], verdict="sufficient")
+
+
+def _scoped_deps() -> AnalyzerDeps:
+    return _deps(_scoped_db(sub_queries=_QUERIES))
+
+
+def _pt(point: str, query: str = "") -> PointLLM:
+    return PointLLM(point=point, query=query)
+
+
+def test_a_point_with_a_query_the_search_ran_is_looked_for() -> None:
+    out = _out("sufficient", [GOOD_QUOTE], points=[_pt("الاستثناء", _QUERIES[0]["query"])])
+    result = finalize(_scoped_deps(), out)
+    assert (result.verdict, result.outside_search, result.points_n) == ("sufficient", [], 1)
+
+
+def test_a_point_no_query_looked_for_cannot_stay_sufficient() -> None:
+    out = _out("sufficient", [GOOD_QUOTE], points=[
+        _pt("الاستثناء", _QUERIES[0]["query"]),
+        _pt("نفاذ مبادئ جهة قضائية أخرى"),
+    ])
+    result = finalize(_scoped_deps(), out)
     assert result.verdict == "partial"
     assert result.verdict_before_rules == "sufficient"
     assert result.missing == ["نفاذ مبادئ جهة قضائية أخرى"]
     assert result.outside_search == ["نفاذ مبادئ جهة قضائية أخرى"]
 
 
-def test_an_unsearched_point_is_not_repeated_when_also_missing() -> None:
-    out = _out("partial", [GOOD_QUOTE], [MissingLLM(text="نقطة لم يُبحث فيها")])
-    out.outside_search = ["نقطة لم يُبحث فيها", "  "]
-    assert finalize(_deps(), out).missing == ["نقطة لم يُبحث فيها"]
-
-
-def test_an_unsearched_point_keeps_insufficient_even_beside_a_reported_gap() -> None:
-    # A reported gap alone is no reason to search (D11); a point never looked for is.
-    out = _out("insufficient", missing=[
-        MissingLLM(text="لم تحدد المراجع مدة التظلم", reported_gap=True),
+def test_no_point_looked_for_means_search_whatever_we_quote() -> None:
+    """12989be5 turns 16-17: a kept source spoke to the point, no query asked about it."""
+    deps = _scoped_deps()
+    deps.opened["S1"] = ARTICLE
+    out = _out("sufficient", [GOOD_QUOTE, QuoteLLM(source="S1", text=ARTICLE)], points=[
+        _pt("متى يُحتسب الاعتراض"), _pt("أثر التأخر في التأشير"),
     ])
-    assert finalize(_deps(), out).verdict == "partial"
-    out.outside_search = ["مسألة لم يُبحث فيها"]
-    assert finalize(_deps(), out).verdict == "insufficient"
+    result = finalize(deps, out)
+    assert result.verdict == "insufficient"
+    assert result.missing == ["متى يُحتسب الاعتراض", "أثر التأخر في التأشير"]
+
+
+def test_a_query_is_checked_word_for_word_against_what_ran() -> None:
+    deps = _scoped_deps()
+    made_up = _pt("الاستثناء", "حجز الراتب عموماً")
+    result = finalize(deps, _out("sufficient", [GOOD_QUOTE], points=[made_up]))
+    assert result.verdict == "insufficient"
+    assert unverified_points(deps, _out("sufficient", points=[made_up])) == [made_up]
+    # Layout and escaping are not differences; an empty query is honest, not a misquote.
+    spaced = _pt("الاستثناء", "  الاستثناء من   الحجز على الراتب ")
+    assert unverified_points(deps, _out("sufficient", points=[spaced, _pt("أخرى")])) == []
+
+
+def test_asked_counts_as_a_query_only_when_the_search_left_no_record() -> None:
+    assert finalize(_deps(), _out("sufficient", [GOOD_QUOTE])).verdict == "sufficient"
+    # With a record, the question a report answered is not a query: "the same
+    # dispute" is exactly what the check must not accept.
+    asked = _out("sufficient", [GOOD_QUOTE], points=[_pt("النسبة", ASKED)])
+    assert finalize(_scoped_deps(), asked).verdict == "insufficient"
+
+
+def test_a_reported_gap_no_query_looked_for_still_searches() -> None:
+    """D11 holds for a gap a search looked for and could not fill. A gap on a point
+    no query asked about was never searched (12989be5: R1's gaps named turns 14-17)."""
+    looked = _out("insufficient", missing=[REPORTED])
+    assert finalize(_deps(), looked).verdict == "partial"
+    never = _out("insufficient", missing=[REPORTED], points=[_pt("مدة التظلم")])
+    assert finalize(_deps(), never).verdict == "insufficient"
+
+
+def test_an_unsearched_point_is_not_repeated_when_also_missing() -> None:
+    out = _out("partial", [GOOD_QUOTE], [MissingLLM(text="نقطة لم يُبحث فيها")], points=[
+        POINT, _pt("نقطة لم يُبحث فيها"), _pt("  "),
+    ])
+    assert finalize(_deps(), out).missing == ["نقطة لم يُبحث فيها"]
 
 
 def test_nothing_outside_the_search_leaves_the_verdict_alone() -> None:
@@ -667,8 +754,11 @@ def _model(script: list) -> FunctionModel:
     return FunctionModel(respond)
 
 
-def _final(verdict: str, quotes: list[dict]) -> dict:
-    return {"restatement": "س", "verdict": verdict, "quotes": quotes, "missing": []}
+def _final(verdict: str, quotes: list[dict], points: list[dict] | None = None) -> dict:
+    return {
+        "restatement": "س", "points": points or [POINT_JSON], "verdict": verdict,
+        "quotes": quotes, "missing": [],
+    }
 
 
 def _run(monkeypatch, script: list, db: FakeDB | None = None) -> AnalyzerResult:
@@ -698,6 +788,15 @@ def test_a_bad_quote_gets_one_chance_to_be_fixed(monkeypatch) -> None:
 def test_a_quote_never_fixed_cannot_stand(monkeypatch) -> None:
     bad = _final("sufficient", [{"source": "R1", "text": "نص مختلق"}])
     assert _run(monkeypatch, [bad, bad]).verdict == "insufficient"
+
+
+def test_a_misquoted_query_gets_one_chance_to_be_fixed(monkeypatch) -> None:
+    quote = [{"source": "R1", "text": GOOD_QUOTE.text}]
+    result = _run(monkeypatch, [
+        _final("sufficient", quote, [{"point": "النسبة", "query": "النسبة المستثناة"}]),
+        _final("sufficient", quote),
+    ])
+    assert (result.verdict, result.outside_search) == ("sufficient", [])
 
 
 def test_model_failure_falls_back_to_searching(monkeypatch) -> None:

@@ -2,20 +2,22 @@
 
 The model's verdict goes in; the rules below decide what comes out. A quote is
 checked by exact match after normalising layout only (whitespace, ``[n]``
-markers, bold markers). There is deliberately no fuzzy matching: a quote that
-differs by a word is a rephrase, and a rephrase is exactly what this agent must
-not produce.
+markers, bold markers, the order of combining marks). There is deliberately no
+fuzzy matching: a quote that differs by a word is a rephrase, and a rephrase is
+exactly what this agent must not produce.
 """
 from __future__ import annotations
 
 import html
 import re
+import unicodedata
 
 from .deps import AnalyzerDeps
 from .full_text import MAX_FULL_READS, eligible
 from .models import (
     AnalyzerOutputLLM,
     AnalyzerResult,
+    PointLLM,
     QuoteLLM,
     ReadingCorrection,
     ReadingErrorLLM,
@@ -72,9 +74,18 @@ def _clean_with_map(raw: str) -> tuple[str, list[int]]:
     return "".join(chars), positions
 
 
+def _canonical(text: str) -> str:
+    """HTML entities undone, combining marks in one order.
+
+    The context is HTML-escaped, so a model may copy an entity back. And «يعدُّ» is
+    stored shadda-then-damma while the model writes damma-then-shadda: the same
+    text, a different string, so an exact copy failed (convo 12989be5 turn 3).
+    """
+    return unicodedata.normalize("NFC", html.unescape(text or ""))
+
+
 def normalize(text: str) -> str:
-    # The context is HTML-escaped, so a model may copy an entity back.
-    return _clean_with_map(html.unescape(text or ""))[0].strip(_EDGE_CHARS)
+    return _clean_with_map(_canonical(text))[0].strip(_EDGE_CHARS)
 
 
 def _sources_behind(deps: AnalyzerDeps, report: ReportRow, raw_slice: str) -> list[SourceRow]:
@@ -90,7 +101,7 @@ def _sources_behind(deps: AnalyzerDeps, report: ReportRow, raw_slice: str) -> li
 
 
 def _verify_report_quote(deps: AnalyzerDeps, report: ReportRow, text: str) -> VerifiedQuote | None:
-    raw = html.unescape(report.content_md)
+    raw = _canonical(report.content_md)
     clean, positions = _clean_with_map(raw)
     start = clean.find(text)
     if start < 0:
@@ -229,6 +240,31 @@ def _corrected(
     return any(w and (w in quote.text or quote.text in w) for w in wrong)
 
 
+def _searched_queries(deps: AnalyzerDeps) -> set[str]:
+    """Every query the prior searches ran, as the model saw them.
+
+    A search with no record of its queries has only the question it answered.
+    """
+    found: set[str] = set()
+    for report in deps.reports.values():
+        if report.searched is not None:
+            texts = [text for _, text in report.searched.queries]
+        else:
+            texts = [report.describe_query]
+        found.update(n for n in (normalize(t) for t in texts) if n)
+    return found
+
+
+def _looked_for(queries: set[str], point: PointLLM) -> bool:
+    return normalize(point.query) in queries
+
+
+def unverified_points(deps: AnalyzerDeps, output: AnalyzerOutputLLM) -> list[PointLLM]:
+    """Points that name a query no prior search ran. Empty queries are honest: not listed."""
+    queries = _searched_queries(deps)
+    return [p for p in output.points if normalize(p.query) and not _looked_for(queries, p)]
+
+
 def _is_reported_gap(deps: AnalyzerDeps, text: str) -> bool:
     """Reports from before gaps were saved state them in their summary."""
     wanted = normalize(text)
@@ -270,17 +306,28 @@ def finalize(deps: AnalyzerDeps, output: AnalyzerOutputLLM) -> AnalyzerResult:
             quotes.append(verified)
 
     missing = [m for m in output.missing if (m.text or "").strip()]
-    # Scope decides the verdict: a point no prior search looked for was never
-    # examined, so a report's silence on it answers nothing.
-    outside = [p.strip() for p in output.outside_search if (p or "").strip()]
+    # Scope decides the verdict: a point no prior query looked for was never
+    # examined. A source a search kept for another question may speak to it, but
+    # the search never looked for the rest of the law on that point, nor for the
+    # text in force (convo 12989be5, turns 14-17). Code checks the query, so
+    # "it is the same dispute" cannot stand in for one.
+    points = [p for p in output.points if (p.point or "").strip()]
+    queries = _searched_queries(deps)
+    outside = list(dict.fromkeys(
+        p.point.strip() for p in points if not _looked_for(queries, p)
+    ))
     only_reported_gaps = not outside and bool(missing) and all(
         m.reported_gap and _is_reported_gap(deps, m.text) for m in missing
     )
 
     verdict = output.verdict
     # D11: a gap a search already reported is not a reason to search on our own.
+    # It holds only when a query looked for it: ``outside`` is empty.
     if verdict == "insufficient" and only_reported_gaps:
         verdict = "partial"
+    # Not one point was looked for: nothing we hold was searched for this message.
+    if points and all(not _looked_for(queries, p) for p in points):
+        verdict = "insufficient"
     if verdict != "insufficient" and not quotes and not only_reported_gaps:
         verdict = "insufficient"
     # Something a source could hold is missing, or was never looked for, so it
@@ -309,6 +356,7 @@ def finalize(deps: AnalyzerDeps, output: AnalyzerOutputLLM) -> AnalyzerResult:
         ask_user=[a.strip() for a in output.ask_user if (a or "").strip()],
         verdict_before_rules=output.verdict,
         outside_search=outside,
+        points_n=len(points),
         reading_errors=corrections,
         reading_errors_dropped=len(reading_errors_of(output)) - len(corrections),
         full_read_n=len(deps.full_texts),
