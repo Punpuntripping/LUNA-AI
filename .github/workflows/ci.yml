@@ -98,7 +98,8 @@ jobs:
             agents/tests/test_reading_corrections.py \
             agents/tests/test_reply_guard.py \
             agents/tests/test_prior_report_reply.py \
-            agents/tests/test_prior_check_flow.py
+            agents/tests/test_prior_check_flow.py \
+            agents/tests/test_wafer_provider.py
 
   frontend:
     name: Frontend

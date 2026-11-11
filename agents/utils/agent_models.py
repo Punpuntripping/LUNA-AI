@@ -14,8 +14,9 @@ output-validation and tool-retry failures do NOT trigger provider fallback.
 
 There are two providers (Alibaba primary, OpenRouter fallback) and two model
 families per tier (Qwen primary, DeepSeek fallback). Every DeepSeek flash slot
-additionally pins a Baseten ``head`` (0731 or V4.1), so in practice Baseten
-serves first and Alibaba is the backup. Each agent declares an
+additionally pins a ``head`` on Baseten (0731 or V4.1) or Wafer (V4.1), and the
+V4.1 slots also pin the other host as ``backup``, so in practice Baseten/Wafer
+serve first and Alibaba is the backup. Each agent declares an
 intent via ``ModelPolicy``; ``AGENT_MODELS`` below is the single editable
 control surface. (Embeddings are NOT governed here — see
 ``agents/utils/embeddings.py``, which stays on Alibaba DashScope.)
@@ -80,6 +81,10 @@ class ModelPolicy:
     into the normal chain on a provider error. A CLI ``--model`` token clears it
     — an explicit override replaces the head outright (see
     :func:`apply_override`).
+
+    ``backup`` pins the SECOND cell to an explicit key, right after ``head`` —
+    used to put the same model on another host ahead of the Alibaba cell (e.g.
+    V4.1 on Wafer behind V4.1 on Baseten). Cleared with ``head`` by an override.
     """
 
     tier: Tier
@@ -87,6 +92,7 @@ class ModelPolicy:
     primary: Family = "qwen"
     reasoning: Reasoning = "default"
     head: str | None = None
+    backup: str | None = None
 
 
 #: The single cross-provider safety net for every chain. One cheap, fast,
@@ -113,15 +119,18 @@ def resolve_chain(policy: ModelPolicy) -> list[str]:
     3-cell chain instead: head → the slot's own primary cell (Alibaba,
     same family) → the cross-provider net (OpenRouter). The other-family cell
     is dropped — a qwen3.5-flash aggregator scored worst in the 2026-10-18 A/B.
+
+    ``policy.backup``, when set, is inserted right after the head (e.g. Wafer
+    V4.1 → Baseten V4.1 → Alibaba 0731 → OpenRouter).
     """
     fb_family = _OTHER_FAMILY[policy.primary]
     cells = TIERS[policy.tier]
     primary = cells[policy.primary][policy.provider]
     head = policy.head or primary
+    pinned = [head] + ([policy.backup] if policy.backup else [])
     if head != primary and get_model_config(head).provider != policy.provider:
-        return [head, primary, _CROSS_PROVIDER_FALLBACK[policy.provider]]
-    return [
-        head,
+        return pinned + [primary, _CROSS_PROVIDER_FALLBACK[policy.provider]]
+    return pinned + [
         cells[fb_family][policy.provider],
         _CROSS_PROVIDER_FALLBACK[policy.provider],
     ]
@@ -164,8 +173,14 @@ def _reasoning_settings(key: str, reasoning: Reasoning) -> dict | None:
         high|max + ``reasoning.max_tokens``. Baseten hard-cuts thinking at
         ~4096 tokens unless ``reasoning.max_tokens`` is sent — verified
         2026-10-18; thinking_budget / max_thinking_tokens do NOT lift it.
+      * DeepSeek on Wafer       -> ``reasoning_effort`` high|max at EVERY level.
+        Wafer serves V4.1 1017 with reasoning OFF ("none") unless an effort is
+        sent, so "default" must send one to keep thinking on like the Baseten
+        cell. No thinking cap (21k reasoning tokens seen 2026-11-11).
     """
     cfg = get_model_config(key)
+    if cfg.provider == "wafer":
+        return {"extra_body": {"reasoning_effort": "max" if reasoning == "max" else "high"}}
     if cfg.provider == "baseten":
         extra: dict = {
             "chat_template_kwargs": {"thinking": True},
@@ -214,12 +229,17 @@ def build_fallback_model(policy: ModelPolicy) -> FallbackModel:
                 create_model(key, model_settings=_reasoning_settings(key, policy.reasoning))
             )
         except ValueError:
-            # Missing API key for an optional provider (e.g. BASETEN_API_KEY
-            # unset) — drop that cell, the rest of the chain still serves.
-            if get_model_config(key).provider != "baseten":
+            # Missing API key for an optional provider (e.g. BASETEN_API_KEY or
+            # WAFER_API_KEY unset) — drop that cell, the rest of the chain serves.
+            provider = get_model_config(key).provider
+            if provider not in _OPTIONAL_PROVIDERS:
                 raise
-            logger.warning("agent_models: skipping %s (BASETEN_API_KEY unset)", key)
+            logger.warning("agent_models: skipping %s (%s API key unset)", key, provider)
     return FallbackModel(models[0], *models[1:])
+
+
+#: Hosts whose cells are skipped (not fatal) when their API key is unset.
+_OPTIONAL_PROVIDERS = ("baseten", "wafer")
 
 
 # slot -> policy -- THE per-agent control surface. Edit tiers/providers here.
@@ -261,11 +281,19 @@ _RERANKER = ModelPolicy("tier_2", head="qwen3.7-flash")
 # resolve_chain's cross-provider-head rule). Revert = point the slots back at
 # _FLASH_MAX / _FLASH_MEDIUM.
 _V41 = "baseten-deepseek-v4.1-flash-1017"
-_V41_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max", head=_V41)
-_V41_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium", head=_V41)
-# V4.1 at provider-default thinking — the router (2026-10-22). ~4× the 0731
-# decode speed (~450 vs ~106 tok/s, Logfire 2026-10-18..22), ~+$0.0019/call.
-_V41_DEFAULT = ModelPolicy("tier_2", primary="deepseek", head=_V41)
+# The same V4.1 Flash 1017 on Wafer (2026-11-11). Aggregator A/B on 5 real prod
+# inputs: quality tie (blind judges 7.4 vs 7.6), ~30% slower decode (109 vs 157
+# tok/s), 61% cheaper ($0.13/$0.50 vs $0.30/$1.20 per 1M), ZDR on every request.
+_WAFER_V41 = "wafer-deepseek-v4.1-flash-1017"
+# Heavy synthesis (aggregator, agent_writer) stays on Baseten for speed, with
+# Wafer as the backup: V4.1 (Baseten) → V4.1 (Wafer) → 0731 (Alibaba) → OR.
+_V41_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max", head=_V41, backup=_WAFER_V41)
+# Wafer-headed slots (owner decision 2026-11-11): V4.1 (Wafer) → V4.1 (Baseten)
+# → 0731 (Alibaba) → OR. Medium = the expanders; default = router and
+# artifact_analyzer (Wafer sends reasoning_effort=high for "default" — see
+# _reasoning_settings).
+_WAFER_V41_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium", head=_WAFER_V41, backup=_V41)
+_WAFER_V41_DEFAULT = ModelPolicy("tier_2", primary="deepseek", head=_WAFER_V41, backup=_V41)
 
 AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "planner_decider":            _FLASH,
@@ -280,16 +308,17 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # list[PlannerDecision | DeferredToolRequests]; same shape as the
     # deep_search planner. See .claude/plans/writer_planner.md.
     "writer_planner_decider":     _FLASH,
-    "router":                     _V41_DEFAULT,  # V4.1 (Baseten) → deepseek-v4-flash (Alibaba) → or-deepseek-v4-flash
+    "router":                     _WAFER_V41_DEFAULT,  # V4.1 (Wafer) → V4.1 (Baseten) → deepseek-v4-flash (Alibaba) → or-deepseek-v4-flash
     # The three deep_search expanders run at fixed medium reasoning (baked per
     # provider/family by _reasoning_settings — deepseek reasoning_effort=medium,
     # qwen enable_thinking+8k budget, openrouter reasoning.effort=medium). The
     # planner no longer varies expander effort. reg + case expanders head on
-    # V4.1 (it writes more sub-queries → ~40% more reranker calls per turn).
-    "reg_compliance_expander":        _V41_MEDIUM,
+    # V4.1 (it writes more sub-queries → ~40% more reranker calls per turn),
+    # served by Wafer since 2026-11-11 with Baseten V4.1 as backup.
+    "reg_compliance_expander":        _WAFER_V41_MEDIUM,
     "reg_compliance_reranker":        _RERANKER,
     "reg_compliance_aggregator":      _FLASH,
-    "case_search_expander":       _V41_MEDIUM,
+    "case_search_expander":       _WAFER_V41_MEDIUM,
     # NOT on _RERANKER yet — deliberately still the tier's qwen3.5-flash cell.
     # The qwen3.7-flash swap was validated ONLY on the reg family: 3.7 under the
     # un-recalibrated prompt collapsed downstream recall (0.59 vs 0.89 of the
@@ -309,11 +338,13 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # mode is OFF (see .claude/plans/item_analyzer_v2.md §6).
     "item_analyzer":              _FLASH,
     # Tier_2 DeepSeek-primary — Layer-4, decides whether prior reports already
-    # answer a follow-up (plan artifact_analyzer.md). V4 Flash, not V4.1, by
-    # owner decision. Default reasoning, not medium: on 17 real cases medium
-    # took twice as long and was the one that produced a false «sufficient»,
-    # the error this agent must not make (2026-11-02).
-    "artifact_analyzer":          _FLASH,
+    # answer a follow-up (plan artifact_analyzer.md). Default reasoning, not
+    # medium: on 17 real cases medium took twice as long and was the one that
+    # produced a false «sufficient», the error this agent must not make
+    # (2026-11-02). Moved from V4 Flash 0731 to V4.1 on Wafer by owner decision
+    # (2026-11-11). Also the model of the prior-report reply
+    # (agents/responder/prior_report.py passes this policy as its override).
+    "artifact_analyzer":          _WAFER_V41_DEFAULT,
     # Tier_2 DeepSeek-primary — Layer-4 memory agent that compacts the oldest span
     # of a conversation into a single carry-forward summary (user intent + produced
     # WIs + open threads). One LLM call per compaction, fires at most once per turn
@@ -373,7 +404,7 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # to the searcher with a reason. Same _FLASH_MEDIUM as the synthesizer it
     # replaces, deliberately: the family's whole premise is that it costs less,
     # and picking 1–2 main services out of 15 summaries is bounded reasoning. An
-    # A/B against _V41_MEDIUM is a follow-up (plan §9), not a precondition.
+    # A/B against _WAFER_V41_MEDIUM is a follow-up (plan §9), not a precondition.
     "simple_search_compliance":   _FLASH_MEDIUM,
     # Layer-3 Task. Runs ONCE per lookup turn, after every synthesizer has
     # settled: it writes the chat bubble's lead-in and owns the publish gate for
@@ -438,9 +469,9 @@ def apply_override(slot: str, token: str | None) -> ModelPolicy:
         return base
     token = token.strip().lower()
     if token in ("qwen", "deepseek"):
-        return replace(base, primary=token, head=None)  # type: ignore[arg-type]
+        return replace(base, primary=token, head=None, backup=None)  # type: ignore[arg-type]
     if token in ("alibaba", "openrouter"):
-        return replace(base, provider=token, head=None)  # type: ignore[arg-type]
+        return replace(base, provider=token, head=None, backup=None)  # type: ignore[arg-type]
     raise ValueError(
         f"Invalid model override '{token}'. Expected one of: "
         f"qwen, deepseek, alibaba, openrouter (the agent is locked to its tier)."
@@ -489,16 +520,16 @@ def get_agent_model(
 
 # A deep_search sub-agent's role name (the ``agent`` field on inner_usage
 # entries) → its primary model on the happy path. Mirrors AGENT_MODELS:
-#   expander       → AGENT_MODELS["*_search_expander"]      = _V41_MEDIUM (V4.1, Baseten)
+#   expander       → AGENT_MODELS["*_search_expander"]      = _WAFER_V41_MEDIUM (V4.1, Wafer)
 #   reranker       → AGENT_MODELS["*_search_reranker"]      = _RERANKER (qwen3.7-flash)
 #   aggregator     → AGENT_MODELS["aggregator"]             = _V41_MAX (V4.1, Baseten)
 #   sector_picker  → AGENT_MODELS["sector_picker"]          = _FLASH (0731, Baseten)
 # Unknown roles fall back to _DEFAULT_MODEL (a conservative tier_1 estimate; the
-# router no longer runs on it — it's _V41_DEFAULT now). When a FallbackModel cell other
+# router no longer runs on it — it's _WAFER_V41_DEFAULT now). When a FallbackModel cell other
 # than the primary fires, the inner_usage entry's ``model`` field (when set by the
 # caller) overrides this lookup.
 _SUBAGENT_MODEL: dict[str, str] = {
-    "expander":      _V41,
+    "expander":      _WAFER_V41,
     # Legacy fallback only: BOTH rerankers now set an explicit per-slot ``model``
     # on their usage entries (via primary_model_of_slot), which wins over this
     # role lookup. Kept for entries emitted before that change.

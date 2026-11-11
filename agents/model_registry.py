@@ -793,6 +793,25 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         cached_input_price=0.007,
     ),
 
+    # Wafer-served DeepSeek V4.1 Flash 1017 — the SAME weights as the Baseten
+    # entry above. Head of the router / expanders / artifact_analyzer and the
+    # backup cell of the aggregator / writer (agent_models._WAFER_V41*). Echoes
+    # "DeepSeek-V4.1-Flash-1017", an exact model_id match here — see
+    # registry_key_for. Wafer list price (pass.wafer.ai/v1/models, 2026-11-11).
+    # Wafer runs this model with reasoning OFF unless an effort is sent — see
+    # agent_models._reasoning_settings.
+    "wafer-deepseek-v4.1-flash-1017": ModelConfig(
+        model_id="DeepSeek-V4.1-Flash-1017",
+        provider="wafer",
+        display_name="DeepSeek V4.1 Flash 1017 (Wafer)",
+        supports_vision=False,
+        max_tokens=65536,
+        context_length=1048576,
+        input_price=0.13,
+        output_price=0.50,
+        cached_input_price=0.008,
+    ),
+
     # --- Qwen3.5 series (February 2026) ---
     "qwen3.5-plus": ModelConfig(
         model_id="qwen3.5-plus",
@@ -994,18 +1013,26 @@ def registry_key_for(model_name: str, provider: Optional[str] = None) -> Optiona
     ``deepseek-ai/DeepSeek-V4-Flash-0731`` with the same
     ``deepseek-v4-flash-0731`` Alibaba does. Without it the first registry match
     (Alibaba) wins.
+
+    Exact ``model_id`` matches are tried before the Baseten bare-name rule, so
+    Wafer's ``DeepSeek-V4.1-Flash-1017`` (its own exact model_id) resolves to
+    the Wafer key rather than to the Baseten V4.1 entry whose path ends in the
+    same name.
     """
     if model_name in MODEL_REGISTRY:
         return model_name
     first: Optional[str] = None
-    for key, config in MODEL_REGISTRY.items():
-        if config.model_id == model_name or (
-            config.provider == "baseten"
-            and config.model_id.rsplit("/", 1)[-1].lower() == model_name.lower()
-        ):
-            if provider is None or config.provider == provider:
-                return key
-            first = first or key
+    bare = model_name.lower()
+    rules = (
+        lambda c: c.model_id == model_name,
+        lambda c: c.provider == "baseten" and c.model_id.rsplit("/", 1)[-1].lower() == bare,
+    )
+    for matches in rules:
+        for key, config in MODEL_REGISTRY.items():
+            if matches(config):
+                if provider is None or config.provider == provider:
+                    return key
+                first = first or key
     return first
 
 
@@ -1024,6 +1051,7 @@ def get_api_key(provider: str) -> str:
         or getattr(settings, "ALIBABA_API_KEY", ""),
         "openrouter": getattr(settings, "OPENROUTER_API_KEY", ""),
         "baseten": getattr(settings, "BASETEN_API_KEY", ""),
+        "wafer": getattr(settings, "WAFER_API_KEY", ""),
     }
     return key_map.get(provider, "")
 
@@ -1174,6 +1202,24 @@ def create_model(model_name: str, model_settings: Any = None):
             ),
             # Same as the Alibaba cells: forced tool_choice OFF (structured
             # output still goes through the output tool).
+            profile=OpenAIModelProfile(
+                openai_supports_tool_choice_required=False,
+            ),
+            settings=model_settings,
+        )
+
+    elif config.provider == "wafer":
+        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
+        from pydantic_ai.providers.openai import OpenAIProvider
+        return OpenAIChatModel(
+            config.model_id,
+            provider=OpenAIProvider(
+                base_url=settings.WAFER_BASE_URL,
+                api_key=api_key,
+            ),
+            # Same as Baseten: forced tool_choice OFF (structured output still
+            # goes through the output tool — verified on the aggregator A/B,
+            # 2026-11-11).
             profile=OpenAIModelProfile(
                 openai_supports_tool_choice_required=False,
             ),
