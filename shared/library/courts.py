@@ -3,7 +3,7 @@
 `public.cases.court` is free text straight from the source feeds: **30 distinct
 values on 30,531 rows**, where the same judicial body appears under many spellings
 that differ only by CITY («… في مدينة جدة» / «… في مدينة الرياض» / «… في مدينة
-الدمام»). This module is the digest: it collapses those 30 raw strings into **14
+الدمام»). This module is the digest: it collapses those 30 raw strings into **17
 browsable buckets** and is the ONLY normalizer for court names in the codebase.
 
 Two rules the user set (2026-08-08):
@@ -59,6 +59,8 @@ FEED_BOG = "board_of_grievances"  # ديوان المظالم — 4,669 rows, no
 FEED_ZATCA = "zatca"            # هيئة الزكاة والضريبة — 4,966 rows, no sectors, partial mesh
 FEED_INSURANCE = "insurance"    # لجان التأمين — 225 rows, no sectors, NO citation mesh
 FEED_LABOR = "labor_commission"  # هيئة تسوية الخلافات العمالية (entity 40048) — 474 rows, no dates
+FEED_CRSD = "securities_disputes"  # لجنة الفصل في منازعات الأوراق المالية (entity 40049) — 2,643 rows, no dates
+FEED_SAIP = "intellectual_property"  # الهيئة السعودية للملكية الفكرية (entity 17807) — 124 rows, no dates
 
 # ─── The map ──────────────────────────────────────────────────────────────────
 # slug → (Arabic label, raw `cases.court` variants, source feed)
@@ -69,6 +71,13 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
         "المحكمة التجارية",
         ("التجارية", "التجارية الثالثة"),
         FEED_MOJ,
+    ),
+    # 2,643 — entity 40049 (CRSD), ingested 2026-11-10: قرارات اللجنة، 1433هـ onward.
+    # Its own feed: no dates, no sectors, no citation mesh.
+    "لجنة-منازعات-الأوراق-المالية": (
+        "لجنة الفصل في منازعات الأوراق المالية",
+        ("لجنة الفصل في منازعات الأوراق المالية",),
+        FEED_CRSD,
     ),
     # 2,625
     "ديوان-المظالم-تجارية": (
@@ -89,10 +98,23 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
         ),
         FEED_ZATCA,
     ),
-    # 1,879
+    # 2,189 — 1,879 + 310 from the 2026-11-10 ديوان batch (أحكام الملكية الفكرية).
     "ديوان-المظالم-إدارية": (
         "ديوان المظالم — الدائرة الإدارية",
         ("ديوان المظالم — الدائرة الإدارية",),
+        FEED_BOG,
+    ),
+    # 1,733 — ingested 2026-11-10: the Supreme Administrative Court's bound
+    # volumes (1439–1446هـ), general-assembly decisions + two circuits. Mostly
+    # نقض/تأييد with no first-instance reasoning section → many publish via the
+    # full-text fallback. Separate from المحكمة العليا (وزارة العدل's top court).
+    "ديوان-المظالم-الإدارية-العليا": (
+        "ديوان المظالم — المحكمة الإدارية العليا",
+        (
+            "المحكمة الإدارية العليا — ديوان المظالم",
+            "المحكمة الإدارية العليا — ديوان المظالم — الدائرة الأولى",
+            "المحكمة الإدارية العليا — ديوان المظالم — الدائرة الثانية",
+        ),
         FEED_BOG,
     ),
     # 1,622 — six variants differing only by city (جدة / الرياض / الدمام) + دائرة number.
@@ -154,6 +176,16 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
         ("العليا", "العليا -  الهيئة الدائمة"),
         FEED_MOJ,
     ),
+    # 124 — entity 17807 (SAIP), ingested 2026-11-10: two committees in one
+    # section (owner 2026-11-11) — براءات الاختراع 64 + حقوق المؤلف 60.
+    "لجان-الملكية-الفكرية": (
+        "لجان الملكية الفكرية",
+        (
+            "لجنة النظر في دعاوى براءات الاختراع",
+            "لجنة النظر في مخالفات نظام حماية حقوق المؤلف",
+        ),
+        FEED_SAIP,
+    ),
     # 106
     "محكمة-الاستئناف": ("محكمة الاستئناف", ("الاستئناف",), FEED_MOJ),
     # 64 — the 10-17 MOJ batch's criminal-court rulings (1434–1435هـ), rewritten
@@ -167,7 +199,7 @@ _COURTS: dict[str, tuple[str, tuple[str, ...], str]] = {
 
 # ─── Derived lookups ──────────────────────────────────────────────────────────
 COURT_ORDER: list[str] = list(_COURTS)
-"""The 14 court slugs in browse (volume) order."""
+"""The 17 court slugs in browse (volume) order."""
 
 COURT_LABELS: dict[str, str] = {slug: label for slug, (label, _v, _f) in _COURTS.items()}
 """slug → Arabic display label. This is the H1 and the switcher label."""
@@ -219,7 +251,7 @@ if _reserved_collision:
 
 
 def court_for_slug(slug: Optional[str]) -> Optional[str]:
-    """Arabic label for a court slug, or ``None`` if it is not one of the 14.
+    """Arabic label for a court slug, or ``None`` if it is not one of the 17.
 
     Returns ``None`` for reserved segments even if a future edit added them to the
     map. Callers treat ``None`` as a 404 and MUST NOT issue a DB round-trip for it.
@@ -285,6 +317,8 @@ __all__ = [
     "FEED_ZATCA",
     "FEED_INSURANCE",
     "FEED_LABOR",
+    "FEED_CRSD",
+    "FEED_SAIP",
     "COURT_ORDER",
     "COURT_LABELS",
     "COURT_VARIANTS",

@@ -271,9 +271,11 @@ from shared.db.client import get_supabase_client
 from shared.library.courts import (
     COURT_LABELS,
     FEED_BOG,
+    FEED_CRSD,
     FEED_INSURANCE,
     FEED_LABOR,
     FEED_MOJ,
+    FEED_SAIP,
     FEED_ZATCA,
     feed_for_court,
     slug_for_court,
@@ -371,14 +373,25 @@ _LIST_PREVIEW = 50
 _FEED_OTHER = "(unclaimed)"
 
 # Processing / reporting order. Volume-descending, mirroring COURT_ORDER's rule.
-_FEED_ORDER = (FEED_MOJ, FEED_ZATCA, FEED_BOG, FEED_LABOR, FEED_INSURANCE, _FEED_OTHER)
+_FEED_ORDER = (
+    FEED_MOJ,
+    FEED_ZATCA,
+    FEED_BOG,
+    FEED_CRSD,
+    FEED_LABOR,
+    FEED_INSURANCE,
+    FEED_SAIP,
+    _FEED_OTHER,
+)
 
 _FEED_LABELS: dict[str, str] = {
     FEED_MOJ: "وزارة العدل",
     FEED_ZATCA: "لجان الزكاة والضريبة",
     FEED_BOG: "ديوان المظالم",
+    FEED_CRSD: "لجنة الفصل في منازعات الأوراق المالية",
     FEED_LABOR: "هيئة تسوية الخلافات العمالية",
     FEED_INSURANCE: "لجان التأمين",
+    FEED_SAIP: "لجان الملكية الفكرية",
     _FEED_OTHER: "(محاكم غير مصنّفة)",
 }
 
@@ -395,6 +408,10 @@ _FEED_ALIASES: dict[str, str] = {
     "insurance": FEED_INSURANCE,
     "labor": FEED_LABOR,
     "labour": FEED_LABOR,
+    "crsd": FEED_CRSD,
+    "securities": FEED_CRSD,
+    "saip": FEED_SAIP,
+    "ip": FEED_SAIP,
     "other": _FEED_OTHER,
 }
 
@@ -425,6 +442,11 @@ _FEED_ALLOCATION: dict[str, Any] = {
     # 0.05 clears the 453 eligible labour rulings at --limit 10000, same
     # reasoning as insurance's share (added 2026-11-07).
     FEED_LABOR: 0.05,
+    # Added 2026-11-10 (2,643 / 124 eligible). The real publish is a
+    # --limit above the corpus, where every feed clamps to its whole supply;
+    # these shares only shape a smaller run (~7% / ~0.3% of the corpus).
+    FEED_CRSD: 0.07,
+    FEED_SAIP: 0.02,
     FEED_INSURANCE: 0.03,
     FEED_BOG: 0.10,
     FEED_ZATCA: 0.10,
@@ -470,6 +492,8 @@ _INDEX_FEED_ALLOCATION: dict[str, Any] = {
     # 0 = off Google. Owner 2026-11-07: everything published after the
     # 3,000 stays unlisted, so a re-run of --indexable leaves this feed out.
     FEED_LABOR: 0,
+    FEED_CRSD: 0,
+    FEED_SAIP: 0,
     FEED_INSURANCE: _ALLOC_ALL,
     FEED_BOG: 0.22,
     FEED_ZATCA: 0.20,

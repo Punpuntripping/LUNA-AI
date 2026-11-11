@@ -46,9 +46,11 @@ _SPEC.loader.exec_module(bjs)
 
 from shared.library.courts import (  # noqa: E402
     FEED_BOG,
+    FEED_CRSD,
     FEED_INSURANCE,
     FEED_LABOR,
     FEED_MOJ,
+    FEED_SAIP,
     FEED_ZATCA,
 )
 
@@ -63,6 +65,9 @@ LIVE_SUPPLY = {
     # Added 2026-11-07, after the measurement above: the labour feed did not
     # exist then, so 0 keeps the §3.1 table exact. Its own test uses real supply.
     FEED_LABOR: 0,
+    # Added 2026-11-10, same reasoning as labour.
+    FEED_CRSD: 0,
+    FEED_SAIP: 0,
     bjs._FEED_OTHER: 0,
 }
 
@@ -99,6 +104,28 @@ class TestFeedQuotas:
         --indexable gives the labour feed no seats."""
         supply = {**LIVE_SUPPLY, FEED_LABOR: 453}
         assert bjs._feed_quotas(3_000, supply, bjs._INDEX_FEED_ALLOCATION)[FEED_LABOR] == 0
+
+    def test_new_feeds_take_their_shares_without_moving_the_plan_table(self):
+        """2026-11-10: CRSD 0.07 of 10,000 = 700 of its 2,643; SAIP 0.02 = 200 seats
+        clears its 124. ديوان / زكاة / تأمين keep their plan-table quotas."""
+        supply = {**LIVE_SUPPLY, FEED_CRSD: 2_643, FEED_SAIP: 124}
+        q = bjs._feed_quotas(10_000, supply, bjs._FEED_ALLOCATION)
+        assert q[FEED_CRSD] == 700 and q[FEED_SAIP] == 124
+        assert q[FEED_BOG] == 1_000 and q[FEED_ZATCA] == 1_000 and q[FEED_INSURANCE] == 224
+        assert sum(q.values()) == 10_000
+
+    def test_a_limit_above_the_corpus_publishes_every_new_feed_whole(self):
+        """The real run (--limit 40000): shares stop mattering, every feed clamps
+        to its full supply — the new feeds included."""
+        supply = {**LIVE_SUPPLY, FEED_CRSD: 2_643, FEED_SAIP: 124, FEED_LABOR: 453}
+        q = bjs._feed_quotas(40_000, supply, bjs._FEED_ALLOCATION)
+        assert q == {f: supply[f] for f in q}
+
+    def test_new_feeds_are_never_indexable_by_default(self):
+        """Owner 2026-11-07: everything after the 3,000 stays off Google."""
+        supply = {**LIVE_SUPPLY, FEED_CRSD: 2_643, FEED_SAIP: 124}
+        q = bjs._feed_quotas(3_000, supply, bjs._INDEX_FEED_ALLOCATION)
+        assert q[FEED_CRSD] == 0 and q[FEED_SAIP] == 0
 
     def test_shortfall_redistributes_instead_of_under_filling(self):
         """لجان التأمين is asked for 300 and holds 224. The 76-row gap must land

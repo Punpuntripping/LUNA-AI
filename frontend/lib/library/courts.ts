@@ -1,4 +1,4 @@
-// The 14 court buckets of the /judgments wing — «الجهة القضائية».
+// The 17 court buckets of the /judgments wing — «الجهة القضائية».
 //
 // ⚠ `shared/library/courts.py` IS THE SOURCE OF TRUTH. This file is a MIRROR of
 // its `_COURTS` dict: the slug keys, the Arabic labels, and — critically — the
@@ -33,7 +33,7 @@
 // the corpus.
 
 /**
- * `[slug, label]` for the 14 buckets, in the Python module's insertion order.
+ * `[slug, label]` for the 17 buckets, in the Python module's insertion order.
  *
  * One tuple per bucket rather than two parallel literals ON PURPOSE: the slug
  * and its label are the same Arabic text differing only by the hyphens, and
@@ -42,13 +42,17 @@
 const COURTS = [
   // 20,335 rows
   ["المحكمة-التجارية", "المحكمة التجارية"],
+  // 2,643 — entity 40049 (CRSD), 2026-11-10.
+  ["لجنة-منازعات-الأوراق-المالية", "لجنة الفصل في منازعات الأوراق المالية"],
   // 2,625
   ["ديوان-المظالم-تجارية", "ديوان المظالم — الدائرة التجارية"],
   // 2,281 — the untyped ZATCA residual (the LARGEST tax bucket; see the Python
   // module's docstring: the tax-type split only reaches 54% of that corpus).
   ["اللجان-الضريبية-عام", "اللجان الضريبية والزكوية — عام"],
-  // 1,879
+  // 2,189 (310 joined 2026-11-10)
   ["ديوان-المظالم-إدارية", "ديوان المظالم — الدائرة الإدارية"],
+  // 1,733 — the Supreme Administrative Court, 2026-11-10.
+  ["ديوان-المظالم-الإدارية-العليا", "ديوان المظالم — المحكمة الإدارية العليا"],
   // 1,622
   ["لجان-ضريبة-القيمة-المضافة", "لجان ضريبة القيمة المضافة"],
   // 1,249 — the 10-17 MOJ batch joined it 2026-11-08 (was 69).
@@ -63,6 +67,8 @@ const COURTS = [
   ["ديوان-المظالم-جزائية", "ديوان المظالم — الدائرة الجزائية"],
   // 125
   ["المحكمة-العليا", "المحكمة العليا"],
+  // 124 — entity 17807 (SAIP): patents + copyright committees, 2026-11-10.
+  ["لجان-الملكية-الفكرية", "لجان الملكية الفكرية"],
   // 106
   ["محكمة-الاستئناف", "محكمة الاستئناف"],
   // 64 — criminal-court rulings from the 10-17 MOJ batch (2026-11-08).
@@ -75,7 +81,7 @@ const COURTS = [
 /** The closed slug vocabulary, as a type. */
 export type CourtSlug = (typeof COURTS)[number][0];
 
-/** The 14 slugs in browse (corpus-volume) order. Never re-sort. */
+/** The 17 slugs in browse (corpus-volume) order. Never re-sort. */
 export const COURT_ORDER: readonly CourtSlug[] = COURTS.map(([slug]) => slug);
 
 /** slug → Arabic display label. This is the H1 and the switcher label. */
