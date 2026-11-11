@@ -81,6 +81,56 @@ GSTC_VOLUME = {
 }
 
 
+# --- the 2026-11-10 batch: each row names its own file, none is in the registry ---------
+# Verbatim from the live corpus (2026-11-11), trimmed to the keys this module reads.
+
+# لجنة الفصل في منازعات الأوراق المالية (40049) — one PDF per قرار, no `kind` marker;
+# `pages` is the file's page COUNT.
+CRSD_DECISION = {
+    "details_url": None,
+    "source": {
+        "year": "1433هـ",
+        "pages": 11,
+        "pdf_url": "https://crsd.gov.sa/ar/OpenData/ResolutionDecisions/Documents/999-33.pdf",
+        "entity_ref": "40049",
+        "source_url": "https://crsd.gov.sa/ar/OpenData/ResolutionDecisions/Pages/default.aspx",
+        "decision_number": "999-33",
+    },
+    "entities": {"entity_name": "لجنة الفصل في منازعات الأوراق المالية"},
+}
+
+# ديوان المظالم — المحكمة الإدارية العليا: a volume of principles, one PDF per ruling.
+SAC_OWN_FILE = {
+    "details_url": None,
+    "source": {
+        "pages": 3,
+        "family": "principles_blogs",
+        "volume": "المجلد الثالث",
+        "pdf_url": "https://www.bog.gov.sa/knowledge-center/PrinciplesBlogs/1446/Documents/x/41-Military-service.pdf",
+        "page_url": "https://www.bog.gov.sa/knowledge-center/PrinciplesBlogs/1446/Pages/default.aspx",
+        "volume_no": 3,
+        "collection": "مجموعة المبادئ التي قررتها المحكمة الإدارية العليا",
+        "entity_ref": "17486",
+    },
+    "entities": {"entity_name": "ديوان المظالم"},
+}
+
+# لجان الملكية الفكرية (17807) — ONE file of many قرارات; `pages` locates this one.
+SAIP_SHARED_FILE = {
+    "details_url": None,
+    "source": {
+        "pages": [228, 234],
+        "pdf_url": "https://www.saip.gov.sa/api/proxy-file?path=%2Fsites%2Fdefault%2Ffiles%2F2026-10%2Fx.pdf&action=view",
+        "committee": "لجنة النظر في مخالفات نظام حماية حقوق المؤلف",
+        "entity_ref": "17807",
+        "page_count": 7,
+        "decision_no": "25/97",
+        "volume_title": "قرارات لجنة النظر في مخالفات نظام حماية حقوق المؤلف المنشورة في 2026م",
+    },
+    "entities": {"entity_name": "الهيئة السعودية للملكية الفكرية"},
+}
+
+
 def _labels(prov) -> dict[str, str]:
     return {row["label"]: row["value"] for row in prov.citation}
 
@@ -93,7 +143,17 @@ def _hrefs(prov) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "row", [MOJ, BOG_VOLUME_N, BOG_ARABIC, GSTC_DECISION, GSTC_VOLUME]
+    "row",
+    [
+        MOJ,
+        BOG_VOLUME_N,
+        BOG_ARABIC,
+        GSTC_DECISION,
+        GSTC_VOLUME,
+        CRSD_DECISION,
+        SAC_OWN_FILE,
+        SAIP_SHARED_FILE,
+    ],
 )
 def test_the_citation_half_NEVER_carries_a_url(row) -> None:
     """The one rule this module exists to keep.
@@ -300,3 +360,54 @@ def test_every_registry_volume_can_reach_its_publisher() -> None:
     for key, vol in CASE_VOLUME_SOURCES.items():
         assert vol["landing"].startswith("https://"), key
         assert vol["pdf"] == "" or vol["pdf"].startswith("https://"), key
+
+
+# --- the 2026-11-10 batch ------------------------------------------------------------
+
+
+def test_a_crsd_decision_is_its_own_pdf_like_any_decision_pdf() -> None:
+    """No `kind` marker, but the same shape: the PDF and the listing page, no citation."""
+    prov = judgment_provenance(CRSD_DECISION, "لجنة الفصل في منازعات الأوراق المالية")
+    src = CRSD_DECISION["source"]
+    assert prov.citation == []
+    assert prov.official_sources == [
+        {"title": "ملف القرار (PDF)", "href": src["pdf_url"]},
+        {
+            "title": "صفحة القرارات — لجنة الفصل في منازعات الأوراق المالية",
+            "href": src["source_url"],
+        },
+    ]
+
+
+def test_a_supreme_administrative_ruling_links_its_own_pdf() -> None:
+    """The file is the ruling alone: link it, name the volume, never read `pages: 3`
+    (a page count) as a location."""
+    prov = judgment_provenance(SAC_OWN_FILE, "ديوان المظالم")
+    src = SAC_OWN_FILE["source"]
+    assert _labels(prov) == {
+        "المجلد": "المجلد الثالث — مجموعة المبادئ التي قررتها المحكمة الإدارية العليا"
+    }
+    assert prov.official_sources == [
+        {"title": "ملف الحكم (PDF)", "href": src["pdf_url"]},
+        {"title": "صفحة المجموعة — ديوان المظالم", "href": src["page_url"]},
+    ]
+
+
+def test_a_saip_decision_gives_its_pages_and_opens_the_file_there() -> None:
+    prov = judgment_provenance(SAIP_SHARED_FILE, "الهيئة السعودية للملكية الفكرية")
+    src = SAIP_SHARED_FILE["source"]
+    assert _labels(prov) == {
+        "المجلد": src["volume_title"],
+        "الصفحات": "228–234",
+    }
+    assert prov.official_sources == [
+        {"title": "ملف المجلد (PDF) — الصفحة 228", "href": src["pdf_url"] + "#page=228"}
+    ]
+
+
+@pytest.mark.parametrize("pages", [[0, 5], [None, None], ["x", 3], [7], 7])
+def test_a_broken_or_count_only_pages_value_never_renders_a_range(pages) -> None:
+    row = {**SAIP_SHARED_FILE, "source": {**SAIP_SHARED_FILE["source"], "pages": pages}}
+    prov = judgment_provenance(row, "")
+    assert "الصفحات" not in _labels(prov)
+    assert _hrefs(prov) == [SAIP_SHARED_FILE["source"]["pdf_url"]]

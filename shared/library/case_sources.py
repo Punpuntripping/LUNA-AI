@@ -21,18 +21,28 @@ unlock, and a bound volume makes that rule stronger rather than weaker: one مج
 ``library_service.get_judgment_doc`` (citation only) and
 ``library_service.official_sources_for_item`` (links only).
 
-Three source shapes, distinguished by :func:`judgment_provenance`:
+Source shapes, distinguished by :func:`judgment_provenance`:
 
 ===================  ===========================  =====================================
 shape                ``cases.source`` marker      what the reader gets
 ===================  ===========================  =====================================
 وزارة العدل           (none — ``details_url``)     the ruling's own MoJ page
-single قرار PDF      ``kind == 'decision_pdf'``   the decision's own PDF + listing page
+single قرار PDF      ``kind == 'decision_pdf'``,  the decision's own PDF + listing page
+                     or a ``pdf_url`` and no
+                     volume (CRSD)
 bound مجلد           ``volume`` / ``volume_title`` مجلد + page range, PDF + collection
+                     in the volume registry
+مجلد, own file       ``volume`` + ``pdf_url``,    مجلد, the ruling's own PDF +
+                     ``pages`` a count (ديوان      collection page
+                     المظالم principles + IP)
+مجلد, shared file    ``volume_title`` +           مجلد + page range, the file's PDF
+                     ``pdf_url``, ``pages`` a     opened at the ruling's first page
+                     ``[start, end]`` pair (SAIP)
 ===================  ===========================  =====================================
 
 A single-PDF ruling gets NO page range: the whole file is that one decision, so «الصفحات»
 would be describing the document rather than locating anything in it. The link is enough.
+That is also why an integer ``pages`` (the file's page COUNT) is never read as a range.
 """
 
 from __future__ import annotations
@@ -114,22 +124,39 @@ def _volume_label(source: dict[str, Any]) -> str:
     return f"المجلد {m.group(1)}" if m else _UNDERSCORES.sub(" ", tail)
 
 
+def _page_bounds(source: dict[str, Any]) -> Optional[tuple[int, int]]:
+    """``(start, end)`` of the ruling inside its file, or ``None``.
+
+    Two stored shapes: ``{"start": 253, "end": 259}`` (the volume parsers) and
+    ``[228, 234]`` (SAIP). An int is the file's page COUNT, not a location, and gives
+    ``None``. ``end`` is 0 when unknown. A parser that failed and wrote 0 or null for
+    ``start`` gives ``None``, so nothing renders «0–0».
+    """
+    pages = source.get("pages")
+    if isinstance(pages, dict):
+        raw = (pages.get("start"), pages.get("end"))
+    elif isinstance(pages, (list, tuple)) and len(pages) == 2:
+        raw = (pages[0], pages[1])
+    else:
+        return None
+    try:
+        start, end = int(raw[0] or 0), int(raw[1] or 0)
+    except (TypeError, ValueError):
+        return None
+    if start <= 0:
+        return None
+    return start, max(end, 0)
+
+
 def _page_range(source: dict[str, Any]) -> str:
     """``"253–259"``, or ``"253"`` when a ruling sits on a single page.
 
-    An en-dash, not a hyphen: this is a range in RTL running text. Both ends must be
-    positive ints — a parser that failed and wrote 0 or null must not render «0–0».
+    An en-dash, not a hyphen: this is a range in RTL running text.
     """
-    pages = source.get("pages")
-    if not isinstance(pages, dict):
+    bounds = _page_bounds(source)
+    if bounds is None:
         return ""
-    try:
-        start = int(pages.get("start") or 0)
-        end = int(pages.get("end") or 0)
-    except (TypeError, ValueError):
-        return ""
-    if start <= 0:
-        return ""
+    start, end = bounds
     if end <= 0 or end == start:
         return str(start)
     return f"{start}–{end}"
@@ -153,11 +180,16 @@ def judgment_provenance(
 
     citation: list[dict[str, str]] = []
     links: list[dict[str, str]] = []
+    own_pdf = _clean(source.get("pdf_url"))
+    volume = _volume_label(source)
 
     # ---- 1. a قرار published as its own PDF -------------------------------------
     # `pdf_url` is on the row itself; no registry lookup. Per the plan: one PDF, one
-    # decision ⇒ the link is the whole answer, no page range.
-    if _clean(source.get("kind")) == "decision_pdf":
+    # decision ⇒ the link is the whole answer, no page range. CRSD (entity 40049)
+    # stores this shape without the `kind` marker: a pdf_url and no volume.
+    if _clean(source.get("kind")) == "decision_pdf" or (
+        not volume and _is_http(own_pdf)
+    ):
         # No citation rows at all. `source.committee` is the obvious candidate and is
         # WRONG: `cases.court` already reads «هيئة الزكاة والضريبة — الدائرة الأولى
         # للفصل في مخالفات ومنازعات ضريبة القيمة المضافة في مدينة الرياض», so a «الدائرة»
@@ -178,10 +210,13 @@ def judgment_provenance(
         return Provenance(citation=citation, official_sources=links)
 
     # ---- 2. a ruling lifted out of a bound مجلد ----------------------------------
-    volume = _volume_label(source)
     published = volume_source(source)
     if volume:
-        collection = _clean(published.get("collection")) if published else ""
+        # The registry names the collection for the volumes it knows; the 2026-11-10
+        # ديوان batch carries its own (`source.collection`).
+        collection = _clean(
+            published.get("collection") if published else source.get("collection")
+        )
         # «المجلد 2 — مجموعة الأحكام الإدارية لعام 1440 هـ». Collapsed to one part when
         # the volume IS the publication (the مدونات, whose title already names the set).
         citation.append(
@@ -203,6 +238,32 @@ def judgment_provenance(
             # Named for the ENTITY, not the collection: this is the exit that says who
             # published the ruling. It is also the only link the 8 volumes with no
             # resolved file URL can offer, so it is never conditional on `pdf`.
+            links.append(
+                {
+                    "title": f"صفحة المجموعة — {entity_name}" if entity_name
+                    else "صفحة المجموعة الرسمية",
+                    "href": landing,
+                }
+            )
+    elif volume and _is_http(own_pdf):
+        # Not in the registry, but the row names its own file.
+        bounds = _page_bounds(source)
+        if bounds:
+            # One file holds many rulings (SAIP): open it at this one. The stored pages
+            # are the PDF's own 1-based page numbers (checked 2026-11-11: page 228 of
+            # the copyright committee file is the cover of قرار 25/97).
+            start = bounds[0]
+            links.append(
+                {
+                    "title": f"ملف المجلد (PDF) — الصفحة {start}",
+                    "href": f"{own_pdf}#page={start}",
+                }
+            )
+        else:
+            # The file is this ruling alone (ديوان المظالم principles + IP volumes).
+            links.append({"title": "ملف الحكم (PDF)", "href": own_pdf})
+        landing = _clean(source.get("page_url"))
+        if _is_http(landing):
             links.append(
                 {
                     "title": f"صفحة المجموعة — {entity_name}" if entity_name
