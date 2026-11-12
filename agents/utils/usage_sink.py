@@ -101,6 +101,22 @@ def bind_run_id(run_id: str | None) -> Iterator[None]:
             pass
 
 
+@contextmanager
+def detached() -> Iterator[None]:
+    """Run the block outside any open scope.
+
+    For work that may outlive the caller's scope (a background helper started by a
+    turn): a callee that opens its own scope only when none is open (``in_scope()``)
+    then opens it, instead of adding rows to a turn buffer that may already have
+    been flushed — a row added after the flush is lost.
+    """
+    token = _buffer.set(None)
+    try:
+        yield
+    finally:
+        _buffer.reset(token)
+
+
 def in_scope() -> bool:
     """True when a :func:`collect_llm_calls` scope is currently open.
 

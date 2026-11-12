@@ -332,6 +332,12 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
     # workspace item to produce an agent-facing coverage summary.
     "artifact_summarizer":        _FLASH,
+    # Tier_2 DeepSeek-primary — Layer-4 attachment segmenter: maps an OCR'd
+    # attachment over 5k chars into labelled, value-rated paragraph ranges (no
+    # rewriting). Same policy as artifact_summarizer (the experiments ran on that
+    # slot), its own slot so it can move independently.
+    # See .claude/plans/attachment_segmentation.md §4.4.
+    "attachment_segmenter":       _FLASH,
     # Tier_2 DeepSeek-primary — Layer-4 librarian that verdicts workspace_items
     # against a caller's query. Two LLM calls max per analyze() invocation
     # (one per family: refs vs meta). Short structured outputs — reasoning

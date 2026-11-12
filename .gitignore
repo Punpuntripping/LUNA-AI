@@ -87,6 +87,19 @@ agents/tests/*
 # the date line is durable: nothing at runtime notices an agent that stopped
 # receiving it. The model just guesses the date again.
 !agents/tests/test_today_context.py
+# attachment segmentation + helper frame (2026-11-12) are durable: the frame's
+# matrix and lease rules, the segmenter's repair / slicing / bundles / masking,
+# OCR page offsets and the 100k / 300k delivery maths. Every one of them fails
+# silently in production — a lost or doubled section, a run started twice, a
+# document read unmasked — so a clean clone must keep its guards.
+!agents/tests/test_helper_frame_orchestrator.py
+!agents/helpers/tests/
+!agents/memory/attachment_segmenter/tests/
+!agents/memory/ocr_extractor/tests/
+!agents/deep_search_v4/tests/
+agents/deep_search_v4/tests/*
+!agents/deep_search_v4/tests/test_case_documents_segmented.py
+!agents/deep_search_v4/tests/test_segmented_delivery_wiring.py
 # access-tiers / library-gating suites are durable — they pin revenue and
 # entitlement invariants (unlock idempotency, the frozen-library predicate, the
 # شرح exclusion, the ISR cache-leak guard). Losing them loses the contract.

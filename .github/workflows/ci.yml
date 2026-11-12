@@ -99,7 +99,13 @@ jobs:
             agents/tests/test_reply_guard.py \
             agents/tests/test_prior_report_reply.py \
             agents/tests/test_prior_check_flow.py \
-            agents/tests/test_wafer_provider.py
+            agents/tests/test_wafer_provider.py \
+            agents/tests/test_helper_frame_orchestrator.py \
+            agents/helpers/tests/ \
+            agents/memory/attachment_segmenter/tests/ \
+            agents/memory/ocr_extractor/tests/test_page_rows.py \
+            agents/deep_search_v4/tests/test_case_documents_segmented.py \
+            agents/deep_search_v4/tests/test_segmented_delivery_wiring.py
 
   frontend:
     name: Frontend

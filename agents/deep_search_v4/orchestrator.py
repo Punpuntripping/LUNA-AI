@@ -60,9 +60,11 @@ from agents.deep_search_v4.reg_compliance_search.models import (
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.case_documents import (
     build_case_document_blocks,
+    build_case_document_blocks_segmented,
     forwardable_documents,
     parse_wi_aliases,
 )
+from agents.utils.attachment_delivery import delivery_enabled
 from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.ura.case_adapter import case_to_rqr
@@ -1246,6 +1248,7 @@ def _select_forwarded_blocks(
 def _build_case_document_lists(
     decision: Any,
     deps: PlannerDeps,
+    sections_by_id: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list[ContextBlock]], dict[str, Any]]:
     """Build this turn's per-recipient ``case_document`` lists (§3.2).
 
@@ -1276,7 +1279,17 @@ def _build_case_document_lists(
     over_total: list[str] = []
     for recipient, ids in (("case", case_ids), ("reg", reg_ids), ("aggregator", agg_ids)):
         stats: dict[str, Any] = {}
-        lists[recipient] = build_case_document_blocks(docs, ids, stats=stats)
+        if sections_by_id is None:
+            lists[recipient] = build_case_document_blocks(docs, ids, stats=stats)
+        else:
+            # Segmented delivery (attachment_segmentation.md §4.6): core
+            # sections, 100k / 300k caps, full text within the caps as fallback.
+            lists[recipient] = build_case_document_blocks_segmented(
+                docs, ids, sections_by_id, stats=stats
+            )
+            telemetry[f"case_docs.segmented.{recipient}"] = stats["segmented"]
+            telemetry[f"case_docs.fallback.{recipient}"] = stats["fallback"]
+            telemetry[f"case_docs.trim_factor.{recipient}"] = stats["trim_factor"]
         telemetry[f"case_docs.full_text.{recipient}"] = stats["full_text"]
         telemetry[f"case_docs.full_text_chars.{recipient}"] = stats["full_text_chars"]
         truncated += [a for a in stats["truncated"] if a not in truncated]
@@ -1334,10 +1347,50 @@ async def run_retrieval(
     # once here and spliced in at the reg / case / aggregator call sites; NOT
     # part of ``selected_blocks``, so the sector_picker below never sees them.
     # A failure costs the documents, never the turn.
+    # Segmented delivery (attachment_segmentation.md §4.6.4): the segmenter is
+    # critical for both expanders and the aggregator, never for the planner —
+    # this one wait (up to its 5-minute ceiling) covers all three, which start
+    # after it. Off → ``None`` → the old first-12k builder, byte-identical.
+    case_document_sections: dict[str, Any] | None = None
+    case_document_sections_telemetry: dict[str, Any] = {}
+    if delivery_enabled(getattr(deps, "user_id", None)):
+        try:
+            from agents.helpers import WAIT_STATUS_TEXT
+            from agents.utils.attachment_sections import wait_and_load_sections
+
+            # Every forwarded document: a long one is segmented alone, and the
+            # small files of one message are segmented together when they pass
+            # 5k between them (owner rule 2026-11-12). The helper's applies_to
+            # answers "not applicable" at once for the rest.
+            long_ids = [
+                str(d.item_id)
+                for d in forwardable_documents(getattr(deps, "attached_items", None) or [])
+                if str(getattr(d, "content_md", "") or "").strip()
+            ]
+            (
+                case_document_sections,
+                case_document_sections_telemetry,
+            ) = await wait_and_load_sections(
+                long_ids,
+                consumer="aggregator",
+                supabase=deps.supabase,
+                user_id=deps.user_id,
+                on_wait=lambda: _emit_progress(deps, "planning", WAIT_STATUS_TEXT),
+                encode=True,
+            )
+        except Exception:  # noqa: BLE001 - no sections = full text within the caps
+            logger.warning(
+                "run_retrieval: segment wait/load failed — full-text fallback",
+                exc_info=True,
+            )
+            case_document_sections = {}
+
     try:
         case_document_blocks, case_docs_telemetry = _build_case_document_lists(
-            decision, deps
+            decision, deps, case_document_sections
         )
+        if case_docs_telemetry and case_document_sections_telemetry:
+            case_docs_telemetry.update(case_document_sections_telemetry)
     except Exception:  # noqa: BLE001 - forwarding is additive; retrieval must run
         logger.warning(
             "run_retrieval: case_document blocks failed — forwarding none",

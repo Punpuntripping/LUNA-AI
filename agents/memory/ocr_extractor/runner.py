@@ -3,6 +3,8 @@
 ``run_ocr_extraction`` runs once per turn (before the router): it finds
 un-extracted PDF/image attachments on the conversation, OCRs each via Mistral,
 and writes the text back into the attachment's own ``workspace_items.content_md``.
+With ``ATTACHMENT_SEGMENTER_ENABLED`` on for the user it also writes one
+``attachment_pages`` row per page (migration 215), best-effort.
 
 Best-effort by contract — it must **never raise**. Every per-candidate failure
 is caught, logged, and recorded on the row as an ``ocr_status`` marker so the
@@ -14,6 +16,7 @@ import logging
 
 from supabase import Client as SupabaseClient
 
+from agents.utils.segmenter_flags import segmenter_enabled
 from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import record_call
 from shared.config import get_settings
@@ -21,7 +24,7 @@ from shared.observability import get_logfire
 from shared.storage.client import get_signed_url
 
 from .mistral_ocr import OCR_MAX_PAGES, ocr_document
-from .models import OcrExtractionStats
+from .models import OcrExtractionStats, OcrPage
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
@@ -70,6 +73,48 @@ def _mark_status(
             item_id,
             exc_info=True,
         )
+
+
+def _store_pages(
+    supabase: SupabaseClient,
+    item_id: str,
+    user_id: str,
+    pages: list[OcrPage],
+) -> int:
+    """Upsert one ``attachment_pages`` row per OCR page (migration 215).
+
+    ``char_start`` is the page's offset inside the ``content_md`` just written,
+    so the segmenter can number pages. Best-effort: a failure is logged and
+    costs only the page numbers (the segmenter then works from ``content_md``
+    alone) — it never fails the OCR. Returns the rows written.
+    """
+    if not pages:
+        return 0
+    rows = [
+        {
+            "item_id": item_id,
+            "user_id": user_id,
+            "page_no": p.page_no,
+            "content_md": p.markdown,
+            "char_start": p.char_start,
+        }
+        for p in pages
+    ]
+    try:
+        (
+            supabase.table("attachment_pages")
+            .upsert(rows, on_conflict="item_id,page_no")
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "OCR: attachment_pages write failed for item %s (%s) — the segmenter "
+            "will work without page numbers",
+            item_id,
+            type(exc).__name__,
+        )
+        return 0
+    return len(rows)
 
 
 async def run_ocr_extraction(
@@ -126,6 +171,7 @@ async def run_ocr_extraction(
                 "skipped_too_large": stats.skipped_too_large,
                 "failed": stats.failed,
                 "empty": stats.empty,
+                "pages_stored": stats.pages_stored,
             })
         except Exception:  # noqa: BLE001
             pass
@@ -269,6 +315,10 @@ async def _run_inner(
                 {"ocr_error": "persist content_md failed"},
             )
             continue
+
+        # --- Page rows for the segmenter (flag on only; best-effort) -------
+        if text == ocr_result.text and segmenter_enabled(user_id):
+            stats.pages_stored += _store_pages(supabase, item_id, user_id, ocr_result.pages)
 
         # --- Cost/pages ledger (source of truth + OCR quota settle/count) -
         # OCR is a direct Mistral call (not a pydantic-ai agent), so the

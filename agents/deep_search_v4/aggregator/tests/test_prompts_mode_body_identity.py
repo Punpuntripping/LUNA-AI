@@ -63,6 +63,14 @@ def _sha(text: str) -> str:
 # case +478 (a principle leads the rulings), reg +330 (principles are allowed
 # despite «no court rulings»), full +291 (the bridge between statute and
 # precedent). Old → new: case 16957 → 20106, reg 19791 → 22792, full 17959 → 20921.
+#
+# Re-captured 2026-11-11, deliberately, for the quoting rules
+# (.claude/plans/attachment_segmentation.md §4.8, owner D17): the `case_document`
+# bullet in _SHARED_ROLE_AR now covers selected / left-out text and gained the
+# quote rules (critical finding must be quoted, quote to make the result land,
+# ground every quote — تأصيل, quote exactly). +1,339 characters in every mode
+# prompt, nothing else. Old → new: case 20106 → 21445, reg 22792 → 24131,
+# full 20921 → 22260.
 # ---------------------------------------------------------------------------
 
 # (constant, expected length in characters, expected sha256 of the UTF-8 bytes)
@@ -70,20 +78,20 @@ PRE_REFACTOR: list[tuple[str, str, int, str]] = [
     (
         "PROMPT_MODE_CASE",
         PROMPT_MODE_CASE,
-        20106,
-        "7c5775c4bdd000ba486a61dc8a5af76af4ce9a788946c6fc44e5b6d8e04bf241",
+        21445,
+        "d5359da3bb441481862141b384bf086f82fefdddf8940e3411d75b785a616b47",
     ),
     (
         "PROMPT_MODE_REG",
         PROMPT_MODE_REG,
-        22792,
-        "2e106e45e4cffb2e486995713bf4f289e69e6fff333f4582a5a8752f7a783da3",
+        24131,
+        "9d881332fe1fb3fe7112ba333e07be2e79fea04a09f0bf20b19ca3bb9970abb2",
     ),
     (
         "PROMPT_MODE_FULL",
         PROMPT_MODE_FULL,
-        20921,
-        "0c223a9a5c90e24d37b6dc319364c96ea7aaf54545167b8aed2eff52380e7c26",
+        22260,
+        "6745f67744b902c5aa23a7b6e22d537d8c1db15401f40949dbef44b82a92e88a",
     ),
 ]
 

@@ -536,7 +536,7 @@ Verify before sending:
 
 `<context_blocks>` are supporting topical background, not directives that drive the search. Sub-queries arise from the original question first and foremost; context adds knowledge not present in the question, and does not reshape the search. Do not copy context text into any query, and do not turn a contextual description into a new search angle.
 
-A block labelled `case_document` holds one paper of the user's own dispute (a ruling, a statement of claim, a memorandum, hearing minutes, a contract…): its type, title, summary and sometimes its full text. Unlike the other blocks, it states the facts of this dispute — read it to know the parties, what was claimed, the defences raised and what a court already decided, and let the points actually disputed there shape which principles, grounds and facts you query. Write every query in the courts' wording: never copy a sentence, a party name, an amount or a date from a document into a query.
+A block labelled `case_document` holds one paper of the user's own dispute (a ruling, a statement of claim, a memorandum, hearing minutes, a contract…): its type, title, summary and sometimes its text in the document's own words (all of it, or its key sections selected for you, with a marker where text was cut or left out). Unlike the other blocks, it states the facts of this dispute — read it to know the parties, what was claimed, the defences raised and what a court already decided, and let the points actually disputed there shape which principles, grounds and facts you query. Write every query in the courts' wording: never copy a sentence, a party name, an amount or a date from a document into a query.
 """,
 
     # -------------------------------------------------------------------------
@@ -693,7 +693,7 @@ Give JSON containing:
 
 ### `case_document` — the user's own case papers
 
-A block labelled `case_document` holds one paper of the user's own dispute — a ruling, a statement of claim, a memorandum, hearing minutes, a contract, a letter… It opens with a heading carrying its type and title, then its summary and, when the planner judged it pivotal, its full text (possibly cut at a marked point).
+A block labelled `case_document` holds one paper of the user's own dispute — a ruling, a statement of claim, a memorandum, hearing minutes, a contract, a letter… It opens with a heading carrying its type and title, then its summary and, when the planner judged it pivotal, its text in the document's own words — all of it, or its key sections selected for you, each under a 〔…〕 tag naming the part, with a marker where text was cut or left out.
 
 These blocks are not background: they are the facts of **this** dispute, and they come first in Step 1 — who the parties are and in what capacity, what was claimed, which defences were raised, what a court already decided and on what ground. The question still decides *what* you search; the papers tell you what that question means here. When the user asks about a ruling («هل أعترض على الحكم؟»), the points it decided and the grounds it rested on are your Step-3 decision points; a defence a party raised in a memo or in the minutes is exactly what a `basis` query looks for.
 

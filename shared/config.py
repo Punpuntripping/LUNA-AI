@@ -506,6 +506,26 @@ class Settings(BaseSettings):
     # needs the redeploy Railway does on every variable edit anyway.
     OFFICIAL_PRINCIPLES_ENABLED: bool = False
 
+    # ── Helper frame — .claude/plans/helper_frame.md ────────────────────────
+    # Off: OCR, the attachment summary, the pre-router memory hook and the
+    # memory agent run exactly as before (inline awaits + memory_task). On: they
+    # run as helpers in agents/helpers/ and each agent waits only for the
+    # helpers that are critical for it. Env var name == field name.
+    HELPER_FRAME_ENABLED: bool = False
+
+    # ── Attachment segmentation — .claude/plans/attachment_segmentation.md ──
+    # SEGMENTER: the segmenter helper runs on attachments over 5,000 chars and
+    # stores pages + sections (migration 215 must be applied first). Nobody
+    # reads the sections while DELIVERY is off (shadow mode).
+    # DELIVERY: the expanders / aggregator get core sections and the writer
+    # metadata + core + supporting, under the 100k / 300k caps. Off: today's
+    # 12k / 30k first-chars path, byte-identical.
+    # *_USERS: comma-separated users.user_id; empty = everyone.
+    ATTACHMENT_SEGMENTER_ENABLED: bool = False
+    ATTACHMENT_SEGMENTER_USERS: Optional[str] = None
+    ATTACHMENT_SEGMENT_DELIVERY_ENABLED: bool = False
+    ATTACHMENT_SEGMENT_DELIVERY_USERS: Optional[str] = None
+
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
     # OpenRouter Decisions API per sub-query, falling back down the

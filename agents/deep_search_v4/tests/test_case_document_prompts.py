@@ -33,7 +33,9 @@ from agents.deep_search_v4.shared.context import ContextBlock
 CASE_PROMPT_3_RULE = (
     "A block labelled `case_document` holds one paper of the user's own dispute "
     "(a ruling, a statement of claim, a memorandum, hearing minutes, a contract…): "
-    "its type, title, summary and sometimes its full text. Unlike the other blocks, "
+    "its type, title, summary and sometimes its text in the document's own words "
+    "(all of it, or its key sections selected for you, with a marker where text was "
+    "cut or left out). Unlike the other blocks, "
     "it states the facts of this dispute — read it to know the parties, what was "
     "claimed, the defences raised and what a court already decided, and let the "
     "points actually disputed there shape which principles, grounds and facts you "
@@ -47,8 +49,9 @@ CASE_PROMPT_4_RULE = (
     "A block labelled `case_document` holds one paper of the user's own dispute — a "
     "ruling, a statement of claim, a memorandum, hearing minutes, a contract, a "
     "letter… It opens with a heading carrying its type and title, then its summary "
-    "and, when the planner judged it pivotal, its full text (possibly cut at a "
-    "marked point).\n"
+    "and, when the planner judged it pivotal, its text in the document's own words "
+    "— all of it, or its key sections selected for you, each under a 〔…〕 tag naming "
+    "the part, with a marker where text was cut or left out.\n"
     "\n"
     "These blocks are not background: they are the facts of **this** dispute, and "
     "they come first in Step 1 — who the parties are and in what capacity, what was "
@@ -69,8 +72,9 @@ REG_PROMPT_1_RULE = (
     "A block labelled `case_document` holds one paper of the user's own matter — a "
     "contract, a letter or notice, a financial record, a ruling, a statement of "
     "claim… It opens with a heading carrying its type and title, then its summary "
-    "and, when the planner judged it pivotal, its full text (possibly cut at a "
-    "marked point). Unlike the other blocks, it states the facts of the user's "
+    "and, when the planner judged it pivotal, its text in the document's own words "
+    "— all of it, or its key sections selected for you, each under a 〔…〕 tag naming "
+    "the part, with a marker where text was cut or left out. Unlike the other blocks, it states the facts of the user's "
     "situation: read it to settle what the question is actually about — which "
     "contract, which clause, which relationship, which step has already happened — "
     "before you frame the issues. The clause, notice or payment the question turns "
@@ -82,23 +86,15 @@ REG_PROMPT_1_RULE = (
 )
 
 AGGREGATOR_RULE = (
-    "- **`case_document` blocks are the exception — they are the user's own case "
-    "papers** (a ruling, a statement of claim, a memorandum, hearing minutes, a "
-    "contract, a letter…). Each opens with a heading carrying its type and title, "
-    "then its summary and its full text; a long document is cut at a marked point — "
-    "never guess past it. They are the facts of the user's matter, and when the "
-    "question is about one of them («هل أعترض على الحكم؟»، «هل الشرط الجزائي في "
-    "عقدي نافذ؟») the answer must work from what it actually says: the ruling's "
-    "grounds, the clause's wording, the dates and amounts it states.\n"
-    "  - The legal rule still comes from `<references>` only, cited `[n]`. A "
-    "document is a source of facts, never a legal authority, and never a `[n]` "
-    "citation.\n"
-    "  - Refer to a document by what it is — «الحكم المرفق»، «العقد المرفق»، "
-    "«مذكرة الخصم المرفقة» — never by its `WI-N` alias, which the user never sees.\n"
-    "  - When a document came without its full text, do not state its facts more "
-    "precisely than its summary does.\n"
-    "  - If the part of a document that was cut off likely holds what the answer "
-    "needs, say so in the gaps section.\n"
+    "- **`case_document` blocks are the exception — they are the user's own case papers** (a ruling, a statement of claim, a memorandum, hearing minutes, a contract, a letter…). Each opens with a heading carrying its type and title, then its summary and its text in the document's own words — all of it, or the parts selected for you; a marker shows where text was cut or left out — never guess what lies past it. They are the facts of the user's matter, and when the question is about one of them («هل أعترض على الحكم؟»، «هل الشرط الجزائي في عقدي نافذ؟») the answer must work from what it actually says: the ruling's grounds, the clause's wording, the dates and amounts it states.\n"
+    "  - **A critical finding must be quoted.** When a document holds something that decides or changes the answer — a ground the ruling rests on, a clause that settles the dispute, an admission, a defense or argument left unanswered, a decisive figure, date or deadline — quote its exact words in «…», say which document and which part they come from («أسباب الحكم المرفق»، «البند السابع من العقد المرفق»), then say what they mean for the user's case.\n"
+    "  - **Beyond critical findings, quote to make the result land.** Where a short passage from the user's own papers shows how the findings bear on their case more clearly than a description would, quote it beside the finding it illustrates. Judge it each time: quote what helps the user understand, never to fill space.\n"
+    '  - **Ground every quote (تأصيل).** Tie the quoted words to the legal rule in `<references>` with its `[n]` — whether the rule supports them, contradicts them or leaves them open — and state the consequence for the user.\n'
+    '  - Quote exactly: never stitch separate passages together, never adjust the wording, and keep each quote to the words that matter. A figure or date that looks garbled may be an OCR misreading — quote it as written and say it should be checked against the original.\n'
+    '  - The legal rule still comes from `<references>` only, cited `[n]`. A document is a source of facts, never a legal authority, and never a `[n]` citation.\n'
+    '  - Refer to a document by what it is — «الحكم المرفق»، «العقد المرفق»، «مذكرة الخصم المرفقة» — never by its `WI-N` alias, which the user never sees.\n'
+    '  - When a document came without its text, do not state its facts more precisely than its summary does.\n'
+    '  - If a part of a document that was cut off or left out likely holds what the answer needs, say so in the gaps section.\n'
 )
 
 # The bullet the aggregator rule is inserted right after (v1 and v2 share it).

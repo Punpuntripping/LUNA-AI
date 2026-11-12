@@ -183,6 +183,77 @@ def _role_for(item_id: str, role_assignments: dict[str, PlannerRole]) -> Planner
     return role
 
 
+#: Roles whose attachment the writer reads as sections. A ``template`` is the
+#: document's skeleton and a ``prior_draft`` is the text being revised: both keep
+#: their whole ``content_md`` (formulas, signature blocks and headers are the point
+#: of them, and the segmenter rates those ``boilerplate``).
+_SEGMENTED_ROLES: frozenset[str] = frozenset({"source", "reference"})
+
+
+async def _attachment_bodies(
+    selected_ids: list[str],
+    wi_index: dict[str, dict],
+    deps: "WriterPlannerDeps",
+    role_assignments: dict[str, PlannerRole] | None = None,
+) -> dict[str, str]:
+    """The writer's text for each selected attachment under segmented delivery.
+
+    Plan ``.claude/plans/attachment_segmentation.md`` §4.7. Empty dict (= every
+    body is ``content_md`` as before) unless ``ATTACHMENT_SEGMENT_DELIVERY_ENABLED``
+    is on for this user. On: long attachments wait for the segmenter (critical
+    for the writer, 5-minute ceiling) and become ``metadata`` + ``core`` +
+    ``supporting`` sections, uncapped; those without a usable map get their full
+    text within the 100k / 300k caps. Never raises — a failure keeps the old
+    bodies.
+    """
+    from agents.utils.attachment_delivery import delivery_enabled, writer_bodies
+
+    if not delivery_enabled(getattr(deps, "user_id", None)):
+        return {}
+    roles = role_assignments or {}
+    contents = {
+        iid: str(wi_index[iid].get("content_md") or "")
+        for iid in selected_ids
+        if iid in wi_index
+        and str(wi_index[iid].get("kind") or "") == "attachment"
+        and roles.get(iid, "source") in _SEGMENTED_ROLES
+    }
+    if not contents:
+        return {}
+    try:
+        from agents.helpers import WAIT_STATUS_TEXT
+        from agents.utils.attachment_sections import wait_and_load_sections
+
+        def _on_wait() -> None:
+            sink = getattr(deps, "emit_sse", None)
+            if sink is not None:
+                try:
+                    sink({"type": "status", "text": WAIT_STATUS_TEXT})
+                except Exception:  # noqa: BLE001 — progress is best-effort
+                    logger.debug("walkers: wait status emit failed", exc_info=True)
+
+        # Long files are segmented alone; small files of one message together
+        # when they pass 5k between them (owner rule 2026-11-12).
+        long_ids = [i for i, c in contents.items() if c.strip()]
+        sections_by_id, telemetry = await wait_and_load_sections(
+            long_ids,
+            consumer="writer",
+            supabase=deps.supabase,
+            user_id=deps.user_id,
+            on_wait=_on_wait,
+        )
+        bodies, stats = writer_bodies(contents, sections_by_id)
+        logger.info(
+            "walkers: attachment delivery segmented=%d fallback=%d trimmed=%d (%s)",
+            len(stats["segmented"]), len(stats["fallback"]), len(stats["trimmed"]),
+            telemetry.get("segments.readiness"),
+        )
+        return bodies
+    except Exception:  # noqa: BLE001 — delivery is additive; the writer must run
+        logger.warning("walkers: segmented attachment delivery failed", exc_info=True)
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Public — the sole package-assembly path
 # ---------------------------------------------------------------------------
@@ -223,6 +294,8 @@ async def build_analyzed_items_direct(
         deps.supabase, refs_family_ids
     )
 
+    attachment_bodies = await _attachment_bodies(selected_ids, wi_index, deps, role_assignments)
+
     analyzed: list[AnalyzedItem] = []
     for item_id in selected_ids:
         wi = wi_index.get(item_id)
@@ -237,7 +310,7 @@ async def build_analyzed_items_direct(
         title = str(wi.get("title") or "")
         word_count = int(wi.get("word_count") or 0)
         wi_seq = int(wi.get("wi_seq")) if wi.get("wi_seq") is not None else None
-        body_md = str(wi.get("content_md") or "")
+        body_md = attachment_bodies.get(item_id, str(wi.get("content_md") or ""))
         role = _role_for(item_id, role_assignments)
         resolved_refs_md = (
             refs_md_by_id.get(item_id) if kind in _REFS_FAMILY_KINDS else None

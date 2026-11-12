@@ -40,6 +40,7 @@ from __future__ import annotations
 import html
 
 from agents.deep_search_v4.shared.case_documents import forwardable_documents
+from agents.utils.attachment_delivery import delivery_enabled
 from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
 from agents.utils.prior_coverage import render_prior_coverage
 from agents.utils.reply_guard import NO_INTERNALS_RULE
@@ -369,6 +370,21 @@ Both executors already receive every forwarded document's title, type and summar
 - `reg_full_text_wis` — the regulations search. It needs a document's text when the question turns on its exact terms: a `contract` clause, the wording of a `letter` or notice, the items of a `financial` record. A court paper rarely helps it beyond its summary.
 
 Leave both lists empty when the summaries are enough — the document was attached as background, or the question does not turn on its wording. A document is shown up to 12,000 characters; each executor reads at most 30,000 characters of full text per turn, in the order you list them — put the decisive document first. Only aliases of items marked `forwarded="true"` count; any other alias is ignored."""
+
+# The same rules when segmented delivery is on (attachment_segmentation.md §4.6,
+# ATTACHMENT_SEGMENT_DELIVERY_ENABLED): a long document reaches the executors as
+# its key sections, not its opening, under the 100k / 300k caps. Chosen per user
+# where the rules are appended; everything else is identical.
+_CASE_DOCUMENTS_RULES_SEGMENTED = _CASE_DOCUMENTS_RULES.replace(
+    "A document is shown up to 12,000 characters; each executor reads at most "
+    "30,000 characters of full text per turn, in the order you list them — put the "
+    "decisive document first.",
+    "A long document reaches the executor as its key sections in its own words — "
+    "the parts that decide it, wherever they sit — not just its opening; a document "
+    "is shown up to 100,000 characters and each executor reads at most 300,000 "
+    "characters of document text per turn, in the order you list them — put the "
+    "decisive document first.",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +739,12 @@ def build_decider_instructions(deps) -> str:
     # Conditional full-text rules — only when at least one attached item
     # travels downstream as a case document (i.e. carries forwarded="true").
     if forwardable_documents(getattr(deps, "attached_items", None) or []):
-        rendered = f"{rendered}\n\n{_CASE_DOCUMENTS_RULES}"
+        rules = (
+            _CASE_DOCUMENTS_RULES_SEGMENTED
+            if delivery_enabled(getattr(deps, "user_id", None))
+            else _CASE_DOCUMENTS_RULES
+        )
+        rendered = f"{rendered}\n\n{rules}"
     return rendered
 
 

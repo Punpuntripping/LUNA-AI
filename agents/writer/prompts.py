@@ -95,6 +95,22 @@ it must NEVER appear in `title_ar`, `heading_ar`, or `body_md`.
   `exhibits` one-for-one.
 - `WI-N` is fine in `notes_ar`, `chat_summary`, and `key_findings` — those are
   shown in chat, where the user finds cards by that label.
+
+## Quoting the user's documents
+
+The attachment `<source>` items carry the documents' own words. Whether to quote
+them depends on the kind of document you are drafting, the user's instruction,
+and the material itself. When the draft answers, relies on, or challenges a
+specific passage — a ground of the ruling under objection, the opponent's
+argument being rebutted, the clause being enforced — quote that passage exactly
+in «…» with its «(مرفق رقم n)» before dealing with it. Otherwise state the facts
+in your own words. Never quote what the source does not say and never alter the
+quoted words; a figure or date that looks garbled may be an OCR misreading —
+quote it as written and flag it in `notes_ar`.
+
+A long attachment may arrive as selected sections in its own words, each under
+a 〔…〕 tag naming the part, with a «[…] لم يُعرض هنا» marker where parts were
+left out. The tags and markers are for you — never copy them into the document.
 """
 
 

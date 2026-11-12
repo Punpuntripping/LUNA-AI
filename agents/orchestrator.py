@@ -66,6 +66,7 @@ if TYPE_CHECKING:  # annotation only — the helpers are imported where used.
     from agents.utils.welcome import WelcomeState
     from shared.quota import DeepSearchGate, DeepSearchGated
 
+import agents.helpers as helper_frame
 import agents.memory.agent as memory
 from agents.memory.convo_memory_writer import (
     build_memory_writer_input,
@@ -134,6 +135,12 @@ _ANALYZER_RECENT_ROWS = 7
 # that. Past this the task goes on with the old memory and the entry lands for the
 # next turn.
 MEMORY_WRITER_CEILING_S = 60.0
+
+# Step 0a's status line when an attachment could not be read (both paths).
+_OCR_FAILED_STATUS = (
+    "تعذّرت قراءة بعض المرفقات، وسيتابع المساعد الإجابة دون "
+    "الاستناد إلى محتواها."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1236,7 +1243,7 @@ async def _resume_major_agent_inner(
             )
             # Memory first. The planner and the writer run inside one call, so
             # there is no later point to wait in.
-            await _settle_memory_writer(memory_task, conversation_id)
+            await _settle_memory_writer(memory_task, conversation_id, consumer="writer_planner")
             major_input = MajorAgentInput(
                 describe_query=user_reply,
                 task_label=resumed_task_label,
@@ -1458,7 +1465,7 @@ async def _resume_major_agent_inner(
         )
         # Same for the memory, once the memory agent is done with this reply: one
         # read for this leg, reused below.
-        await _settle_memory_writer(memory_task, conversation_id)
+        await _settle_memory_writer(memory_task, conversation_id, consumer="deep_planner")
         _resume_conversation_memory = _load_conversation_memory(
             supabase, conversation_id, user_id
         )
@@ -1927,7 +1934,7 @@ async def _resume_simple_search_leg(
     _keep_pause = False
     # Resume skips the router. Memory first, then one read for this leg, reused by
     # the hand-off.
-    await _settle_memory_writer(memory_task, conversation_id)
+    await _settle_memory_writer(memory_task, conversation_id, consumer="other")
     conversation_memory_md = _load_conversation_memory(
         supabase, conversation_id, user_id
     )
@@ -2582,6 +2589,9 @@ async def handle_message(
             ):
                 yield guard.check(ev)
     finally:
+        # No-op unless the helper frame bound this turn's helpers. The helpers
+        # themselves go on: their tasks hold their own context.
+        helper_frame.unbind_turn()
         _quota.reset_deep_search_gate(_gate_token)
         reset_active_codec(_codec_token)
 
@@ -2675,41 +2685,51 @@ async def _handle_message_inner(
             yield ev
         return
 
-    # 0a. OCR memory step — extract text from new PDF/image attachments so the
-    #     router (and any dispatched or RESUMED agent) can see document content.
-    #     Runs before the pause check: a reply to a paused agent can carry
-    #     attachments too, and the resume legs below read them via
-    #     _load_reply_attachment_ids.
-    ocr_item_ids: list[str] = []
-    _ocr_failed = 0
-    try:
-        # Whole-step budget: N hung attachments (≤60s each after fix 2) must not
-        # eat the overall pipeline budget. Caps the worst case of k×60s.
-        ocr_stats = await asyncio.wait_for(
-            run_ocr_extraction(supabase, conversation_id, user_id),
-            timeout=180.0,
-        )
-        ocr_item_ids = ocr_stats.filled_item_ids
-        _ocr_failed = ocr_stats.failed
-    except (asyncio.TimeoutError, Exception):
-        logger.warning("OCR extraction step failed", exc_info=True)
-        _ocr_failed = 1
-    if _ocr_failed:
-        yield {
-            "type": "status",
-            "text": (
-                "تعذّرت قراءة بعض المرفقات، وسيتابع المساعد الإجابة دون "
-                "الاستناد إلى محتواها."
-            ),
-        }
+    # Helper frame (HELPER_FRAME_ENABLED, helper_frame.md): ``None`` while the
+    # flag is off, and steps 0a, 0b and 1 run inline exactly as before. On, they
+    # run as helpers and each agent waits only for the helpers critical for it.
+    turn = _open_helper_turn(
+        supabase=supabase,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        case_id=case_id,
+        user_message_id=user_message_id,
+    )
 
-    # 0b. Summarize the freshly-OCR'd attachments inline (awaited) before
-    #     routing or resuming.
-    for _ocr_item_id in ocr_item_ids:
+    if turn is not None:
+        # 0a + 0b on the frame: same place, same waits for the router.
+        async for ev in _run_pre_router_helpers(turn):
+            yield ev
+    else:
+        # 0a. OCR memory step — extract text from new PDF/image attachments so the
+        #     router (and any dispatched or RESUMED agent) can see document content.
+        #     Runs before the pause check: a reply to a paused agent can carry
+        #     attachments too, and the resume legs below read them via
+        #     _load_reply_attachment_ids.
+        ocr_item_ids: list[str] = []
+        _ocr_failed = 0
         try:
-            await summarize_workspace_item(supabase, _ocr_item_id)
-        except Exception:
-            logger.warning("inline summarize failed for %s", _ocr_item_id, exc_info=True)
+            # Whole-step budget: N hung attachments (≤60s each after fix 2) must not
+            # eat the overall pipeline budget. Caps the worst case of k×60s.
+            ocr_stats = await asyncio.wait_for(
+                run_ocr_extraction(supabase, conversation_id, user_id),
+                timeout=180.0,
+            )
+            ocr_item_ids = ocr_stats.filled_item_ids
+            _ocr_failed = ocr_stats.failed
+        except (asyncio.TimeoutError, Exception):
+            logger.warning("OCR extraction step failed", exc_info=True)
+            _ocr_failed = 1
+        if _ocr_failed:
+            yield {"type": "status", "text": _OCR_FAILED_STATUS}
+
+        # 0b. Summarize the freshly-OCR'd attachments inline (awaited) before
+        #     routing or resuming.
+        for _ocr_item_id in ocr_item_ids:
+            try:
+                await summarize_workspace_item(supabase, _ocr_item_id)
+            except Exception:
+                logger.warning("inline summarize failed for %s", _ocr_item_id, exc_info=True)
 
     # The memory agent starts here, the one start point for a user message. The
     # router path and the resume path both pass through, and the pinned plan has
@@ -2724,6 +2744,10 @@ async def _handle_message_inner(
         case_id=case_id,
         user_message_id=user_message_id,
     )
+    if turn is not None:
+        # Same task, same start point. The frame holds it so every wait on it
+        # goes through the matrix: not the router, everyone after it.
+        turn.adopt("memory", memory_task)
 
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
@@ -2769,11 +2793,17 @@ async def _handle_message_inner(
             return
 
     # 1. Pre-router memory hook — best-effort, never aborts the turn.
-    try:
-        await memory.resummarize_dirty_items(supabase, conversation_id)
-        await memory.compact_conversation(supabase, conversation_id, user_id)
-    except Exception:
-        logger.warning("memory pre-hook failed", exc_info=True)
+    if turn is not None:
+        # A helper critical for the router, started here as before: on the
+        # routing path only, after the pause check.
+        turn.start("pre_router_memory")
+        await turn.settle("pre_router_memory", consumer="router")
+    else:
+        try:
+            await memory.resummarize_dirty_items(supabase, conversation_id)
+            await memory.compact_conversation(supabase, conversation_id, user_id)
+        except Exception:
+            logger.warning("memory pre-hook failed", exc_info=True)
 
     async for ev in _route(
         question=question,
@@ -2893,16 +2923,99 @@ def _start_memory_writer(
         return None
 
 
-async def _settle_memory_writer(task: "asyncio.Task | None", conversation_id: str) -> bool:
+def _open_helper_turn(
+    *,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+) -> "helper_frame.TurnHelpers | None":
+    """This turn's helpers, published for every task the turn creates later, or
+    ``None`` while ``HELPER_FRAME_ENABLED`` is off. ``None`` too if the frame
+    cannot start: the turn then runs the steps inline, as before. Never raises.
+
+    OCR and the summary go through this module's names, the same calls as the
+    inline steps (and the seams the orchestrator's tests patch).
+    """
+    try:
+        from shared.config import get_settings
+
+        if not get_settings().HELPER_FRAME_ENABLED:
+            return None
+
+        async def _ocr(ctx: "helper_frame.HelperContext") -> Any:
+            return await run_ocr_extraction(ctx.supabase, ctx.conversation_id, ctx.user_id)
+
+        async def _summary(ctx: "helper_frame.HelperContext") -> Any:
+            return await summarize_workspace_item(ctx.supabase, ctx.item_id)
+
+        turn = helper_frame.TurnHelpers(
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            message_id=user_message_id,
+            runs={"ocr": _ocr, "summary": _summary},
+        )
+        helper_frame.bind_turn(turn)
+        return turn
+    except Exception:  # noqa: BLE001
+        logger.warning("helper frame not started; running the steps inline", exc_info=True)
+        return None
+
+
+async def _run_pre_router_helpers(
+    turn: "helper_frame.TurnHelpers",
+) -> AsyncGenerator[dict, None]:
+    """Steps 0a + 0b on the helper frame.
+
+    The router waits as before: OCR up to its ceiling, the status line if an
+    attachment could not be read, then the summaries. Still before the pause
+    check, so a file sent as the answer to a pause reaches the resumed agent.
+    What changes: the summaries run in parallel, and an OCR run past its ceiling
+    is not cancelled — its text and summaries land for the next turn.
+    """
+    turn.start("ocr")
+    ocr = (await turn.ready("router", only=("ocr",))).helper("ocr")
+    if ocr.reason == "timeout":
+        logger.warning("OCR past its ceiling; the router goes on without it")
+    failed = (getattr(ocr.result, "failed", 0) or 0) if ocr.ok else 1
+    if failed:
+        yield {"type": "status", "text": _OCR_FAILED_STATUS}
+    await turn.ready("router", only=("summary",))
+
+
+def _memory_consumer(agent_family: str | None) -> str:
+    """The helper-frame consumer a dispatched family waits as."""
+    return {"deep_search": "deep_planner", "writing": "writer_planner"}.get(
+        agent_family or "", "other"
+    )
+
+
+async def _settle_memory_writer(
+    task: "asyncio.Task | None", conversation_id: str, *, consumer: str = "other"
+) -> bool:
     """Wait for this message's memory agent, up to the ceiling. True when it ended
     cleanly. False with no wait when it never started.
 
     ``asyncio.wait``, never ``wait_for``, which would cancel the run: past the
     ceiling it keeps running and its entry lands for the next turn. Never raises
     for the run's sake: a run that failed leaves the memory as it was.
+
+    ``consumer`` names the waiting agent for the helper frame, which takes the
+    wait when it holds this run (``HELPER_FRAME_ENABLED``); unused otherwise.
     """
     if task is None:
         return False
+    turn = helper_frame.current_turn()
+    if turn is not None and turn.holds(task):
+        got = await turn.settle("memory", consumer=consumer)
+        if got.reason == "timeout":
+            _logfire.info("convo_memory_writer.past_ceiling", conversation_id=conversation_id)
+        elif not got.ok:
+            logger.warning("convo_memory_writer ended early: conversation_id=%s", conversation_id)
+        return got.ok
     done, _ = await asyncio.wait({task}, timeout=MEMORY_WRITER_CEILING_S)
     if not done:
         _logfire.info("convo_memory_writer.past_ceiling", conversation_id=conversation_id)
@@ -2914,7 +3027,7 @@ async def _settle_memory_writer(task: "asyncio.Task | None", conversation_id: st
 
 
 async def _wait_for_memory_writer(
-    ctx: Any, task: "asyncio.Task | None", conversation_id: str
+    ctx: Any, task: "asyncio.Task | None", conversation_id: str, *, consumer: str = "other"
 ) -> None:
     """Hold a dispatch until this message's memory agent ends, up to the ceiling.
 
@@ -2930,7 +3043,7 @@ async def _wait_for_memory_writer(
     """
     from agents.utils.conversation_memory import render_conversation_memory
 
-    if not await _settle_memory_writer(task, conversation_id):
+    if not await _settle_memory_writer(task, conversation_id, consumer=consumer):
         return
     output = task.result()
     if output.read_ok:
@@ -3198,7 +3311,9 @@ async def _route(
         if analyzer_enabled(user_id) and _has_prior_report(ctx):
             # A task like a dispatch: it may start the search, and its reply
             # reads the memory, so a correction in this message must land first.
-            await _wait_for_memory_writer(ctx, memory_task, conversation_id)
+            await _wait_for_memory_writer(
+                ctx, memory_task, conversation_id, consumer="analyzer"
+            )
             async for ev in _run_prior_check(
                 question=question,
                 supabase=supabase,
@@ -3243,7 +3358,10 @@ async def _route(
         # Memory first, then the task. A chat reply never reaches this: no agent
         # follows it, and nothing may wait for the run after ``done``.
         # ``agents/memory/convo_memory_writer/runner.py`` says why.
-        await _wait_for_memory_writer(ctx, memory_task, conversation_id)
+        await _wait_for_memory_writer(
+            ctx, memory_task, conversation_id,
+            consumer=_memory_consumer(result.agent_family),
+        )
         # Merge any save_memo force-attach id(s) into the LLM-selected attachments
         # (deduped) so the specialist always sees the pinned core message even if
         # the LLM forgot to attach it. The memo is included unconditionally — it's

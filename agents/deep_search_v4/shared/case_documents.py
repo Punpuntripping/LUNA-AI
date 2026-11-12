@@ -36,10 +36,22 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from agents.deep_search_v4.shared.context import ContextBlock
+from agents.utils.attachment_delivery import (
+    DEEP_SEARCH_VALUES,
+    SEGMENT_MIN_CHARS,
+    Section,
+    has_kept,
+    kept_chars,
+    proportional_ratios,
+    render_sections,
+    trim_text,
+)
+from agents.utils.attachment_delivery import PER_DOC_CAP as SEGMENTED_PER_DOC_CAP
+from agents.utils.attachment_delivery import TOTAL_CAP as SEGMENTED_TOTAL_CAP
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from agents.models import WorkspaceItemSnapshot
@@ -256,6 +268,160 @@ def build_case_document_blocks(
     return blocks
 
 
+# ---------------------------------------------------------------------------
+# Segmented delivery — .claude/plans/attachment_segmentation.md §4.6
+# (ATTACHMENT_SEGMENT_DELIVERY_ENABLED). The function above stays as it is: with
+# the flag off the blocks are byte-identical to before.
+# ---------------------------------------------------------------------------
+
+_SECTIONS_HEADING = "#### مقاطع من النص بنصها الأصلي"
+
+
+def _render_sections_body(item: Any, rendered: str) -> str:
+    """Heading + summary + the selected sections (already rendered)."""
+    summary = str(getattr(item, "summary", "") or "").strip()
+    lines = [_heading(item)]
+    if summary:
+        lines += [_SUMMARY_HEADING, summary]
+    lines += [_SECTIONS_HEADING, rendered]
+    return "\n".join(lines)
+
+
+def build_case_document_blocks_segmented(
+    docs: Sequence[WorkspaceItemSnapshot],
+    full_text_ids: Sequence[str],
+    sections_by_id: Mapping[str, Sequence[Section]],
+    *,
+    per_doc_cap: int = SEGMENTED_PER_DOC_CAP,
+    total_cap: int = SEGMENTED_TOTAL_CAP,
+    stats: dict[str, Any] | None = None,
+) -> list[ContextBlock]:
+    """One ``case_document`` block per document, for ONE recipient — segmented.
+
+    Same who-gets-which-document rule as :func:`build_case_document_blocks`
+    (``full_text_ids`` first, then router order; the rest get their summary).
+    What a wanted document delivers (plan §4.6.2):
+
+    - with ``core`` sections in ``sections_by_id`` — those sections in document
+      order, tagged, with left-out markers. A file over SEGMENT_MIN_CHARS, or a
+      small file segmented as part of a bundle (owner rule 2026-11-12: the small
+      files of one message, together over 5k, are segmented in one call);
+    - no sections and ``≤ SEGMENT_MIN_CHARS`` — its full text (never trimmed);
+    - no usable sections and longer (segmenter failed / late / nothing core) —
+      its full text, treated as one section.
+
+    Caps (§4.6.3): sections and fallback texts are trimmed proportionally to fit
+    ``per_doc_cap`` per document, then ``total_cap`` minus the short documents'
+    full texts. Short documents that do not fit the total drop to their summary
+    (the old over-total rule). ``sections_by_id`` texts must already be encoded
+    the way the snapshots are (وضع السرية) — nothing here encodes.
+
+    ``stats`` gains ``segmented``, ``fallback``, ``trim_factor`` and
+    ``core_chars`` on top of the old keys.
+    """
+    by_id = {str(d.item_id): d for d in docs}
+    wanted = [i for i in dict.fromkeys(str(x) for x in full_text_ids) if i in by_id]
+    wanted_set = set(wanted)
+    ordered = [by_id[i] for i in wanted] + [
+        d for d in docs if str(d.item_id) not in wanted_set
+    ]
+
+    # Pass 1 — decide each document's mode and its text size.
+    modes: dict[str, str] = {}
+    fixed = 0
+    variable: dict[str, int] = {}
+    for doc in ordered:
+        iid = str(doc.item_id)
+        content = str(getattr(doc, "content_md", "") or "").strip()
+        if iid not in wanted_set or not content:
+            modes[iid] = "summary"
+        elif has_kept(sections_by_id.get(iid) or (), DEEP_SEARCH_VALUES):
+            modes[iid] = "sections"
+            variable[iid] = kept_chars(sections_by_id[iid], DEEP_SEARCH_VALUES)
+        elif len(content) <= SEGMENT_MIN_CHARS:
+            if fixed + len(content) <= total_cap:
+                modes[iid] = "full"
+                fixed += len(content)
+            else:
+                modes[iid] = "over"
+        else:
+            modes[iid] = "fallback"
+            variable[iid] = len(content)
+
+    ratios, factor = proportional_ratios(
+        variable, fixed, per_doc_cap=per_doc_cap, total_cap=total_cap
+    )
+    if factor <= 0.0:
+        # No room left after the short documents: the long ones drop to summary.
+        for iid in variable:
+            modes[iid] = "over"
+
+    # Pass 2 — render.
+    shown_full: list[str] = []
+    truncated: list[str] = []
+    over_total: list[str] = []
+    segmented: list[str] = []
+    fallback: list[str] = []
+    used = 0
+    blocks: list[ContextBlock] = []
+    for doc in ordered:
+        iid = str(doc.item_id)
+        alias = _alias(doc)
+        content = str(getattr(doc, "content_md", "") or "").strip()
+        mode = modes[iid]
+        if mode == "sections":
+            rendered, cut = render_sections(
+                sections_by_id[iid], DEEP_SEARCH_VALUES, ratio=ratios[iid]
+            )
+            body = _render_sections_body(doc, rendered)
+            used += len(rendered)
+            shown_full.append(alias)
+            segmented.append(alias)
+            if cut:
+                truncated.append(alias)
+        elif mode in ("full", "fallback"):
+            text = content if mode == "full" else trim_text(content, ratios[iid])
+            body = _render_body(
+                doc, full_text=text, original_chars=len(content), over_total=False
+            )
+            used += len(text)
+            shown_full.append(alias)
+            if mode == "fallback":
+                fallback.append(alias)
+            if len(text) < len(content):
+                truncated.append(alias)
+        else:
+            if mode == "over":
+                over_total.append(alias)
+            body = _render_body(
+                doc,
+                full_text=None,
+                original_chars=len(content),
+                over_total=mode == "over",
+            )
+        blocks.append(
+            ContextBlock(
+                label=CASE_DOCUMENT_LABEL,
+                body=body,
+                persistence="turn",
+                source_item_id=iid,
+            )
+        )
+
+    if stats is not None:
+        stats.update(
+            full_text=shown_full,
+            truncated=truncated,
+            over_total=over_total,
+            full_text_chars=used,
+            segmented=segmented,
+            fallback=fallback,
+            trim_factor=round(factor, 4),
+            core_chars=sum(v for k, v in variable.items() if modes.get(k) == "sections"),
+        )
+    return blocks
+
+
 __all__ = [
     "CASE_DOCUMENT_LABEL",
     "CASE_DOCUMENT_TYPES",
@@ -263,6 +429,7 @@ __all__ = [
     "PER_DOC_FULL_TEXT_CAP",
     "TOTAL_FULL_TEXT_CAP",
     "build_case_document_blocks",
+    "build_case_document_blocks_segmented",
     "forwardable_documents",
     "parse_wi_aliases",
 ]
