@@ -107,7 +107,7 @@ def test_fixture_consistency_same_value_one_fake(fixtures, replayed):
 
 
 def _keep(length):
-    return 3 if length <= 7 else 4
+    return 5  # every masked run is ≥8 digits → keep 5 (2026-11-14)
 
 
 def test_number_fakes_preserve_shape(replayed):
@@ -221,7 +221,7 @@ def test_tripwire_on_mangled_fake_no_prefix_decode():
         real_to_fake={"1023456789": "1023835840"},
         fake_to_real={"1023835840": "1023456789"},
     )
-    mangled = "1023835841"  # same 4-prefix + length, tail differs
+    mangled = "1023835841"  # same 5-prefix + length, tail differs
     out = codec.decode(f"القيمة {mangled} مشوّهة")
     assert out.restored_count == 0
     assert mangled in out.text  # NOT decoded by prefix
@@ -229,7 +229,7 @@ def test_tripwire_on_mangled_fake_no_prefix_decode():
     tw = out.tripwires[0]
     assert isinstance(tw, TripwireEvent)
     assert tw.kind == "number"
-    assert tw.prefix == "1023"
+    assert tw.prefix == "10238"  # keep-5 (2026-11-14)
     assert tw.length == 10
 
 
@@ -251,14 +251,14 @@ def test_exact_fake_decodes_no_tripwire():
 @pytest.mark.parametrize(
     "real",
     [
-        pytest.param("القضية 4471234 12/3/1446", id="before-a-slash-date"),
-        pytest.param("القضية 12/3/1446 4471234", id="after-a-slash-date"),
-        pytest.param("القضية 4471234 12-3-1446", id="before-a-dash-date"),
-        pytest.param("القضية 12-3-1446 4471234", id="after-a-dash-date"),
-        pytest.param("القضية 4471234 2024-05-12", id="before-a-gregorian-date"),
-        pytest.param("القضية 4471234-12-3-1446", id="dashed-onto-a-date"),
-        pytest.param("بين 4471234 12/3/1446 4471999", id="between-two-numbers"),
-        pytest.param("القضية 4471234 12/3/1446 ثم 4471999 1/4/1446", id="two-of-each"),
+        pytest.param("القضية 44712345 12/3/1446", id="before-a-slash-date"),
+        pytest.param("القضية 12/3/1446 44712345", id="after-a-slash-date"),
+        pytest.param("القضية 44712345 12-3-1446", id="before-a-dash-date"),
+        pytest.param("القضية 12-3-1446 44712345", id="after-a-dash-date"),
+        pytest.param("القضية 44712345 2024-05-12", id="before-a-gregorian-date"),
+        pytest.param("القضية 44712345-12-3-1446", id="dashed-onto-a-date"),
+        pytest.param("بين 44712345 12/3/1446 44719999", id="between-two-numbers"),
+        pytest.param("القضية 44712345 12/3/1446 ثم 44719999 1/4/1446", id="two-of-each"),
     ],
 )
 def test_fake_beside_a_date_round_trips(real):
@@ -279,8 +279,9 @@ def test_separated_fake_beside_a_date_collapses_to_real():
 
 def test_arabic_indic_date_beside_a_fake_stays_as_written():
     codec = PrivacyCodec(rng=random.Random(7))
-    encoded = codec.encode("القضية 4471234 ١٢/٣/١٤٤٦")
-    assert codec.decode(encoded).text == "القضية 4471234 ١٢/٣/١٤٤٦"
+    encoded = codec.encode("القضية 44712345 ١٢/٣/١٤٤٦")
+    assert encoded != "القضية 44712345 ١٢/٣/١٤٤٦"
+    assert codec.decode(encoded).text == "القضية 44712345 ١٢/٣/١٤٤٦"
 
 
 def test_a_fake_shaped_like_a_date_still_decodes():
@@ -319,7 +320,7 @@ _ONE_NUMBER = {"real_to_fake": {"4471234": "4479876"}, "fake_to_real": {"4479876
 
 def test_leaves_fake_is_false_on_all_that_decode_restores():
     codec = PrivacyCodec(rng=random.Random(7))
-    encoded = codec.encode("القضية 4471234 12/3/1446 والبريد a.b@client.sa والهوية 1023456789")
+    encoded = codec.encode("القضية 44712345 12/3/1446 والبريد a.b@client.sa والهوية 1023456789")
     assert not codec.leaves_fake(encoded, encoded)
 
 
@@ -438,6 +439,95 @@ def test_normalize_digits_length_preserved_and_1to1():
     out = normalize_digits(src)
     assert len(out) == len(src)  # index preservation
     assert out == "abc 123 456 789 !@"
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-14 rule change: ≥8-digit floor, keep-5, amount heuristics, comma decode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", [
+    "المطالبة 5000 فقط",              # the original complaint (4 digits)
+    "مطالبة بـ 926543 بلا كلمة مالية",  # 6-digit bare amount
+    "قراءة العداد 1234567 كم",          # 7-digit quantity
+    "عدد الأسهم ٥٨٣٦٠ سهماً",           # Arabic-Indic 5-digit
+])
+def test_runs_under_8_digits_never_masked(text):
+    codec = PrivacyCodec(rng=random.Random(7))
+    assert codec.encode(text) == text
+    assert codec.new_mappings == []
+
+
+def test_8_digit_run_masked_keep_5():
+    codec = PrivacyCodec(rng=random.Random(7))
+    enc = codec.encode("المرجع 12345678 هنا")
+    fake = codec.real_to_fake["12345678"]
+    assert fake[:5] == "12345" and len(fake) == 8 and fake != "12345678"
+    assert fake in enc
+
+
+@pytest.mark.parametrize("text", [
+    "المطالبة 15000000 دون ذكر العملة",       # 8 digits, round
+    "قيمتها ١٥٠٠٠٠٠٠٠ تقريباً",               # 9 digits, round, Arabic-Indic
+    "المطالبة 150 000 000 بالمسافات",         # space-grouped thousands
+    "المطالبة 1,500,000,000 بالفواصل",        # comma-grouped → never a run
+])
+def test_amount_shapes_untouched(text):
+    codec = PrivacyCodec(rng=random.Random(7))
+    assert codec.encode(text) == text
+
+
+@pytest.mark.parametrize("real", [
+    "1023456000",   # 10-digit ID ending 000 → still an identifier
+    "0555123000",   # vanity phone ending 000
+    "555123000",    # 9-digit local phone ending 000
+    "4420000001234567891000",  # IBAN digits ending 000
+])
+def test_round_identifiers_still_masked(real):
+    codec = PrivacyCodec(rng=random.Random(7))
+    enc = codec.encode(f"الرقم {real} للمراجعة")
+    assert real not in enc
+    assert real in codec.real_to_fake
+
+
+def test_spaced_phone_not_mistaken_for_thousands():
+    codec = PrivacyCodec(rng=random.Random(7))
+    enc = codec.encode("جوال 055 123 4567 للتواصل")
+    assert "0551234567" in codec.real_to_fake
+    assert "055 123 4567" not in enc
+
+
+@pytest.mark.parametrize("written,expected", [
+    ("926,990 ريالاً", "926,543 ريالاً"),
+    ("(926٬990) ريالاً", "(926٬543) ريالاً"),
+    ("926,990.50 ريال", "926,543.50 ريال"),
+])
+def test_decode_comma_grouped_legacy_fake(written, expected):
+    """Prod bug: the LLM re-formatted a fake as '926,990' and decode missed it."""
+    codec = PrivacyCodec(
+        real_to_fake={"926543": "926990"},
+        fake_to_real={"926990": "926543"},
+    )
+    out = codec.decode(f"بمبلغ {written}")
+    assert out.text == f"بمبلغ {expected}"
+    assert out.restored_count == 1
+
+
+def test_decode_comma_grouped_10_digit_fake():
+    codec = PrivacyCodec(
+        real_to_fake={"1023456789": "1023483584"},
+        fake_to_real={"1023483584": "1023456789"},
+    )
+    assert codec.decode("الرقم 1,023,483,584 هنا").text == "الرقم 1,023,456,789 هنا"
+
+
+def test_decode_comma_list_of_small_numbers_untouched():
+    codec = PrivacyCodec(
+        real_to_fake={"926543": "926990"},
+        fake_to_real={"926990": "926543"},
+    )
+    text = "المواد 12,345 و 77"
+    assert codec.decode(text).text == text
 
 
 def test_new_mappings_tracks_created_fakes():

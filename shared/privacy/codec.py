@@ -31,9 +31,16 @@ inside excluded dates/money):
                inherently safe: commas split groups and are NOT join separators,
                so each grouped piece is <5 digits and never a candidate.)
     JOIN       remaining digit groups linked ONLY by dashes/spaces → one run.
-    MASK       any run of ≥5 digits → keep first 4 digits (first 3 if the run is
-               5–7 digits long), RANDOM digits for the rest, same length. Random
-               per value (NOT a substitution cipher); the table remembers.
+    AMOUNT     (2026-11-14) an 8–9 digit run ending in 000 (not a 9-digit
+               phone), or a space-grouped thousands run ("150 000 000") →
+               protected. Comma-grouped numbers are amounts by construction.
+    MASK       any run of ≥8 digits → keep first 5 digits, RANDOM digits for
+               the rest, same length. Random per value (NOT a substitution
+               cipher); the table remembers. Runs of 5–7 digits are NOT masked
+               any more (2026-11-14): they were overwhelmingly amounts, and the
+               LLM re-formatted / computed on the fakes ("926,990 ريالاً").
+               DECODE still handles ≥5-digit fakes minted under the old rule,
+               and also matches comma-grouped fakes ("926,990").
 
 --------------------------------------------------------------------------------
 Ambiguities resolved (documented per task instruction):
@@ -52,7 +59,8 @@ Ambiguities resolved (documented per task instruction):
     single consistent character ('/' or '-').
 4.  Money proximity window = 16 chars either side of the run. Markers matched as
     substrings; "SAR" matched case-insensitively.
-5.  keep = 3 for runs of length 5–7, else 4 (length ≥ 8).
+5.  keep = 5 for every maskable run (length ≥ 8). (Pre-2026-11-14: 3 for 5–7,
+    4 for ≥ 8 — legacy fakes in the table keep their old shape.)
 6.  JOIN is dash/space only (never '/'). Slash-separated dates are therefore
     inherently safe (their pieces are <5 digits); the date exclusion mainly
     matters for DASH-separated dates like ``15-9-1446`` / ``2024-05-12`` whose
@@ -188,6 +196,33 @@ _MONEY_WINDOW = 16
 # Chars that may join two digit groups into one run (dash/space ONLY).
 _JOIN_CHARS = frozenset("- ")
 
+# Encode floor: only runs of ≥8 digits are masked (owner decision 2026-11-14).
+# Identifier classes (national ID / iqama, phones, 700 numbers, Najiz case
+# numbers, IBAN/accounts) are ≥8 digits, while 5–7 digit runs were
+# overwhelmingly amounts / quantities — masking those made the LLM compute on
+# (and comma-format) fake amounts. Decode keeps the historical ≥5 floor so
+# fakes minted under the old rule still decode.
+_MASK_MIN_LEN = 8
+_DECODE_MIN_LEN = 5
+
+# Kept real prefix of a masked run (owner decision 2026-11-14: 5, was 3/4).
+_KEEP_DIGITS = 5
+
+# Round-amount rule ("ends in 000") applies only to 8–9 digit runs (10M–999M).
+# ≥10 digits is identifier territory (ID / iqama / CR / 700 / case numbers are
+# 10; IBANs and accounts longer) — one ending in 000 must still be masked.
+_ROUND_AMOUNT_MAX_LEN = 9
+# 9-digit local phone (5xxxxxxxx): vanity numbers ending 000 are common.
+_PHONE9_RE = re.compile(r"^5[0-9]{8}$")
+
+# Space-grouped thousands, e.g. "150 000 000" (first group 1–3, rest exactly 3,
+# no leading zero → never a phone like "055 123 4567").
+_SPACE_THOUSANDS_RE = re.compile(r"^[1-9][0-9]{0,2}(?: [0-9]{3})+$")
+
+# Comma-grouped number as an LLM writes it on output: "926,990" / "1٬250,000".
+# Used by DECODE only (encode never sees these as runs — commas split groups).
+_COMMA_GROUPED_RE = re.compile(r"(?<![0-9])[0-9]{1,3}(?:[,٬][0-9]{3})+(?![0-9])")
+
 # Fast-reject pattern: any digit (any script) or an '@'. If absent, encode has
 # nothing to do (used only when masking is ENABLED; the disabled path returns
 # before touching any regex at all).
@@ -200,8 +235,12 @@ _EMAIL_LOCAL_ALNUM = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 
 def _keep_len(length: int) -> int:
-    """Digits to keep from the front: 3 for 5–7 length runs, else 4."""
-    return 3 if length <= 7 else 4
+    """Digits to keep from the front: 5 for maskable runs (≥8).
+
+    Shorter runs are never masked any more; 3 is kept only so the decode
+    tripwire index still has a sane prefix for legacy 5–7 digit fakes.
+    """
+    return _KEEP_DIGITS if length >= _MASK_MIN_LEN else 3
 
 
 # ---------------------------------------------------------------------------
@@ -368,14 +407,31 @@ def _is_money_context(norm: str, start: int, end: int) -> bool:
     return any(marker in low for marker in _MONEY_MARKERS_CI)
 
 
+def _looks_like_amount(norm: str, start: int, end: int, digits: str) -> bool:
+    """Amount heuristics for a maskable run (money markers handled separately).
+
+    * round: 8–9 digits ending in 000 (٠٠٠ normalizes to 000), not a 9-digit
+      phone. ≥10 digits is never treated as round — identifier territory;
+    * space-grouped thousands: "150 000 000".
+    (Comma-grouped amounts never reach here: commas split digit groups.)
+    """
+    if (
+        len(digits) <= _ROUND_AMOUNT_MAX_LEN
+        and digits.endswith("000")
+        and not _PHONE9_RE.match(digits)
+    ):
+        return True
+    return bool(_SPACE_THOUSANDS_RE.match(norm[start:end]))
+
+
 def _detect(
     norm: str,
 ) -> tuple[list[tuple[int, int, str]], list[tuple[int, int, str]]]:
     """Shared encode/audit detector.
 
-    Returns ``(emails, candidates)`` where ``candidates`` are number runs of ≥5
-    digits that are neither date- nor money-excluded. Both are expressed in
-    ``norm`` coordinates (== original coordinates).
+    Returns ``(emails, candidates)`` where ``candidates`` are number runs of ≥8
+    digits that are neither date-, money- nor amount-excluded. Both are expressed
+    in ``norm`` coordinates (== original coordinates).
     """
     emails = _find_email_spans(norm)
     email_spans = [(s, e) for (s, e, _a) in emails]
@@ -384,9 +440,11 @@ def _detect(
 
     candidates: list[tuple[int, int, str]] = []
     for (s, e, digits) in _find_number_runs(norm, protected):
-        if len(digits) < 5:
+        if len(digits) < _MASK_MIN_LEN:
             continue
         if _is_money_context(norm, s, e):
+            continue
+        if _looks_like_amount(norm, s, e, digits):
             continue
         candidates.append((s, e, digits))
     return emails, candidates
@@ -407,6 +465,13 @@ def _apply(text: str, repls: list[tuple[int, int, str]]) -> str:
         cursor = e
     out.append(text[cursor:])
     return "".join(out)
+
+
+def _group_thousands(digits: str, sep: str) -> str:
+    """'926543' → '926,543' (sep = ',' or '٬'). Leading zeros kept as-is."""
+    head = len(digits) % 3 or 3
+    parts = [digits[:head]] + [digits[i:i + 3] for i in range(head, len(digits), 3)]
+    return sep.join(parts)
 
 
 def _render_positional(original_span: str, fake_digits: str) -> str:
@@ -566,11 +631,29 @@ class PrivacyCodec:
                 repls.append((s, e, real))
                 restored += 1
 
-        # Numbers: join runs with NO date/money exclusion, skipping email spans.
         email_spans = [(s, e) for (s, e, _a) in email_spans_raw]
+
+        # Comma-grouped fakes: the LLM often re-formats a fake as "926,990".
+        # Exact match on the separator-stripped digits only; the real value is
+        # re-grouped with the same separator so the output keeps its format.
+        decoded_spans: list[tuple[int, int]] = []
+        for m in _COMMA_GROUPED_RE.finditer(norm):
+            if _overlaps((m.start(), m.end()), email_spans):
+                continue
+            sep = "٬" if "٬" in m.group(0) else ","
+            digits = re.sub(r"[,٬]", "", m.group(0))
+            if len(digits) < _DECODE_MIN_LEN:
+                continue
+            real = self.fake_to_real.get(digits)
+            if real is not None and "@" not in real:
+                repls.append((m.start(), m.end(), _group_thousands(real, sep)))
+                decoded_spans.append((m.start(), m.end()))
+                restored += 1
+
+        # Numbers: join runs with NO date/money exclusion, skipping email spans.
         beside_dates: list[tuple[int, int, str]] | None = None
-        for (s, e, digits) in _find_number_runs(norm, email_spans):
-            if len(digits) < 5:
+        for (s, e, digits) in _find_number_runs(norm, email_spans + decoded_spans):
+            if len(digits) < _DECODE_MIN_LEN:
                 continue
             real = self._real_number(digits)
             if real is not None:
@@ -617,8 +700,8 @@ class PrivacyCodec:
         * an address at the fake domain that is no known value.
 
         A known real value is never refused: it shares its fake's kept prefix and
-        length. Not caught: a fake with a digit added or dropped, a changed kept
-        prefix, or commas written into it.
+        length. Not caught: a fake with a digit added or dropped, or a changed
+        kept prefix. Commas written into a fake are decoded, so they do not count.
         """
         norm = normalize_digits(self.decode(text).text)
         for (_s, _e, addr) in _find_email_spans(norm):

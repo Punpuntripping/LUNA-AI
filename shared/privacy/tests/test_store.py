@@ -47,11 +47,21 @@ class _Query:
         self._limit = n
         return self
 
+    def order(self, _col):
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
     def execute(self):
         if self._insert is not None:
             self._table._insert(self._insert)
             return _Result([self._insert])
         rows = self._table._select(self._filters)
+        # Mimic PostgREST's max-rows cap on every SELECT.
+        start, end = getattr(self, "_range", (0, len(rows)))
+        rows = rows[start:end + 1][: self._table.max_rows]
         if self._limit is not None:
             rows = rows[: self._limit]
         return _Result(rows)
@@ -66,6 +76,7 @@ class _FakeTable:
     def __init__(self):
         self.rows = []
         self.insert_calls = 0
+        self.max_rows = 1000
 
     def _insert(self, row):
         self.insert_calls += 1
@@ -125,6 +136,19 @@ def test_load_returns_both_directions():
     assert r2f == {"1023456789": "1023835840", "a@b.com": "z@example.com"}
     assert f2r == {"1023835840": "1023456789", "z@example.com": "a@b.com"}
     assert "999" not in r2f
+
+
+def test_load_pages_past_max_rows_cap():
+    """A user with >1000 mappings must load ALL of them (prod user had 1,147)."""
+    client = _FakeClient()
+    client._t.rows = [
+        {"user_id": "u1", "kind": "number", "real_value": str(1000000000 + i),
+         "fake_value": str(2000000000 + i)}
+        for i in range(2345)
+    ]
+    r2f, f2r = PiiMappingStore(client).load("u1")
+    assert len(r2f) == 2345 and len(f2r) == 2345
+    assert f2r["2000002344"] == "1000002344"  # last page reached
 
 
 def test_load_codec_builds_working_codec():

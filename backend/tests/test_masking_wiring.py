@@ -70,6 +70,9 @@ class _Query:
     def limit(self, *_a, **_k):
         return self
 
+    def range(self, *_a, **_k):
+        return self
+
     def maybe_single(self):
         return self
 

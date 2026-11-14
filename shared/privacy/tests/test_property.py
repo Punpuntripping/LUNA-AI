@@ -12,7 +12,7 @@ Six invariants asserted per message (plan Layer 2):
   2. Round-trip    — decode(encode(m)) == the generator's canonical expectation.
   3. Exclusion safety — each date/money/ref segment is byte-identical in encode.
   4. Consistency   — same value → one fake (checked via the codec mapping).
-  5. Shape         — length preserved + prefix rule (4 / 3) respected.
+  5. Shape         — length preserved + keep-5 prefix rule respected.
   6. Idempotence   — encode(encode(m)) == encode(m).
 
 Segments are separated by a >16-char digit/marker-free filler so that a money
@@ -179,7 +179,7 @@ def _make_message(rng):
 
 
 def _keep(length):
-    return 3 if length <= 7 else 4
+    return 5  # every masked run is ≥8 digits → keep 5 (2026-11-14)
 
 
 def test_invariants_bulk():

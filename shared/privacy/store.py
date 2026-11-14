@@ -16,7 +16,7 @@ pattern — see ``shared/db/client.py``: sync Supabase client is the established
 choice, used even inside async handlers).
 
 Concurrency (plan "Concurrency & storage"):
-  * Load the full mapping in ONE select (both directions).
+  * Load the full mapping (both directions), paged by id past the API row cap.
   * Insert a new fake with conflict handling:
       - UNIQUE(user_id, real_value) violation → a concurrent turn already created
         a fake for this real: re-select and USE THEIRS (never two fakes for one
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 _TABLE = "pii_mappings"
 _MAX_FAKE_RETRIES = 8
+_PAGE_SIZE = 1000  # == Supabase PostgREST default max rows
 
 # Postgres unique_violation.
 _UNIQUE_VIOLATION = "23505"
@@ -59,15 +60,33 @@ class PiiMappingStore:
 
     # -- load --------------------------------------------------------------
 
+    def _select_all(self, cols: str, user_id: str) -> list[dict]:
+        """Every row for ``user_id``, paged past PostgREST's max-rows cap.
+
+        A single un-ranged SELECT is silently truncated at the API's max rows
+        (1000 on Supabase) — a heavy user's older fakes then fail to decode and
+        their reals get re-minted. Page by ``id`` until a short page.
+        """
+        rows: list[dict] = []
+        start = 0
+        while True:
+            res = (
+                self.client.table(_TABLE)
+                .select(cols)
+                .eq("user_id", user_id)
+                .order("id")
+                .range(start, start + _PAGE_SIZE - 1)
+                .execute()
+            )
+            batch = getattr(res, "data", None) or []
+            rows.extend(batch)
+            if len(batch) < _PAGE_SIZE:
+                return rows
+            start += _PAGE_SIZE
+
     def load(self, user_id: str) -> tuple[dict[str, str], dict[str, str]]:
-        """Return ``(real_to_fake, fake_to_real)`` for a user in one SELECT."""
-        res = (
-            self.client.table(_TABLE)
-            .select("kind,real_value,fake_value")
-            .eq("user_id", user_id)
-            .execute()
-        )
-        rows = getattr(res, "data", None) or []
+        """Return ``(real_to_fake, fake_to_real)`` for a user (all pages)."""
+        rows = self._select_all("kind,real_value,fake_value", user_id)
         real_to_fake: dict[str, str] = {}
         fake_to_real: dict[str, str] = {}
         for row in rows:
@@ -165,13 +184,7 @@ class PiiMappingStore:
         if codec is not None:
             fakes |= set(codec.fake_to_real.keys())
         try:
-            res = (
-                self.client.table(_TABLE)
-                .select("fake_value")
-                .eq("user_id", user_id)
-                .execute()
-            )
-            for row in getattr(res, "data", None) or []:
+            for row in self._select_all("fake_value", user_id):
                 fv = row.get("fake_value")
                 if fv:
                     fakes.add(fv)

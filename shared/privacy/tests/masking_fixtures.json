@@ -4,9 +4,9 @@
     {
       "id": 0,
       "category": 1,
-      "note": "Saudi ID 10-digit ASCII, keep-4",
+      "note": "Saudi ID 10-digit ASCII, keep-5",
       "input": "رقم هويتي 1023456789 مسجّل في النظام",
-      "expected_encode": "رقم هويتي 1023835840 مسجّل في النظام",
+      "expected_encode": "رقم هويتي 1023483584 مسجّل في النظام",
       "expected_roundtrip": "رقم هويتي 1023456789 مسجّل في النظام",
       "excluded": false
     },
@@ -15,7 +15,7 @@
       "category": 1,
       "note": "same ID Arabic-Indic -> same fake",
       "input": "الهوية بالأرقام العربية ١٠٢٣٤٥٦٧٨٩",
-      "expected_encode": "الهوية بالأرقام العربية 1023835840",
+      "expected_encode": "الهوية بالأرقام العربية 1023483584",
       "expected_roundtrip": "الهوية بالأرقام العربية 1023456789",
       "excluded": false
     },
@@ -24,7 +24,7 @@
       "category": 2,
       "note": "phone plain",
       "input": "جوالي 0501234567 للتواصل",
-      "expected_encode": "جوالي 0501532865 للتواصل",
+      "expected_encode": "جوالي 0501205328 للتواصل",
       "expected_roundtrip": "جوالي 0501234567 للتواصل",
       "excluded": false
     },
@@ -33,7 +33,7 @@
       "category": 2,
       "note": "phone with country code (own run)",
       "input": "الرقم الدولي +966 50 123 4567",
-      "expected_encode": "الرقم الدولي +966 56 873 2746",
+      "expected_encode": "الرقم الدولي +966 50 656 8732",
       "expected_roundtrip": "الرقم الدولي +966501234567",
       "excluded": false
     },
@@ -42,7 +42,7 @@
       "category": 2,
       "note": "dashed phone -> same fake as plain",
       "input": "نفس الجوال بفواصل 050-123-4567",
-      "expected_encode": "نفس الجوال بفواصل 050-153-2865",
+      "expected_encode": "نفس الجوال بفواصل 050-120-5328",
       "expected_roundtrip": "نفس الجوال بفواصل 0501234567",
       "excluded": false
     },
@@ -51,7 +51,7 @@
       "category": 2,
       "note": "Arabic-Indic phone -> same fake",
       "input": "وبالأرقام العربية ٠٥٠١٢٣٤٥٦٧",
-      "expected_encode": "وبالأرقام العربية 0501532865",
+      "expected_encode": "وبالأرقام العربية 0501205328",
       "expected_roundtrip": "وبالأرقام العربية 0501234567",
       "excluded": false
     },
@@ -121,11 +121,11 @@
     {
       "id": 13,
       "category": 5,
-      "note": "bare 6-digit -> masked keep-3, magnitude",
+      "note": "bare 6-digit -> untouched (<8 digits, 2026-11-14)",
       "input": "الرقم 753493 بلا سياق مالي",
-      "expected_encode": "الرقم 753023 بلا سياق مالي",
+      "expected_encode": "الرقم 753493 بلا سياق مالي",
       "expected_roundtrip": "الرقم 753493 بلا سياق مالي",
-      "excluded": false
+      "excluded": true
     },
     {
       "id": 14,
@@ -141,7 +141,7 @@
       "category": 6,
       "note": "case no 10-digit -> masked (accepted)",
       "input": "رقم القضية 4350123456 لدى المحكمة",
-      "expected_encode": "رقم القضية 4350907886 لدى المحكمة",
+      "expected_encode": "رقم القضية 4350174602 لدى المحكمة",
       "expected_roundtrip": "رقم القضية 4350123456 لدى المحكمة",
       "excluded": false
     },
@@ -150,7 +150,7 @@
       "category": 7,
       "note": "IBAN digits joined -> masked, SA kept",
       "input": "الآيبان SA44 2000 0001 2345 6789 1234 للحوالة",
-      "expected_encode": "الآيبان SA44 2016 9262 8773 6083 2993 للحوالة",
+      "expected_encode": "الآيبان SA44 2003 9078 8616 9262 8773 للحوالة",
       "expected_roundtrip": "الآيبان SA4420000001234567891234 للحوالة",
       "excluded": false
     },
@@ -159,34 +159,34 @@
       "category": 8,
       "note": "corporate email -> full swap",
       "input": "للتواصل ahmad.ali@acme-corp.com شكرًا",
-      "expected_encode": "للتواصل lfcx7eqvh@example.com شكرًا",
+      "expected_encode": "للتواصل va7nio2xf@example.com شكرًا",
       "expected_roundtrip": "للتواصل ahmad.ali@acme-corp.com شكرًا",
       "excluded": false
     },
     {
       "id": 18,
       "category": 9,
-      "note": "5-digit run -> keep-3",
+      "note": "5-digit run -> untouched (<8 digits, 2026-11-14)",
       "input": "المرجع الداخلي 12345 قصير",
-      "expected_encode": "المرجع الداخلي 12363 قصير",
+      "expected_encode": "المرجع الداخلي 12345 قصير",
       "expected_roundtrip": "المرجع الداخلي 12345 قصير",
-      "excluded": false
+      "excluded": true
     },
     {
       "id": 19,
       "category": 9,
-      "note": "9-digit typo ID -> caught (length)",
+      "note": "9-digit typo ID -> caught (length), keep-5",
       "input": "خطأ إدخال 123456789 تسعة خانات",
-      "expected_encode": "خطأ إدخال 123487120 تسعة خانات",
+      "expected_encode": "خطأ إدخال 123450581 تسعة خانات",
       "expected_roundtrip": "خطأ إدخال 123456789 تسعة خانات",
       "excluded": false
     },
     {
       "id": 20,
       "category": 10,
-      "note": "compact date -> masked, year survives",
+      "note": "compact date 8-digit -> masked keep-5, year+month survive",
       "input": "تاريخ مضغوط 20240512 بلا فواصل",
-      "expected_encode": "تاريخ مضغوط 20245064 بلا فواصل",
+      "expected_encode": "تاريخ مضغوط 20240451 بلا فواصل",
       "expected_roundtrip": "تاريخ مضغوط 20240512 بلا فواصل",
       "excluded": false
     },
@@ -195,7 +195,7 @@
       "category": 11,
       "note": "same value twice -> one fake, matches msg1",
       "input": "تكرار الهوية 1023456789 ثم 1023456789 مرتين",
-      "expected_encode": "تكرار الهوية 1023835840 ثم 1023835840 مرتين",
+      "expected_encode": "تكرار الهوية 1023483584 ثم 1023483584 مرتين",
       "expected_roundtrip": "تكرار الهوية 1023456789 ثم 1023456789 مرتين",
       "excluded": false
     },
@@ -204,21 +204,19 @@
       "category": 11,
       "note": "repeat email -> same fake as msg17",
       "input": "وايميله ahmad.ali@acme-corp.com مرة أخرى",
-      "expected_encode": "وايميله lfcx7eqvh@example.com مرة أخرى",
+      "expected_encode": "وايميله va7nio2xf@example.com مرة أخرى",
       "expected_roundtrip": "وايميله ahmad.ali@acme-corp.com مرة أخرى",
       "excluded": false
     }
   ],
   "final_real_to_fake": {
-    "1023456789": "1023835840",
-    "0501234567": "0501532865",
-    "966501234567": "966568732746",
-    "753493": "753023",
-    "4350123456": "4350907886",
-    "4420000001234567891234": "4420169262877360832993",
-    "ahmad.ali@acme-corp.com": "lfcx7eqvh@example.com",
-    "12345": "12363",
-    "123456789": "123487120",
-    "20240512": "20245064"
+    "1023456789": "1023483584",
+    "0501234567": "0501205328",
+    "966501234567": "966506568732",
+    "4350123456": "4350174602",
+    "4420000001234567891234": "4420039078861692628773",
+    "ahmad.ali@acme-corp.com": "va7nio2xf@example.com",
+    "123456789": "123450581",
+    "20240512": "20240451"
   }
 }
