@@ -488,6 +488,7 @@ def _load_recent_messages(
     """
     from agents.utils.history import (  # pure utils — no import cycle
         append_next_steps_note,
+        append_quote_refs,
         build_provenance_tag,
         provenance_item_ids,
         build_user_attachment_tag,
@@ -554,10 +555,10 @@ def _load_recent_messages(
                 if tag:
                     content = f"{tag}\n{content}"
         if role == "assistant":
-            # Chips offered under this reply (metadata.next_steps) — the SAME
-            # note the router sees via messages_to_history. Encoded below with
-            # the rest of the surface.
-            content = append_next_steps_note(content, row)
+            # The quotes behind a prior-report reply's [n], then the chips offered
+            # under it (metadata.next_steps) — the SAME surface the router sees via
+            # messages_to_history. Encoded below with the rest of the surface.
+            content = append_next_steps_note(append_quote_refs(content, row), row)
         elif role == "user" and wi_provenance:
             attached_ids = attachments_by_message.get(str(row.get("message_id") or ""))
             if attached_ids:

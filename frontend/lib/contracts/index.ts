@@ -31,6 +31,7 @@ export * from "./markdown/plain-text";
 export * from "./markdown/streaming";
 export * from "./next-steps";
 export * from "./placeholder";
+export * from "./quote-refs";
 export * from "./reference-labels";
 export * from "./references-copy";
 export * from "./sse-parser";

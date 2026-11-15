@@ -228,6 +228,29 @@ def _row_follow_up_question(row: dict) -> str | None:
     return q if isinstance(q, str) else None
 
 
+def append_quote_refs(content: str, row: dict) -> str:
+    """``content`` with the quotes its ``[n]`` markers open, as the user can read them.
+
+    A reply built from a prior report keeps its quotes in
+    ``messages.metadata.quote_refs`` and the bubble opens each from its number. An
+    agent reading history gets them back under the body, numbered the same, the way
+    the body printed them before. A row without refs is returned unchanged.
+    """
+    metadata = row.get("metadata")
+    refs = metadata.get("quote_refs") if isinstance(metadata, dict) else None
+    if not isinstance(refs, list):
+        return content
+    lines: list[str] = []
+    for ref in refs:
+        if not isinstance(ref, dict) or not str(ref.get("text") or "").strip():
+            continue
+        text = neutralize_system_brackets(str(ref["text"]).strip())
+        source = neutralize_system_brackets(str(ref.get("source") or "").strip())
+        line = f"[{ref.get('n')}] «{text}»"
+        lines.append(f"{line}\n— {source}" if source else line)
+    return "\n\n".join([content, *lines]) if lines else content
+
+
 def append_next_steps_note(content: str, row: dict) -> str:
     """Return ``content`` with the turn's system notes appended, if any.
 
@@ -366,6 +389,7 @@ def messages_to_history(
             pause_tag = build_pause_question_tag(row)
             if pause_tag:
                 text = f"{pause_tag}\n{text}"
+            text = append_quote_refs(text, row)
             # Chips offered under this turn (metadata.next_steps) — independent
             # of wi_provenance; encoded with the rest of the surface below.
             text = append_next_steps_note(text, row)

@@ -237,6 +237,14 @@ class PriorReportResponse(ResponderBase):
     """prior_report — the voice over quotes that code prints (artifact_analyzer.md)."""
 
     mode: Literal["prior_report"] = "prior_report"
+    chat_summary_md: str = Field(
+        description=(
+            "The Arabic message at the top of the chat bubble. Prose, no '##' "
+            "headings. Each sentence that rests on a passage ends with that "
+            "passage's number as the package gives it: [1] or [1] [2]. NEVER the "
+            "follow-up question or any offer («إذا تحب…») — those have their own fields."
+        ),
+    )
     search_offer: str | None = Field(
         default=None,
         description=(

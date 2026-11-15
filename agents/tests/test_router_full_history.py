@@ -302,3 +302,27 @@ def test_a_follow_up_after_a_finished_pause_is_still_pending():
     ctx = rctx.load_router_context(_DB(rows), USER, CONVO, None)
 
     assert ctx.pending_follow_up.question == "Is there a penalty clause?"
+
+
+def test_a_prior_report_reply_brings_its_quotes_back_into_history():
+    """The bubble shows only [1]; the agents still read the words behind it."""
+    row = {
+        "role": "assistant",
+        "content": "للهيئة أن تطلب العزل. [1]",
+        "metadata": {"quote_refs": [
+            {"n": 1, "text": "فعلى الهيئة أن تطلب 〔عزله〕", "source": "نظام الهيئة — المادة 24"},
+        ]},
+    }
+
+    [message] = messages_to_history([row])
+
+    assert message.parts[0].content == (
+        "للهيئة أن تطلب العزل. [1]\n\n"
+        "[1] «فعلى الهيئة أن تطلب (عزله)»\n— نظام الهيئة — المادة 24"
+    )
+
+
+def test_a_reply_without_quote_refs_is_unchanged():
+    [message] = messages_to_history([{"role": "assistant", "content": "جواب.", "metadata": {}}])
+
+    assert message.parts[0].content == "جواب."

@@ -1,12 +1,15 @@
 """Turn an analyzer verdict into the reply (plan artifact_analyzer.md §4.6).
 
-The responder writes the plain sentence. **Code prints the quotes**, because a
-model that retypes legal text is exactly what the analyzer exists to prevent. If
-the responder fails, the user still gets the verified quotes with their sources:
-never a clipped text.
+The responder writes the plain sentences and marks each with the numbers of the
+passages it rests on: «… [1] [2]». **Code holds the quotes**, because a model that
+retypes legal text is exactly what the analyzer exists to prevent: they ride
+``messages.metadata.quote_refs`` and the user opens each one from its number. If
+the responder fails, the user still gets the verified quotes printed with their
+sources: never a clipped text.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Sequence
 
 from agents.memory.artifact_analyzer.agent import SLOT as ANALYZER_SLOT
@@ -39,12 +42,63 @@ def _attribution(quote: VerifiedQuote) -> str:
     return f"{own}{BASED_ON}{quote.source_name}" if quote.source_name else own
 
 
-def render_quote(quote: VerifiedQuote) -> str:
+def _source_line(quote: VerifiedQuote) -> str:
     source = _attribution(quote)
-    if quote.status:
-        source = f"{source} ({quote.status})"
-    block = f"> «{quote.text}»\n— {source}"
+    return f"{source} ({quote.status})" if quote.status else source
+
+
+def render_quote(quote: VerifiedQuote) -> str:
+    block = f"> «{quote.text}»\n— {_source_line(quote)}"
     return f"{FOUND_RELATED}\n{block}" if quote.uncited else block
+
+
+#: ``[1]``, ``[1، 2]``, ``[١]``: a passage number the responder wrote, with the
+#: space before it (dropped with a number that points at no passage).
+_MARKER_RE = re.compile(r"([ \t]*)\[\s*(\d+(?:\s*[,،]\s*\d+)*)\s*\]")
+
+
+def quote_ref(n: int, quote: VerifiedQuote) -> dict[str, Any]:
+    """What the user reads on clicking ``[n]``: the words and whose words they are."""
+    ref: dict[str, Any] = {"n": n, "text": quote.text, "source": _source_line(quote)}
+    if quote.uncited:
+        ref["note"] = FOUND_RELATED.rstrip(":")
+    return ref
+
+
+def cite_quotes(line: str, quotes: Sequence[VerifiedQuote]) -> tuple[str, list[dict]]:
+    """The responder's text with checked passage numbers, and the refs they open.
+
+    Numbers follow the order the text first cites them, so the reader meets
+    [1] before [2]. A number that points at no passage is dropped. A passage the
+    text never cites keeps a number at the end of the first paragraph, the one that
+    answers: the user can still open every quote the answer rests on.
+    """
+    shown = list(quotes[:MAX_SHOWN_QUOTES])
+    order: list[int] = []  # passage index, in display order
+
+    def renumber(match: re.Match[str]) -> str:
+        numbers: list[int] = []
+        for raw in re.split(r"[,،]", match.group(2)):
+            index = int(raw) - 1
+            if not 0 <= index < len(shown):
+                continue
+            if index not in order:
+                order.append(index)
+            n = order.index(index) + 1
+            if n not in numbers:
+                numbers.append(n)
+        if not numbers:
+            return ""
+        return match.group(1) + " ".join(f"[{n}]" for n in numbers)
+
+    text = _MARKER_RE.sub(renumber, line.strip())
+    rest = [i for i in range(len(shown)) if i not in order]
+    if rest:
+        tail = " ".join(f"[{len(order) + k + 1}]" for k in range(len(rest)))
+        order.extend(rest)
+        head, sep, after = text.partition("\n\n")
+        text = f"{head.rstrip()} {tail}".lstrip() + sep + after
+    return text, [quote_ref(n, shown[i]) for n, i in enumerate(order, 1)]
 
 
 def compose_message(
@@ -82,12 +136,18 @@ def _report_chip(result: AnalyzerResult) -> list[dict]:
 def assemble(result: AnalyzerResult, out: PriorReportResponse | None) -> SpecialistResult:
     """Pure: the reply for a verdict, with or without the responder's text."""
     partial = result.verdict == "partial"
-    message = compose_message(
-        (out.chat_summary_md if out else "") or FALLBACK_LINE,
-        result.quotes,
-        transition_line=result.transition_line,
-    )
     events = _report_chip(result)
+    line = (out.chat_summary_md if out else "").strip()
+    if line and result.quotes:
+        message, refs = cite_quotes(line, result.quotes)
+        if result.transition_line:
+            message = f"{message}\n\n{result.transition_line}"
+        # Server-only, merged into messages.metadata (message_service).
+        events.append({"type": "reply_metadata", "metadata": {"quote_refs": refs}})
+    else:
+        message = compose_message(
+            line or FALLBACK_LINE, result.quotes, transition_line=result.transition_line,
+        )
 
     if partial:
         actions = [s for s in (out.next_steps if out else []) if s.kind != "answer"]

@@ -30,16 +30,22 @@ export function CitationMarker({ n, onClick }: CitationMarkerProps) {
       onClick={() => onClick?.(n)}
       aria-label={`فتح المرجع رقم ${n}`}
       disabled={!onClick}
-      className={cn(
-        "inline-flex items-center justify-center align-baseline",
-        "mx-0.5 px-1 min-w-[1.4rem] h-[1.25rem] rounded",
-        "text-xs font-semibold tabular-nums",
-        "bg-primary/10 text-primary hover:bg-primary/20 transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
-        !onClick && "cursor-default opacity-70 hover:bg-primary/10"
-      )}
+      className={citationMarkerClassName(!!onClick)}
     >
       [{n}]
     </button>
+  );
+}
+
+/** The `[n]` chip look, shared with ``QuoteRefMarker`` so both read as one. */
+export function citationMarkerClassName(interactive: boolean): string {
+  return cn(
+    "inline-flex items-center justify-center align-baseline",
+    "mx-0.5 px-1 min-w-[1.4rem] h-[1.25rem] rounded",
+    "text-xs font-semibold tabular-nums",
+    "bg-primary/10 text-primary hover:bg-primary/20 transition-colors",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+    "data-[state=open]:bg-primary/20",
+    !interactive && "cursor-default opacity-70 hover:bg-primary/10"
   );
 }

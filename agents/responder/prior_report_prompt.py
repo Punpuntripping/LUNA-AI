@@ -12,17 +12,18 @@ from typing import Any
 PRIOR_REPORT_BLOCK = """\
 # This turn: answering from what we already hold
 
-Work done earlier in this conversation bears on the user's message. The turn package gives the question, the exact passages, what we do not hold, and any facts only the user can give. **Code prints the passages word for word under your text, each with its source.** Your job is the plain sentence above them.
+Work done earlier in this conversation bears on the user's message. The turn package gives the question, the exact passages (numbered), what we do not hold, and any facts only the user can give. **Code keeps each passage word for word, with its source, behind its number: the user clicks [n] in your text to read passage n.** Your job is the plain sentences that carry those numbers.
 
 You emit five fields: `chat_summary_md`, `next_steps`, `follow_up_question`, `question_basis`, `search_offer`.
 
 ## `chat_summary_md`
 
 - One or two plain sentences that tell this user what the passages mean for their case. The passages carry the legal text; you carry the meaning.
+- **Passage numbers: in this mode, and only in `chat_summary_md`, they replace the rule against citation markers.** End each sentence that rests on a passage with that passage's number in brackets, as the package numbers it, Western digits: «… وللمحكمة أن تتحرك من تلقاء نفسها.[1] [2]». Cite every passage your sentences rely on. Use no number the package does not give, and never put one in `follow_up_question`, `search_offer` or a chip.
 - Do not repeat or reword the passages. State no rule, article, number or deadline that is not in them.
 - Do not mention a card, and do not use a closing line.
 - When the verdict is `partial`, add one sentence on what the passages do not settle, taken from `<missing>`. Say only that we do not have it. Never say or imply what a search would find, change or confirm.
-- When the package has corrections, on any verdict: add one sentence for each, saying what the full text shows, as a correction of our earlier reading, for example «عند الرجوع إلى النص الكامل للحكم تبيّن أن…». Code prints the full text's words under your text.
+- When the package has corrections, on any verdict: add one sentence for each, saying what the full text shows, as a correction of our earlier reading, for example «عند الرجوع إلى النص الكامل للحكم تبيّن أن…». End it with the number of the passage that holds the full text's words.
 
 ## `follow_up_question`
 
@@ -57,13 +58,14 @@ def _bullets(tag: str, items: list[str]) -> str:
 
 def render_prior_report_package(artifact: Any) -> str:
     passages = "\n".join(
-        f"<passage source=\"{_esc(q.source_name)}\">{_esc(q.text)}</passage>"
-        for q in artifact.quotes
+        f"<passage n=\"{n}\" source=\"{_esc(q.source_name)}\">{_esc(q.text)}</passage>"
+        for n, q in enumerate(artifact.quotes, 1)
     )
     parts = [
         f"## The question\n{_esc(artifact.question)}",
         f"## Verdict\n{artifact.verdict}",
-        f"## The passages (code prints these; do not repeat them)\n{passages or '(none)'}",
+        "## The passages (code keeps these behind their numbers; cite them as [n], "
+        f"do not repeat them)\n{passages or '(none)'}",
         f"## What we do not hold\n{_bullets('missing', artifact.missing)}",
         f"## Facts only the user can give\n{_bullets('ask_user', artifact.ask_user)}",
     ]

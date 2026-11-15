@@ -56,6 +56,13 @@ interface MarkdownRendererProps {
    */
   onCitationClick?: (n: number) => void;
   /**
+   * When set, each ``[n]`` renders as whatever this returns instead of the
+   * plain ``<CitationMarker>`` (it wins over ``onCitationClick``). A reply
+   * built from a prior report uses it to open the quote behind the number.
+   * Keep it identity-stable: it is a memo dependency.
+   */
+  renderCitation?: (n: number) => ReactNode;
+  /**
    * Opt-in: when true, ``h1..h6`` render with a deterministic
    * ``id={slugifyHeading(text)}`` + ``scroll-mt-24`` so TOC anchor jumps land
    * below the sticky header. Default off → chat rendering is byte-identical.
@@ -80,6 +87,7 @@ interface MarkdownRendererProps {
 
 function buildMarkdownComponents(
   onCitationClick: ((n: number) => void) | undefined,
+  renderCitation: ((n: number) => ReactNode) | undefined,
   headingAnchors: boolean,
   reading: boolean,
 ): Components {
@@ -109,6 +117,7 @@ function buildMarkdownComponents(
         // don't blank-out user-visible content.
         return <>{children}</>;
       }
+      if (renderCitation) return <>{renderCitation(n)}</>;
       return <CitationMarker n={n} onClick={onCitationClick} />;
     },
 
@@ -378,18 +387,24 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   className,
   onCitationClick,
+  renderCitation,
   headingAnchors,
   prose,
   streaming,
 }: MarkdownRendererProps) {
   const reading = prose ?? headingAnchors ?? false;
-  // Re-bind the component map only when the citation click handler or the
+  // Re-bind the component map only when the citation handlers or the
   // heading-anchor / reading toggles change. All are generally stable per
   // render, so this is cheap.
   const components = useMemo(
     () =>
-      buildMarkdownComponents(onCitationClick, headingAnchors ?? false, reading),
-    [onCitationClick, headingAnchors, reading],
+      buildMarkdownComponents(
+        onCitationClick,
+        renderCitation,
+        headingAnchors ?? false,
+        reading,
+      ),
+    [onCitationClick, renderCitation, headingAnchors, reading],
   );
 
   return (

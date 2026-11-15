@@ -3,6 +3,7 @@
 
 import type { AgentFamily, WorkspaceItemKind } from "./agents";
 import type { LibraryLink } from "./library-links";
+import type { QuoteRef } from "./quote-refs";
 
 // ==========================================
 // MESSAGES
@@ -49,6 +50,11 @@ export interface MessageMetadata {
    * (lib/contracts/library-links.ts).
    */
   library_links?: LibraryLink[];
+  /**
+   * The quotes a prior-report reply's `[n]` markers open, word for word with
+   * their source. Validate with ``parseQuoteRefs`` (lib/contracts/quote-refs.ts).
+   */
+  quote_refs?: QuoteRef[];
   [key: string]: unknown;
 }
 

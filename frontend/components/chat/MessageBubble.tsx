@@ -16,7 +16,7 @@ import {
   ThumbsDown,
   HelpCircle,
 } from "lucide-react";
-import { memo, useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
+import { memo, useState, useCallback, useMemo, useRef, useEffect, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -43,6 +43,8 @@ import { WiBadge } from "@/components/workspace/WiBadge";
 import { getDoneAt } from "@/components/analytics/run-tracker";
 import { useAnswerSeen } from "@/components/analytics/useAnswerSeen";
 import { parseLibraryLinks, type LibraryLink } from "@/lib/contracts/library-links";
+import { parseQuoteRefs, withQuoteRefs } from "@/lib/contracts/quote-refs";
+import { QuoteRefMarker } from "@/components/chat/QuoteRefMarker";
 import type {
   Attachment,
   Message,
@@ -180,6 +182,21 @@ export const MessageBubble = memo(function MessageBubble({
   // (persisted ``metadata.library_links``; it arrives with the refetch at done).
   const libraryLinks =
     !isUser && !isAgentQuestion ? parseLibraryLinks(message.metadata?.library_links) : [];
+  // A reply built from a prior report: its quotes sit behind the text's
+  // ``[n]`` and open in place (persisted ``metadata.quote_refs``; like the
+  // links, it arrives with the refetch at done). Memoized on the raw value so
+  // the renderer below stays a cache hit while another message streams.
+  const rawQuoteRefs = !isUser && !isAgentQuestion ? message.metadata?.quote_refs : undefined;
+  const quoteRefs = useMemo(() => parseQuoteRefs(rawQuoteRefs), [rawQuoteRefs]);
+  const renderQuoteCitation = useMemo(
+    () =>
+      quoteRefs.length > 0
+        ? (n: number) => (
+            <QuoteRefMarker n={n} quote={quoteRefs.find((r) => r.n === n)} />
+          )
+        : undefined,
+    [quoteRefs]
+  );
   // «القوالب المستخدمة في الكتابة»: any settled assistant answer whose turn
   // drafted something — never mid-stream, never on a failed row or the
   // agent_question callout.
@@ -285,8 +302,11 @@ export const MessageBubble = memo(function MessageBubble({
 
   const displayContent = isCurrentlyStreaming ? streamingContent : message.content;
   // What both «نسخ» menus copy: the live stream while it is still arriving,
-  // the settled content after. CopyMenu derives the «النسخ لناجز» plain text.
-  const copyText = isCurrentlyStreaming ? (streamingContent ?? "") : message.content;
+  // the settled content after — with the quotes its [n] open, so a pasted
+  // number still points at something. CopyMenu derives the «النسخ لناجز» text.
+  const copyText = isCurrentlyStreaming
+    ? (streamingContent ?? "")
+    : withQuoteRefs(message.content, quoteRefs);
 
   // ==========================================================================
   // USER MESSAGE — compact tinted bubble at the inline-end. The shrink-wrapped
@@ -522,6 +542,7 @@ export const MessageBubble = memo(function MessageBubble({
                   ? handleCitationClick
                   : undefined
               }
+              renderCitation={renderQuoteCitation}
             />
           )}
 

@@ -29,6 +29,7 @@ from agents.responder.prior_report import (
     NO_SEARCH,
     YES_SEARCH,
     assemble,
+    cite_quotes,
     compose_message,
 )
 from agents.responder.prompts import MODE_BLOCKS, SYSTEM_PROMPTS, build_turn_message
@@ -57,11 +58,66 @@ def _reply(**over: Any) -> PriorReportResponse:
 # ── Composition ───────────────────────────────────────────────────────────────
 
 
-def test_quotes_are_printed_word_for_word_with_their_source() -> None:
-    text = assemble(_result(), _reply()).chat_summary
-    assert text.startswith("دينك ليس نفقة")
-    assert f"> «{QUOTE}»" in text
+def _refs(result: Any) -> list[dict]:
+    events = [e for e in result.sse_events if e["type"] == "reply_metadata"]
+    assert len(events) == 1
+    return events[0]["metadata"]["quote_refs"]
+
+
+def test_quotes_sit_behind_numbers_word_for_word_with_their_source() -> None:
+    result = assemble(_result(), _reply())
+    # The bubble is the voice with its number; the quote is one click away.
+    assert result.chat_summary == "دينك ليس نفقة، فالثلث فقط يُحجز. [1]"
+    assert QUOTE not in result.chat_summary
     # The report's own words, attributed to the report and the law it rests on.
+    assert _refs(result) == [{
+        "n": 1, "text": QUOTE,
+        "source": "من بحثنا السابق «حجز الراتب»، استنادًا إلى: نظام التنفيذ — المادة 26",
+    }]
+
+
+def test_the_responder_numbers_are_kept_where_it_put_them() -> None:
+    quotes = [_quote(text="نص 1"), _quote(text="نص 2"), _quote(text="نص 3")]
+    text, refs = cite_quotes("الأولى.[1] [2]\n\nالثانية.[3]", quotes)
+    assert text == "الأولى.[1] [2]\n\nالثانية.[3]"
+    assert [r["text"] for r in refs] == ["نص 1", "نص 2", "نص 3"]
+
+
+def test_numbers_follow_the_order_the_text_cites_them() -> None:
+    quotes = [_quote(text="نص 1"), _quote(text="نص 2")]
+    text, refs = cite_quotes("أولًا [2]. ثم [1].", quotes)
+    assert text == "أولًا [1]. ثم [2]."
+    assert [(r["n"], r["text"]) for r in refs] == [(1, "نص 2"), (2, "نص 1")]
+
+
+def test_a_number_that_points_at_no_passage_is_dropped() -> None:
+    text, refs = cite_quotes("الجملة [7]. والأخرى [1، 9].", [_quote()])
+    assert text == "الجملة. والأخرى [1]."
+    assert len(refs) == 1
+
+
+def test_arabic_digits_and_grouped_numbers_are_read() -> None:
+    quotes = [_quote(text="نص 1"), _quote(text="نص 2")]
+    text, _ = cite_quotes("الجملة [١، ٢].", quotes)
+    assert text == "الجملة [1] [2]."
+
+
+def test_an_uncited_passage_gets_a_number_at_the_end_of_the_answer() -> None:
+    quotes = [_quote(text="نص 1"), _quote(text="نص 2"), _quote(text="نص 3")]
+    text, refs = cite_quotes("الجواب [2].\n\nما لا نملكه.", quotes)
+    assert text == "الجواب [1]. [2] [3]\n\nما لا نملكه."
+    assert [r["text"] for r in refs] == ["نص 2", "نص 1", "نص 3"]
+
+
+def test_a_text_with_no_numbers_still_opens_every_quote() -> None:
+    text, refs = cite_quotes("الجواب.", [_quote(text="نص 1"), _quote(text="نص 2")])
+    assert text == "الجواب. [1] [2]"
+    assert len(refs) == 2
+
+
+def test_quotes_printed_word_for_word_when_the_voice_failed() -> None:
+    text = compose_message("سطر", [_quote()])
+    assert f"> «{QUOTE}»" in text
     assert "— من بحثنا السابق «حجز الراتب»، استنادًا إلى: نظام التنفيذ — المادة 26" in text
 
 
@@ -78,11 +134,15 @@ def test_a_report_sentence_with_no_citation_names_only_the_report() -> None:
 def test_a_source_no_report_cited_reads_as_a_related_source() -> None:
     text = compose_message("سطر", [_quote(uncited=True, item_id=None)])
     assert FOUND_RELATED in text
+    _, refs = cite_quotes("سطر [1]", [_quote(uncited=True, item_id=None)])
+    assert refs[0]["note"] == FOUND_RELATED.rstrip(":")
 
 
 def test_repeal_status_stays_with_the_quote() -> None:
     text = compose_message("سطر", [_quote(status="ملغي — لم يعد سارياً")])
     assert "(ملغي — لم يعد سارياً)" in text
+    _, refs = cite_quotes("سطر [1]", [_quote(status="ملغي — لم يعد سارياً")])
+    assert refs[0]["source"].endswith("(ملغي — لم يعد سارياً)")
 
 
 def test_law_change_notice_is_carried() -> None:
@@ -94,6 +154,8 @@ def test_a_reply_shows_a_handful_of_quotes_not_all() -> None:
     quotes = [_quote(text=f"نص {i}") for i in range(MAX_SHOWN_QUOTES + 3)]
     text = compose_message("سطر", quotes)
     assert text.count("> «") == MAX_SHOWN_QUOTES
+    _, refs = cite_quotes(f"سطر [{MAX_SHOWN_QUOTES + 1}]", quotes)
+    assert len(refs) == MAX_SHOWN_QUOTES
 
 
 # ── Verdicts ──────────────────────────────────────────────────────────────────
@@ -126,17 +188,23 @@ def test_partial_without_an_offer_still_asks() -> None:
 
 
 def test_quoted_report_gets_the_existing_card_chip() -> None:
-    assert assemble(_result(), _reply()).sse_events == [
-        {"type": "referenced_existing_item", "item_id": "wi-2"},
-    ]
+    assert assemble(_result(), _reply()).sse_events[0] == {
+        "type": "referenced_existing_item", "item_id": "wi-2",
+    }
 
 
 def test_a_law_quote_points_at_the_report_whose_search_found_it() -> None:
     law = _quote(item_id=None, report_title="", ref_id="reg:c1", report_id="wi-4")
     result = _result(quotes=[law], report_ids=["wi-5", "wi-4"])
-    assert assemble(result, _reply()).sse_events == [
-        {"type": "referenced_existing_item", "item_id": "wi-4"},
-    ]
+    assert assemble(result, _reply()).sse_events[0] == {
+        "type": "referenced_existing_item", "item_id": "wi-4",
+    }
+    assert _refs(assemble(result, _reply()))[0]["source"] == "نظام التنفيذ — المادة 26"
+
+
+def test_the_failed_voice_carries_no_refs() -> None:
+    events = assemble(_result(), None).sse_events
+    assert all(e["type"] != "reply_metadata" for e in events)
 
 
 def test_every_reply_gets_the_chip_even_with_no_mapped_quote() -> None:
@@ -213,7 +281,7 @@ def test_turn_message_gives_the_model_the_verdict_and_the_passages() -> None:
         ),
     ))
     assert "partial" in text
-    assert QUOTE in text
+    assert f'<passage n="1" source="نظام التنفيذ — المادة 26">{QUOTE}</passage>' in text
     assert "مدة التظلم" in text
     assert "تاريخ الإيداع" in text
     assert "`search_offer`" in text
