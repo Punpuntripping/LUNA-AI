@@ -105,6 +105,9 @@ const config: Config = {
           "sans-serif",
         ],
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+        // Arabic monospace (Kawkab Mono, app/layout.tsx) — the deep-search
+        // tracker's "system voice". Answers stay in Naskh (font-sans).
+        code: ["var(--font-code)", "Kawkab Mono", "ui-monospace", "monospace"],
       },
 
       colors: {
@@ -304,7 +307,7 @@ const config: Config = {
           "0%": { transform: "translateX(100%)" },
           "100%": { transform: "translateX(-100%)" },
         },
-        // Deep-search recent-topics feed: each new sub-query line eases in.
+        // Deep-search tracker header: each new status phrase eases in.
         "ds-fade-in": {
           "0%": { opacity: "0", transform: "translateY(2px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },

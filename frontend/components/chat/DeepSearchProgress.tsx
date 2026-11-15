@@ -1,10 +1,10 @@
 "use client";
 
-import { memo, useEffect, useMemo, useState } from "react";
-import { Check, Info, Search } from "lucide-react";
+import { memo, useEffect, useLayoutEffect, useState } from "react";
+import { Check, Info } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { DEEP_SEARCH_TOPIC_PREFIX, useChatStore } from "@/stores/chat-store";
+import { DEEP_SEARCH_STAGE_ORDER, useChatStore } from "@/stores/chat-store";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { PushReadyChip } from "@/components/chat/PushReadyChip";
 import type { DeepSearchStage } from "@/types";
@@ -18,8 +18,11 @@ import type { DeepSearchStage } from "@/types";
 // `stage` values on the `agent_progress` SSE event.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Card title. */
+/** Card title — the first word of the header line. */
 const TITLE = "بحث معمّق";
+
+/** Header detail once the run has finished (before the card collapses). */
+const DONE_LINE = "اكتملت الإجابة";
 
 /**
  * Standing note ABOVE the card. Its whole job is to set the expectation before
@@ -31,23 +34,37 @@ const NOTE_BODY =
   "البحث المعمّق مصمَّم ليمرّ على كل المصادر ذات الصلة بسؤالك، وقد يستغرق من 3 إلى 5 دقائق. " +
   "يمكنك تركه يعمل في الخلفية والانشغال بشيء آخر — ستجد الإجابة بانتظارك هنا.";
 
-/** The four stages, in pipeline order. `done` is not a step — it fills all four. */
+/** The five stages, in pipeline order. `done` is not a step — it fills all five. */
 type RunningStage = Exclude<DeepSearchStage, "done">;
+
+type StepStatus = "pending" | "active" | "done";
+
+interface StepDef {
+  key: RunningStage;
+  /** Full name — shown whenever it fits; always the screen-reader name. */
+  label: string;
+  /** One-word fallback for row 1 when the three cells are too narrow (phones). */
+  short: string;
+  /** Row 1 holds three cells (2 of 6 columns each), row 2 holds two (3 each). */
+  row: 1 | 2;
+}
 
 // Each step names what the pipeline is ACTUALLY doing at that point — the
 // labels are not interchangeable decorations:
-//   evaluating  = the per-sub-query rerankers scoring/keeping/dropping results
-//                 (this is the real "تقييم وترجيح" — it lives inside the search
-//                 loops, NOT after them)
+//   searching   = the executors' expanders + vector search
+//   evaluating  = the per-sub-query rerankers scoring/keeping/dropping results.
+//                 They live INSIDE the search loops, so this stage overlaps the
+//                 tail of `searching` — hence the two share row 1, joined by a
+//                 dashed seam, and both complete when `aggregating` starts.
 //   aggregating = the AGGREGATOR, which writes the answer itself (synthesis_md
 //                 with [n] citations) — the longest stage of the run
 //   writing     = the responder turning that answer into the chat summary
-const STEPS: ReadonlyArray<{ key: RunningStage; label: string }> = [
-  { key: "planning", label: "تخطيط البحث" },
-  { key: "searching", label: "البحث في الأنظمة والأحكام" },
-  { key: "evaluating", label: "تقييم النتائج وترجيحها" },
-  { key: "aggregating", label: "كتابة الإجابة" },
-  { key: "writing", label: "عرض الإجابة" },
+const STEPS: ReadonlyArray<StepDef> = [
+  { key: "planning", label: "تخطيط البحث", short: "التخطيط", row: 1 },
+  { key: "searching", label: "البحث في الأنظمة والأحكام", short: "البحث", row: 1 },
+  { key: "evaluating", label: "تقييم النتائج وترتيبها", short: "التقييم", row: 1 },
+  { key: "aggregating", label: "كتابة الإجابة", short: "كتابة الإجابة", row: 2 },
+  { key: "writing", label: "عرض الإجابة", short: "عرض الإجابة", row: 2 },
 ];
 
 /** Arabic plural forms — [1] / [2] / [3–10] / [11+]. */
@@ -58,35 +75,20 @@ export interface ArabicPlural {
   many: string;
 }
 
-/** Retrieved results shown under the active step ("12 نتيجة"). */
+/** Retrieved sources in the header ("24 مصدرًا") — same wording as the chip. */
 const SOURCE_FORMS: ArabicPlural = {
-  one: "نتيجة واحدة",
-  two: "نتيجتان",
-  few: "نتائج",
-  many: "نتيجة",
-};
-
-/** Sub-queries shown under the active step ("6 استعلامات"). */
-const QUERY_FORMS: ArabicPlural = {
-  one: "استعلام واحد",
-  two: "استعلامان",
-  few: "استعلامات",
-  many: "استعلامًا",
+  one: "مصدر واحد",
+  two: "مصدران",
+  few: "مصادر",
+  many: "مصدرًا",
 };
 
 /**
- * Live query counter shown during `searching` before the authoritative
- * phase-end `queries` count arrives: «الاستعلام 3». Driven by `topicsSeen`
- * (one bump per streamed "بحث في …" line).
- */
-const QUERY_COUNTER_PREFIX = "الاستعلام ";
-
-/**
- * Cosmetic labels rotated in the detail line so the card never looks frozen.
- * Since 2026-10-26 NO stage streams topics: the backend stopped relaying the
- * sub-query lines (they expose the search logic), so `searching` rotates too.
- * These name a real running stage — never a query; they do NOT fake counts or
- * move the bar. Same rotation cadence/convention as AGENT_PHRASES in
+ * Cosmetic labels rotated in the header detail so the card never looks frozen.
+ * The backend never relays sub-query lines (they expose the search logic —
+ * owner, 2026-10-26), so these name a real running stage — never a query; they
+ * do NOT fake counts or move a bar. `writing` has none: it shows the backend's
+ * own label (`progress.text`). Same cadence as AGENT_PHRASES in
  * TypingIndicator.tsx.
  */
 const QUIET_PHRASES: Partial<Record<RunningStage, readonly string[]>> = {
@@ -101,109 +103,60 @@ const QUIET_PHRASES: Partial<Record<RunningStage, readonly string[]>> = {
 /** How long each quiet-stage phrase stays before crossfading to the next (ms). */
 const QUIET_ROTATION_MS = 7000;
 
-/**
- * Paced reveal of streamed topics. The pipeline launches every sub-query in
- * parallel, so all "بحث في …" lines arrive in ONE burst — then the searching
- * stage is quiet for ~90s. Revealing them one-by-one spreads that real
- * evidence across the quiet window (the rAF token-reveal principle:
- * presentation pacing of real data, never fabrication — the full list is in
- * the log/chip from the moment it arrives). First topic shows instantly.
- */
-const TOPIC_REVEAL_MS = 5000;
-
-// ── Bar model: anchored milestones + time creep between them ────────────────
+// ── Per-stage bars ──────────────────────────────────────────────────────────
 //
-// The bar is a HYBRID, not a step ladder and not a fake ramp:
+// Every stage cell IS its own progress bar (fill grows from the right in RTL):
 //
-//   • Each stage OWNS a fixed anchor. Entering the stage snaps the bar there.
-//   • Inside a stage the bar creeps with elapsed time toward the NEXT anchor,
-//     so it is always in motion during the long quiet stretches.
-//   • The creep decays exponentially and is capped short of the next anchor
-//     (CREEP_CAP) — so the bar can never *cross* a milestone the pipeline has
-//     not actually reached. A slow aggregator asymptotes just under 75%; it
-//     hits 75% only when the responder really starts, and 100% only on `done`.
+//   • pending → empty.
+//   • active  → creeps with elapsed time since the stage began, decaying
+//               exponentially and capped at CREEP_CAP — it can never claim the
+//               stage is finished while the pipeline is still in it.
+//   • done    → full. A stage is done only when a LATER stage really starts
+//               (searching: when `aggregating` starts — it runs alongside
+//               `evaluating`), so 100% always means a real pipeline milestone.
 //
-// The creep is calibrated (STAGE_EXPECTED_MS ≈ our observed p50 timings) so a
-// typical 3–4 min run reads as one continuous sweep rather than four jumps.
-// Budget shape (owner, 2026-10-26): since the rerankers moved to the decider
-// engine (seconds, not ~70s), the aggregator + responder are over 75% of a run,
-// so they OWN the bar — aggregating 25→75, writing 75→100. Planning, the
-// search and the reranking share the first quarter (5→10→20→25).
-const STAGE_ANCHORS: Record<RunningStage, number> = {
-  planning: 5,
-  searching: 10,
-  evaluating: 20,
-  aggregating: 25,
-  writing: 75,
-};
-
-/** Ceiling each stage creeps toward — the next stage's anchor (`done` = 100). */
-const STAGE_TARGETS: Record<RunningStage, number> = {
-  planning: STAGE_ANCHORS.searching,
-  searching: STAGE_ANCHORS.evaluating,
-  evaluating: STAGE_ANCHORS.aggregating,
-  aggregating: STAGE_ANCHORS.writing,
-  writing: 100,
-};
-
-/**
- * Typical wall-clock per stage — the creep's time constant, not a promise.
- * Logfire p50s over 109 turns (12–26 Oct 2026): planning ~19s, aggregator
- * 41–84s, responder ~57s. Searching (expander + vector search) ~30s; with the
- * decider engine evaluating is a few seconds (it was ~70s on qwen — a qwen
- * fallback simply sits capped under 25%). Re-tune once decider turns pile up.
- */
+// STAGE_EXPECTED_MS is each creep's time constant (≈ observed p50), not a
+// promise. Logfire p50s over 109 turns (12–26 Oct 2026): planning ~19s,
+// aggregator 41–84s, responder ~57s; search ~30s. `evaluating` spans from the
+// first reranker to the last executor finishing, hence ~20s rather than the
+// few seconds one decider call takes.
 const STAGE_EXPECTED_MS: Record<RunningStage, number> = {
   planning: 20_000,
-  searching: 30_000,
-  evaluating: 5_000,
+  searching: 35_000,
+  evaluating: 20_000,
   aggregating: 60_000,
   writing: 55_000,
 };
 
-/** Creep shape: 1 − e^(−k·t/expected) → ~92% of the gap at the expected time. */
+/** Creep shape: 1 − e^(−k·t/expected) → ~92% of the bar at the expected time. */
 const CREEP_K = 2.5;
 
-/** Hard ceiling on the creep, as a fraction of the gap to the next anchor. */
+/** Hard ceiling on the creep while a stage is still running. */
 const CREEP_CAP = 0.94;
 
 /** Bar/timer tick. 250ms reads as continuous motion without churning renders. */
 const TICK_MS = 250;
 
-/** Drop the redundant "بحث في " prefix — the leading Search icon says it. */
-function stripTopicPrefix(line: string): string {
-  return line.startsWith(DEEP_SEARCH_TOPIC_PREFIX)
-    ? line.slice(DEEP_SEARCH_TOPIC_PREFIX.length)
-    : line;
+/**
+ * Status of one step given the run's (monotonic) current stage. `searching`
+ * stays active through `evaluating` — the rerankers run inside the search
+ * loops — and completes with it when the aggregator starts.
+ */
+function stepStatus(step: RunningStage, current: DeepSearchStage): StepStatus {
+  const cur = DEEP_SEARCH_STAGE_ORDER[current];
+  const start = DEEP_SEARCH_STAGE_ORDER[step];
+  const end =
+    step === "searching" ? DEEP_SEARCH_STAGE_ORDER.aggregating : start + 1;
+  if (cur < start) return "pending";
+  if (cur >= end) return "done";
+  return "active";
 }
 
-/** Words of the sub-query kept in the tracker — enough to read at a glance. */
-const TOPIC_WORD_LIMIT = 5;
-
-/**
- * A topic line as the tracker shows it: «الأنظمة واللوائح: فصل الموظف بسبب التغيب…»
- *
- * The corpus label (everything up to the colon) is KEPT — it says which body of
- * law was searched — and only the sub-query itself is clipped to the first
- * TOPIC_WORD_LIMIT words. The backend already hard-truncates the query at 80
- * chars and appends "...", so that tail is stripped before counting words to
- * avoid an ellipsis-on-ellipsis. The full line survives untouched in the log,
- * which is what the summary chip renders.
- */
-function formatTopic(line: string): string {
-  const stripped = stripTopicPrefix(line);
-  const colon = stripped.indexOf(":");
-  const label = colon >= 0 ? stripped.slice(0, colon + 1) : "";
-  const query = (colon >= 0 ? stripped.slice(colon + 1) : stripped)
-    .replace(/[.…]+\s*$/, "")
-    .trim();
-
-  const words = query.split(/\s+/).filter(Boolean);
-  const clipped = words.slice(0, TOPIC_WORD_LIMIT).join(" ");
-  const tail = words.length > TOPIC_WORD_LIMIT ? "…" : "";
-  const short = `${clipped}${tail}`;
-
-  return label ? `${label} ${short}` : short;
+function fillPercent(status: StepStatus, stageMs: number, expectedMs: number): number {
+  if (status === "done") return 100;
+  if (status === "pending") return 0;
+  const creep = 1 - Math.exp((-CREEP_K * stageMs) / expectedMs);
+  return Math.min(creep, CREEP_CAP) * 100;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,7 +164,7 @@ function formatTopic(line: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Elapsed wall-clock as m:ss in Latin digits ("1:50").
+ * Elapsed wall-clock as mm:ss in Latin digits ("01:50").
  *
  * Built by hand rather than through `toLocaleString`: the tracker renders
  * during SSR-hydrated client updates and must never disagree with itself
@@ -221,7 +174,7 @@ export function formatElapsedAr(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 /** Count + Arabic plural agreement ("نتيجة واحدة" / "6 نتائج" / "12 نتيجة"). */
@@ -233,62 +186,6 @@ export function formatCountAr(n: number, forms: ArabicPlural): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * One-line label that CROSSFADES whenever its `text` changes instead of
- * swapping abruptly. Both the outgoing and incoming line are grid-stacked in a
- * single cell (the technique from TypingIndicator.tsx) so the box reserves the
- * taller line's height and there is no reflow. Truncated to one line, so the
- * host can rely on a fixed row height.
- *
- * `motion-reduce:` drops the transition for users who ask for less motion.
- */
-function CrossfadeLine({
-  text,
-  className,
-}: {
-  text: string;
-  className?: string;
-}) {
-  // Two slots so both lines exist at once during the fade: the incoming line is
-  // written into the hidden slot, then `show` flips — the pair crossfade.
-  const [slots, setSlots] = useState<{ a: string; b: string; show: "a" | "b" }>(
-    { a: text, b: "", show: "a" },
-  );
-
-  useEffect(() => {
-    setSlots((prev) => {
-      const visible = prev.show === "a" ? prev.a : prev.b;
-      if (text === visible) return prev;
-      return prev.show === "a"
-        ? { a: prev.a, b: text, show: "b" }
-        : { a: text, b: prev.b, show: "a" };
-    });
-  }, [text]);
-
-  return (
-    <span className="grid min-w-0 flex-1">
-      <span
-        className={cn(
-          "[grid-area:1/1] truncate transition-opacity duration-300 motion-reduce:transition-none",
-          slots.show === "a" ? "opacity-100" : "opacity-0",
-          className,
-        )}
-      >
-        {slots.a}
-      </span>
-      <span
-        className={cn(
-          "[grid-area:1/1] truncate transition-opacity duration-300 motion-reduce:transition-none",
-          slots.show === "b" ? "opacity-100" : "opacity-0",
-          className,
-        )}
-      >
-        {slots.b}
-      </span>
-    </span>
-  );
-}
 
 /**
  * The expectation-setting note that sits above the tracker for the whole run.
@@ -324,6 +221,61 @@ function DeepSearchNote({ running }: { running: boolean }) {
   );
 }
 
+/**
+ * Row 1 shows the full stage names when all three fit, otherwise one word each
+ * (phones). Measured against a hidden full-name copy, so the decision never
+ * depends on which label is currently showing — no flip-flop. Re-checked on
+ * resize and when the web font finishes loading (it changes the widths).
+ *
+ * Takes the grid ELEMENT (from a callback ref), not a ref object: the grid
+ * only mounts once the first progress event lands, and the effect must re-run
+ * then to attach its observer.
+ */
+function useTightRow(grid: HTMLOListElement | null): boolean {
+  const [tight, setTight] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!grid) return;
+
+    const check = () => {
+      let next = false;
+      grid.querySelectorAll<HTMLElement>("[data-row1]").forEach((cell) => {
+        const probe = cell.querySelector<HTMLElement>("[data-probe]");
+        if (!probe) return;
+        const style = window.getComputedStyle(cell);
+        const room =
+          cell.clientWidth -
+          parseFloat(style.paddingLeft) -
+          parseFloat(style.paddingRight) -
+          CHECK_RESERVE_PX;
+        if (probe.offsetWidth > room) next = true;
+      });
+      setTight(next);
+    };
+
+    check();
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(check) : null;
+    observer?.observe(grid);
+    const fonts = document.fonts;
+    let alive = true;
+    void fonts?.ready.then(() => {
+      if (alive) check();
+    });
+    fonts?.addEventListener?.("loadingdone", check);
+    return () => {
+      alive = false;
+      observer?.disconnect();
+      fonts?.removeEventListener?.("loadingdone", check);
+    };
+  }, [grid]);
+
+  return tight;
+}
+
+/** Room kept beside a row-1 label for the ✓ a finished stage shows (icon + gap). */
+const CHECK_RESERVE_PX = 18;
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DeepSearchProgressProps {
@@ -333,11 +285,15 @@ interface DeepSearchProgressProps {
 }
 
 /**
- * Live step-tracker for a running `deep_search` turn (1–4 min), shown in place
+ * Live step-tracker for a running `deep_search` turn (3–5 min), shown in place
  * of the generic TypingIndicator.
  *
- * Driven exclusively by real pipeline events — the bar's fill is `n of 4`
- * completed steps, never a synthetic percentage ramp.
+ * Layout (Kawkab Mono, `font-code`): one header line — «بحث معمّق › phrase▍ …
+ * sources · mm:ss» — then the stages on two rows: planning · search ·
+ * evaluation, then writing · showing. Each stage cell is its own progress bar.
+ *
+ * Driven exclusively by real pipeline events: a cell only reaches 100% when
+ * the pipeline has actually moved past it.
  *
  * Render isolation: this is the ONLY subscriber of `chat-store.streams[cid].deepSearchProgress`.
  * Keep it that way — the message list must not re-render on progress events or
@@ -354,9 +310,9 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   const startedAt = progress?.startedAt ?? null;
   const stage = progress?.stage ?? null;
 
-  // Local clock tick — drives BOTH the elapsed readout and the bar's creep. A
+  // Local clock tick — drives BOTH the elapsed readout and the bars' creep. A
   // store write per tick would re-render every consumer of the chat store for
-  // the whole 4-minute run; this stays inside the (memoized) tracker.
+  // the whole run; this stays inside the (memoized) tracker.
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     if (startedAt === null) return;
@@ -366,16 +322,25 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   }, [startedAt]);
   const elapsedMs = startedAt !== null ? Math.max(0, nowMs - startedAt) : 0;
 
-  // When the current stage began — the origin of the bar's creep. Re-stamped on
-  // every stage change (and on a fresh run, via `startedAt`).
-  const [stageStartedAt, setStageStartedAt] = useState<number | null>(null);
+  // When each stage was first seen — the origin of that stage's creep. Kept per
+  // stage (not just the current one) because `searching` keeps creeping while
+  // `evaluating` runs beside it. Reset on a fresh run.
+  const [stageStarts, setStageStarts] = useState<
+    Partial<Record<RunningStage, number>>
+  >({});
   useEffect(() => {
-    setStageStartedAt(stage === null ? null : Date.now());
+    setStageStarts({});
+  }, [startedAt]);
+  useEffect(() => {
+    if (stage === null || stage === "done") return;
+    setStageStarts((prev) =>
+      prev[stage] !== undefined ? prev : { ...prev, [stage]: Date.now() },
+    );
   }, [stage, startedAt]);
 
-  // Rotate the quiet-stage phrases (every stage that has them). Reset to the
-  // first phrase whenever the stage changes so a fresh stage starts clean.
-  // Local state — never touches the store, so it can't re-render the list.
+  // Rotate the quiet-stage phrases. Reset to the first phrase whenever the
+  // stage changes so a fresh stage starts clean. Local state — never touches
+  // the store, so it can't re-render the list.
   const [phraseIndex, setPhraseIndex] = useState(0);
   useEffect(() => {
     setPhraseIndex(0);
@@ -388,39 +353,8 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
     return () => window.clearInterval(id);
   }, [stage]);
 
-  // Paced topic reveal (see TOPIC_REVEAL_MS). `log` is replaced immutably on
-  // every append, so it's a safe memo dependency. Local state only.
-  const progressLog = progress?.log;
-  const allTopics = useMemo(
-    () =>
-      progressLog
-        ? progressLog.filter((l) => l.startsWith(DEEP_SEARCH_TOPIC_PREFIX))
-        : [],
-    [progressLog],
-  );
-  const [revealedCount, setRevealedCount] = useState(0);
-  useEffect(() => {
-    // New run → start the reveal from scratch.
-    setRevealedCount(0);
-  }, [startedAt]);
-  useEffect(() => {
-    // The reveal spans searching AND evaluating: the sub-queries all fire in
-    // parallel, so their topics land in one burst early in `searching`, while
-    // the rerankers (evaluating) are still judging the very results those
-    // queries returned. Cutting the reveal at the stage boundary would drop
-    // real evidence on the floor mid-list.
-    if (stage !== "searching" && stage !== "evaluating") return;
-    if (revealedCount >= allTopics.length) return;
-    if (revealedCount === 0) {
-      setRevealedCount(1); // first topic instantly — no artificial dead air
-      return;
-    }
-    const id = window.setTimeout(
-      () => setRevealedCount((r) => Math.min(r + 1, allTopics.length)),
-      TOPIC_REVEAL_MS,
-    );
-    return () => window.clearTimeout(id);
-  }, [stage, revealedCount, allTopics.length]);
+  const [grid, setGrid] = useState<HTMLOListElement | null>(null);
+  const tight = useTightRow(grid);
 
   // A deep_search run whose backend never emitted `agent_progress` (deploy
   // skew, resume leg without the hook) degrades to the generic indicator
@@ -437,84 +371,17 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   }
 
   const isDone = progress.stage === "done";
-  const stageIndex = STEPS.findIndex((s) => s.key === progress.stage);
-  const activeIndex = isDone
-    ? STEPS.length - 1
-    : stageIndex >= 0
-      ? stageIndex
-      : 0;
+  const activeStep =
+    STEPS.find((s) => s.key === progress.stage) ?? STEPS[STEPS.length - 1];
 
-  const runningStage = STEPS[activeIndex].key;
-  // The topic evidence belongs to BOTH search stages: `searching` runs the
-  // sub-queries, `evaluating` reranks what those same sub-queries returned.
-  // Keeping the feed alive across the boundary is what makes the two stages
-  // read as one continuous act of searching rather than a hard cut.
-  const showsTopics =
-    progress.stage === "searching" || progress.stage === "evaluating";
-
-  // Bar fill: the stage's anchor + a time-decayed creep toward the next anchor,
-  // capped short of it (see STAGE_ANCHORS). Always moving, never crossing a
-  // milestone the pipeline hasn't actually reached. Monotonic by construction —
-  // the capped creep always stays below the next stage's anchor.
-  let barPercent: number;
-  if (isDone) {
-    barPercent = 100;
-  } else {
-    const anchor = STAGE_ANCHORS[runningStage];
-    const target = STAGE_TARGETS[runningStage];
-    const stageMs =
-      stageStartedAt !== null ? Math.max(0, nowMs - stageStartedAt) : 0;
-    const creep = Math.min(
-      1 - Math.exp((-CREEP_K * stageMs) / STAGE_EXPECTED_MS[runningStage]),
-      CREEP_CAP,
-    );
-    barPercent = anchor + (target - anchor) * creep;
-  }
-
-  // The detail line. While topics are still being revealed (paced — see
-  // TOPIC_REVEAL_MS) it shows the newest one, and that reveal carries on into
-  // `evaluating`. Once the topics run out — and for the stages that stream none
-  // (planning / aggregating) — it rotates that stage's phrases instead, so the
-  // line is never empty. CrossfadeLine handles every transition between values.
-  const revealedTopics = allTopics.slice(0, revealedCount);
-  const stillRevealing = revealedCount < allTopics.length;
-  const showTopicAsDetail =
-    showsTopics &&
-    revealedTopics.length > 0 &&
-    (progress.stage === "searching" || stillRevealing);
-
-  const quietPhrases = QUIET_PHRASES[runningStage];
-  const detailText = showTopicAsDetail
-    ? formatTopic(revealedTopics[revealedTopics.length - 1])
+  // Header detail: the current stage's rotating phrase; `writing` (no phrases)
+  // shows the backend's own label; a finished run says so.
+  const quietPhrases = isDone ? undefined : QUIET_PHRASES[activeStep.key];
+  const detailText = isDone
+    ? DONE_LINE
     : quietPhrases
       ? quietPhrases[phraseIndex % quietPhrases.length]
-      : progress.text
-        ? stripTopicPrefix(progress.text)
-        : "";
-
-  // Recent-topics mini feed: the last 1–2 revealed topics, newest first. When
-  // the detail line is showing a topic, that topic is excluded here (it's
-  // already above); when the detail has moved on to phrases, the feed keeps the
-  // most recent topics visible as evidence of what was actually searched.
-  const feedTopics = showTopicAsDetail
-    ? revealedTopics.slice(0, -1)
-    : revealedTopics;
-  const recentTopics = showsTopics ? feedTopics.slice(-2).reverse() : [];
-
-  // Meta line under the detail: prefer the authoritative phase-end counts;
-  // before the `queries` count arrives, fall back to the live revealed-topic
-  // counter («الاستعلام 3») so the search stages show progress from the first
-  // sub-query and the number advances with the paced reveal.
-  const metaParts: string[] = [];
-  if (progress.sources > 0) {
-    metaParts.push(formatCountAr(progress.sources, SOURCE_FORMS));
-  }
-  if (progress.queries > 0) {
-    metaParts.push(formatCountAr(progress.queries, QUERY_FORMS));
-  } else if (showsTopics && revealedCount > 0) {
-    metaParts.push(`${QUERY_COUNTER_PREFIX}${revealedCount}`);
-  }
-  const metaLine = metaParts.length > 0 ? metaParts.join(" · ") : null;
+      : (progress.text ?? "");
 
   return (
     <div className={cn("w-full space-y-2", className)}>
@@ -524,142 +391,140 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
         dir="rtl"
         lang="ar"
         aria-busy={!isDone}
-        className="w-full rounded-2xl border bg-card px-4 py-3 shadow-sm"
+        className="w-full overflow-hidden rounded-xl border border-border bg-card font-code text-xs shadow-sm"
       >
-        {/* Header: title + elapsed. The timer is deliberately OUTSIDE the live
-            region below — announcing it would speak once per second. */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5">
-            <Search
-              className="h-3.5 w-3.5 shrink-0 text-primary"
-              aria-hidden="true"
-            />
-            <span className="text-xs font-semibold text-foreground">
-              {TITLE}
+        {/* Header line: title › live detail + caret … sources · timer. The
+            timer is deliberately OUTSIDE the live region below — announcing it
+            would speak once per second. */}
+        <div className="flex items-center gap-2 whitespace-nowrap px-3 py-1 leading-5 text-muted-foreground">
+          <span className="shrink-0 font-bold text-foreground">{TITLE}</span>
+          <span className="shrink-0 text-text-subtle" aria-hidden="true">
+            ›
+          </span>
+          <span className="flex min-w-0 flex-1 items-center gap-0.5" aria-hidden="true">
+            {/* Keyed by the text: each new phrase remounts and fades in. The
+                span is exactly as wide as its own text, so the caret always
+                sits right after it (a two-slot crossfade would hold the old,
+                longer phrase's width and strand the caret). */}
+            <span
+              key={detailText}
+              className="min-w-0 truncate animate-ds-fade-in motion-reduce:animate-none"
+            >
+              {detailText}
             </span>
-          </div>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {formatElapsedAr(elapsedMs)}
+            {!isDone && (
+              <span className="h-[1.05em] w-[0.5em] shrink-0 animate-blink bg-primary motion-reduce:animate-none" />
+            )}
+          </span>
+          <span className="flex shrink-0 items-center gap-2 tabular-nums">
+            {progress.sources > 0 && (
+              <span className="hidden min-[380px]:inline">
+                {formatCountAr(progress.sources, SOURCE_FORMS)}
+              </span>
+            )}
+            <span>{formatElapsedAr(elapsedMs)}</span>
           </span>
         </div>
 
         {/* The only live region: it holds the active stage label and nothing
-            else, so screen readers announce stage TRANSITIONS only — not every
-            status line, count bump, or token. */}
+            else, so screen readers announce stage TRANSITIONS only. */}
         <span role="status" aria-live="polite" className="sr-only">
-          {STEPS[activeIndex].label}
+          {isDone ? DONE_LINE : activeStep.label}
         </span>
 
-        {/* Bar — canonical Luna markup (AttachmentUploadCard). The card is
-            dir="rtl", so the fill grows from the right edge. Width = stage anchor
-            + capped time creep (see STAGE_ANCHORS): continuously moving, but it
-            can only cross a milestone when the pipeline actually reaches it. The
-            transition is LINEAR and matched to the tick so consecutive creep
-            updates read as one smooth sweep instead of 4/sec ease-out stutters; a
-            glossy highlight sweeps the filled portion for motion even when the
-            creep has flattened out. Sweep is disabled under reduced-motion. */}
-        <div
-          className="mt-2.5 h-1 w-full overflow-hidden rounded-full bg-muted"
-          aria-hidden="true"
+        {/* Stages: 6-column grid — row 1 = three cells × 2 columns, row 2 =
+            two cells × 3 columns. The 1px gaps show the border colour through,
+            drawing the dividers. */}
+        <ol
+          ref={setGrid}
+          className="grid grid-cols-6 gap-px border-t border-border bg-border"
         >
-          <div
-            className="relative h-full overflow-hidden rounded-full bg-primary transition-[width] duration-300 ease-linear motion-reduce:transition-none"
-            style={{ width: `${barPercent}%` }}
-          >
-            <span className="absolute inset-0 animate-ds-bar-sweep bg-gradient-to-r from-transparent via-primary-fg to-transparent opacity-30 motion-reduce:hidden" />
-          </div>
-        </div>
+          {STEPS.map((step) => {
+            const status = stepStatus(step.key, progress.stage);
+            const begin =
+              stageStarts[step.key] ??
+              (step.key === "searching" ? stageStarts.evaluating : undefined) ??
+              nowMs;
+            const fill = fillPercent(
+              status,
+              Math.max(0, nowMs - begin),
+              STAGE_EXPECTED_MS[step.key],
+            );
+            const showShort = step.row === 1 && tight;
 
-        {/* Steps */}
-        <ol className="mt-3 space-y-1.5">
-          {STEPS.map((step, i) => {
-            const state =
-              isDone || i < activeIndex
-                ? "done"
-                : i === activeIndex
-                  ? "active"
-                  : "pending";
             return (
-              <li key={step.key} className="flex items-start gap-2">
+              <li
+                key={step.key}
+                title={step.label}
+                data-row1={step.row === 1 ? "" : undefined}
+                className={cn(
+                  "relative flex min-h-7 min-w-0 items-center gap-1.5 overflow-hidden bg-card px-2.5 py-0.5 leading-5",
+                  step.row === 1 ? "col-span-2" : "col-span-3",
+                  // Search + evaluation run together: cover the solid 1px gap
+                  // and draw a dashed seam instead.
+                  step.key === "evaluating" && "-ms-px",
+                )}
+              >
+                {/* The bar — the cell itself. The card is dir="rtl", so the
+                    fill grows from the right edge. LINEAR transition matched
+                    to the tick so creep updates read as one smooth sweep. */}
                 <span
-                  className="mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center"
                   aria-hidden="true"
+                  className="absolute inset-y-0 start-0 overflow-hidden bg-primary/15 transition-[width] duration-300 ease-linear motion-reduce:transition-none"
+                  style={{ width: `${fill}%` }}
                 >
-                  {state === "done" ? (
-                    <Check className="h-3.5 w-3.5 text-primary" />
-                  ) : state === "active" ? (
-                    <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
-                  ) : (
-                    <span className="h-2 w-2 rounded-full border border-muted-foreground/40" />
+                  {status === "active" && (
+                    <>
+                      <span className="absolute inset-0 animate-ds-bar-sweep bg-gradient-to-r from-transparent via-primary-fg to-transparent opacity-30 motion-reduce:hidden" />
+                      <span className="absolute inset-y-0 end-0 w-0.5 bg-primary" />
+                    </>
                   )}
                 </span>
 
-                <div className="min-w-0 flex-1">
-                  <p
-                    className={cn(
-                      "text-xs leading-5",
-                      state === "active"
-                        ? "font-medium text-foreground"
-                        : state === "done"
-                          ? "text-muted-foreground"
-                          : "text-muted-foreground/50",
-                    )}
+                {step.key === "evaluating" && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-y-1.5 start-0 border-s border-dashed border-border-strong"
+                  />
+                )}
+
+                {/* Hidden full-name copy that useTightRow measures. */}
+                {step.row === 1 && (
+                  <span
+                    data-probe=""
+                    aria-hidden="true"
+                    className="invisible absolute whitespace-nowrap font-bold"
                   >
                     {step.label}
-                  </p>
+                  </span>
+                )}
 
-                  {/* Live evidence under the ACTIVE step only. Every sub-block
-                      keeps a FIXED reserved height (detail 1 line + feed 2 lines +
-                      meta 1 line) so the card never changes height for the whole
-                      run — the active step just moves down the list. Decorative,
-                      so the whole block is aria-hidden (the sr-only live region
-                      above announces stage transitions instead). */}
-                  {state === "active" && (
-                    <div className="mt-1 space-y-0.5" aria-hidden="true">
-                      {/* Detail line — crossfades on every new topic (search
-                          stages) or rotated phrase (the stages that stream none).
-                          The magnifier marks a real sub-query; the dot marks a
-                          phrase, so the two are never mistaken for each other. */}
-                      <div className="flex items-start gap-1.5">
-                        {showTopicAsDetail ? (
-                          <Search className="mt-[3px] h-3 w-3 shrink-0 text-primary" />
-                        ) : (
-                          <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-primary" />
-                        )}
-                        <CrossfadeLine
-                          text={detailText}
-                          className="text-xs leading-4 text-muted-foreground"
-                        />
-                      </div>
-
-                      {/* Recent-topics feed (searching only). Fixed 2-line box,
-                          reserved even when empty, so the card height is constant
-                          across every stage. Each new line eases in. */}
-                      <div className="h-9 space-y-0.5 overflow-hidden">
-                        {recentTopics.map((topic) => (
-                          <div
-                            key={topic}
-                            className="flex items-start gap-1.5 animate-ds-fade-in motion-reduce:animate-none"
-                          >
-                            <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-current text-text-subtle" />
-                            <span className="truncate text-xs leading-4 text-text-subtle">
-                              {formatTopic(topic)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Counts / live query counter — one reserved line. */}
-                      <div className="min-h-[1rem]">
-                        {metaLine && (
-                          <p className="text-xs leading-4 tabular-nums text-muted-foreground">
-                            {metaLine}
-                          </p>
-                        )}
-                      </div>
-                    </div>
+                <span
+                  className={cn(
+                    "relative min-w-0 truncate",
+                    status === "active"
+                      ? "font-bold text-foreground"
+                      : status === "done"
+                        ? "text-text-secondary"
+                        : "text-text-subtle",
                   )}
-                </div>
+                >
+                  {showShort ? (
+                    <>
+                      <span aria-hidden="true">{step.short}</span>
+                      <span className="sr-only">{step.label}</span>
+                    </>
+                  ) : (
+                    step.label
+                  )}
+                </span>
+
+                {status === "done" && (
+                  <Check
+                    className="relative h-3 w-3 shrink-0 text-primary"
+                    aria-hidden="true"
+                  />
+                )}
               </li>
             );
           })}

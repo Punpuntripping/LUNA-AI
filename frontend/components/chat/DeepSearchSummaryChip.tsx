@@ -29,7 +29,7 @@ const EXPAND_LABEL = "عرض خطوات البحث المعمّق";
 const COLLAPSE_LABEL = "إخفاء خطوات البحث المعمّق";
 const EMPTY_LOG = "لا توجد تفاصيل إضافية";
 
-/** Separator between the chip's parts: «بحث معمّق · 24 مصدرًا · 1:50». */
+/** Separator between the chip's parts: «بحث معمّق · 24 مصدرًا · 01:50». */
 const SEP = "·";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,7 +78,8 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
             aria-label={isOpen ? COLLAPSE_LABEL : EXPAND_LABEL}
             className={cn(
               "flex h-7 items-center gap-1.5 rounded-full border bg-muted/40 px-2.5",
-              "text-xs text-muted-foreground transition-colors",
+              // Same Kawkab Mono "system voice" as the live tracker it replaces.
+              "font-code text-xs text-muted-foreground transition-colors",
               "hover:bg-muted hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             )}
@@ -99,7 +100,7 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
         </div>
 
         {isOpen && (
-          <div className="mt-1.5 mb-1 max-h-64 overflow-y-auto rounded-2xl border bg-card px-3 py-2">
+          <div className="mt-1.5 mb-1 max-h-64 overflow-y-auto rounded-2xl border bg-card px-3 py-2 font-code">
             {summary.log.length === 0 ? (
               <p className="text-xs leading-4 text-muted-foreground">
                 {EMPTY_LOG}

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Noto_Naskh_Arabic } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { JsonLd } from "@/components/seo/JsonLd";
@@ -11,6 +12,20 @@ const notoNaskhArabic = Noto_Naskh_Arabic({
   weight: ["400", "500", "600", "700"],
   variable: "--font-arabic",
   display: "swap",
+});
+
+// Arabic monospace "system voice" for the deep-search tracker (DeepSearchProgress
+// + DeepSearchSummaryChip) — Tailwind `font-code`. Self-hosted: it is not on
+// Google Fonts (OFL licence beside the files). `preload: false` because only the
+// tracker uses it — the ~210 KB downloads on first use, not on every page.
+const kawkabMono = localFont({
+  src: [
+    { path: "./fonts/kawkab-mono/KawkabMono-Regular.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/kawkab-mono/KawkabMono-Bold.woff2", weight: "700", style: "normal" },
+  ],
+  variable: "--font-code",
+  display: "swap",
+  preload: false,
 });
 
 export const metadata: Metadata = {
@@ -61,7 +76,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ar" dir="rtl" suppressHydrationWarning>
-      <body className={`${notoNaskhArabic.variable} font-sans antialiased`}>
+      <body
+        className={`${notoNaskhArabic.variable} ${kawkabMono.variable} font-sans antialiased`}
+      >
         {/* Site-wide structured data — rendered once, brand + site identity. */}
         <JsonLd data={[buildOrganization(), buildWebSite()]} />
         <Providers>{children}</Providers>
