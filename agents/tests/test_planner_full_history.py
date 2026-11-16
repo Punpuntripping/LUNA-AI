@@ -652,3 +652,33 @@ def test_a_reply_that_is_only_a_marker_is_sent_back():
 def test_an_ordinary_reply_is_untouched():
     reply = ChatResponse(message="الموضع في ضبط الجلسة الثانية (WI-5)، الصفحة ٢.")
     assert rr._validate_and_resolve_dispatch(_router_ctx(None), reply).message == reply.message
+
+
+# --------------------------------------------------------------------------- #
+# An output-tool name written out as a tag never reaches the user
+# --------------------------------------------------------------------------- #
+
+
+def test_a_chatresponse_tag_wrapper_is_stripped_from_the_reply():
+    # Seen live 2026-11-16: a plain-text reply wrapped in the tool's name.
+    reply = ChatResponse(message="<ChatResponse>\nأحتاج توضيحًا قصيرًا: «استخرج» أيّهما تقصد؟\n</ChatResponse>")
+
+    out = rr._validate_and_resolve_dispatch(_router_ctx(None), reply)
+
+    assert out.message == "أحتاج توضيحًا قصيرًا: «استخرج» أيّهما تقصد؟"
+
+
+def test_the_text_fallback_path_strips_the_tag_too():
+    # The plain-text fallback builds the ChatResponse; the validator then cleans it.
+    reply = rr._text_as_chat("<ChatResponse> أحتاج توضيحًا قصيرًا قبل أن أبدأ. </ChatResponse>")
+
+    out = rr._validate_and_resolve_dispatch(_router_ctx(None), reply)
+
+    assert out.message == "أحتاج توضيحًا قصيرًا قبل أن أبدأ."
+
+
+def test_a_reply_that_is_only_a_chatresponse_tag_is_sent_back():
+    with pytest.raises(ModelRetry):
+        rr._validate_and_resolve_dispatch(
+            _router_ctx(None), ChatResponse(message="<ChatResponse></ChatResponse>"),
+        )

@@ -494,6 +494,11 @@ router_agent = Agent(
 # The hand-back turn (``RouterDeps.planner_handback``): times a dispatch is sent
 # back before the validator answers with the plain question below instead.
 _HANDBACK_RETRIES = 2
+
+# A model that answers in plain text instead of calling the output tool may wrap
+# the reply in the tool's name (seen 2026-11-16 on DeepSeek-V4.1-Flash:
+# «<ChatResponse>\n…\n</ChatResponse>», shown to the user as is).
+_OUTPUT_TAG_RE = re.compile(r"</?\s*ChatResponse\b[^>\n]*>")
 #: The router's reply on a hand-back turn when it produced none of its own (it
 #: kept dispatching, or failed). Plain and safe: it only asks.
 HANDBACK_FALLBACK_AR = (
@@ -524,15 +529,20 @@ def _validate_and_resolve_dispatch(
     them so the orchestrator always sees the canonical resolved UUIDs.
     """
     if isinstance(value, ChatResponse):
-        # A system marker the model copied into its reply never reaches the user.
-        cleaned = strip_system_tags(value.message)
+        # A system marker the model copied into its reply never reaches the user,
+        # nor does an output-tool name written out as a tag.
+        cleaned = value.message
+        if "ChatResponse" in cleaned:
+            cleaned = _OUTPUT_TAG_RE.sub("", cleaned).strip()
+        cleaned = strip_system_tags(cleaned)
         if cleaned != value.message:
             if not cleaned:
                 raise ModelRetry(
-                    "Your reply was only a 〔[نظام] …〕 marker. Those markers are "
-                    "context only — write the reply itself."
+                    "Your reply held nothing but a 〔[نظام] …〕 marker or a "
+                    "<ChatResponse> tag. Those are not text for the user — write "
+                    "the reply itself."
                 )
-            logger.warning("router reply carried a system marker; stripped")
+            logger.warning("router reply carried a system marker or output tag; stripped")
             value.message = cleaned
         return value
 
