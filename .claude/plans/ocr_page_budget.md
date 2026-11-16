@@ -202,6 +202,20 @@ Two things made cuts huge on the test file, both dropped (never drawn):
   server counts the pages itself (planning for 1 page would have read only page 1).
 - **Locked user** (no plan) → zero budget.
 
+**Follow-up 2026-11-16 (after the first live test failed):** xl0rch (Pro) sent the 202 MB file with
+«اش تقول الدعوى 410654». The plan was right — 100 pages (1–60, 602–621, 1164–1183; two 50-page cuts) —
+but neither Mistral call returned within 170 s from production → TimeoutError, file `failed`, 0 pages
+billed; the router answered from the judgments library instead (410654أ is in the corpus; 1 unlock).
+Case 410654 is on page 81 — outside the planned pages anyway (→ query-aware page choice is the next design
+question). Changes:
+- OCR call timeout and both OCR waits (helper `OCR_CEILING_S`, inline `wait_for`) → **10 minutes**.
+- **`status` lines never reach the client** (message_service drops them by design, 2026-10-26), so the
+  notices shipped in d8072dc were invisible. New SSE event **`ocr_progress`** (`extracting` → web shows
+  «ريحان يستخرج المستندات» instead of «ريحان يفكّر»; `done` + `notices`), notices persisted as
+  `messages.metadata.ocr_notices` and rendered above the reply. Failure / still-running notices too.
+- Owner wording: «استخراج» not «قراءة» everywhere (composer «سنستخرج 100 من 606 صفحة», notices,
+  banner, and the agent-facing markers «استُخرجت … / لم تُستخرج»).
+
 **Real-file test** — `مدونة السوابق القضائية التأمينية.pdf` (202 MB, 1,183 pages), full runner with real
 Mistral; only the DB, the storage download and the quota read faked (Pro: 150 pages, none used):
 100 pages read (1–60, 602–621, 1164–1183) in 85–101 s, billed 100 pages ($0.10), 100 page rows all fit

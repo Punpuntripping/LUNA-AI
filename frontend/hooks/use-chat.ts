@@ -40,6 +40,7 @@ import type {
   SSEDeepSearchGated,
   SSEAgentProgress,
   SSEStatus,
+  SSEOcrProgress,
   SSEAgentRunStarted,
   SSEAgentRunFinished,
   SSEAgentQuestion,
@@ -687,6 +688,17 @@ export function useSendMessage(): UseSendMessageReturn {
                   .getState()
                   .sealDeepSearchSummary(conversationId, assistantMessageId);
               }
+              break;
+            }
+            case "ocr_progress": {
+              // The OCR step before the answer (ocr_page_budget.md): while it
+              // runs the typing indicator says «ريحان يستخرج المستندات». The
+              // notices are persisted on the reply (metadata.ocr_notices) and
+              // render with the bubble once it lands.
+              const payload = data as SSEOcrProgress;
+              useChatStore
+                .getState()
+                .setExtractingDocuments(conversationId, payload.phase === "extracting");
               break;
             }
             case "status": {

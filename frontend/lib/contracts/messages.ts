@@ -45,6 +45,13 @@ export interface MessageMetadata {
    */
   templates_used?: TemplateUsed[];
   /**
+   * OCR page-budget notices for this turn's attachments (plan
+   * ocr_page_budget.md): «استخرجنا 100 صفحة من أصل 606 من «…» حسب رصيدك …»,
+   * «لم نستخرج «…» لأن رصيد استخراج الملفات نفد», or that extraction failed.
+   * Absent when every file was extracted in full.
+   */
+  ocr_notices?: string[];
+  /**
    * «اقرأ الحكم كاملًا»: pages in our library this reply's text comes from
    * (a ruling it quotes or corrects). Validate with ``parseLibraryLinks``
    * (lib/contracts/library-links.ts).

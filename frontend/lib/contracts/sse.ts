@@ -223,6 +223,18 @@ export interface SSEStatus {
   text: string;
 }
 
+/**
+ * ``event: ocr_progress`` — the OCR step before the answer (plan
+ * ocr_page_budget.md). ``extracting``: a file is being extracted — the web
+ * shows «ريحان يستخرج المستندات». ``done``: extraction ended; ``notices`` are
+ * the user's lines («استخرجنا 100 صفحة من أصل 606 …»), also persisted on the
+ * reply as ``metadata.ocr_notices``. Older backends never send it.
+ */
+export interface SSEOcrProgress {
+  phase: "extracting" | "done";
+  notices?: string[];
+}
+
 export interface SSEAgentRunFinished {
   agent_family: AgentFamily;
 }
@@ -340,6 +352,7 @@ export interface SSEEventMap {
   error: SSEError;
   heartbeat: SSEHeartbeat;
   status: SSEStatus;
+  ocr_progress: SSEOcrProgress;
   agent_selected: SSEAgentSelected;
   agent_run_started: SSEAgentRunStarted;
   agent_progress: SSEAgentProgress;
@@ -357,7 +370,7 @@ export interface SSEEventMap {
 
 export type SSEEventName = keyof SSEEventMap;
 
-/** Runtime list of {@link SSEEventName} (23 names) — for name guards. */
+/** Runtime list of {@link SSEEventName} (24 names) — for name guards. */
 export const SSE_EVENT_NAMES = [
   "message_start",
   "token",
@@ -369,6 +382,7 @@ export const SSE_EVENT_NAMES = [
   "error",
   "heartbeat",
   "status",
+  "ocr_progress",
   "agent_selected",
   "agent_run_started",
   "agent_progress",

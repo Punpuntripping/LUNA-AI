@@ -178,6 +178,12 @@ export const MessageBubble = memo(function MessageBubble({
   const openIds = hasArtifacts
     ? [...artifactIds!, ...referencedOnly]
     : referencedOnly;
+  // OCR page-budget notices for this turn's files (persisted
+  // ``metadata.ocr_notices``; arrives with the refetch at done).
+  const rawOcrNotices = !isUser && !isAgentQuestion ? message.metadata?.ocr_notices : undefined;
+  const ocrNotices = Array.isArray(rawOcrNotices)
+    ? rawOcrNotices.filter((n): n is string => typeof n === "string" && n.trim() !== "")
+    : [];
   // «اقرأ الحكم كاملًا»: the ruling pages this reply quotes or corrects
   // (persisted ``metadata.library_links``; it arrives with the refetch at done).
   const libraryLinks =
@@ -528,6 +534,19 @@ export const MessageBubble = memo(function MessageBubble({
               <span className="text-xs font-semibold text-primary">
                 السؤال
               </span>
+            </div>
+          )}
+
+          {/* OCR page-budget notices (ocr_page_budget.md): which pages of the
+              turn's files were extracted — above the answer that rests on them. */}
+          {ocrNotices.length > 0 && (
+            <div
+              role="note"
+              className="mb-2.5 rounded-md border border-warning-fg/25 bg-warning px-3 py-2 text-xs leading-relaxed text-warning-fg tabular-nums [text-justify:auto] text-start"
+            >
+              {ocrNotices.map((line, i) => (
+                <p key={i}>{line}</p>
+              ))}
             </div>
           )}
 

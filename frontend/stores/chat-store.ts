@@ -262,6 +262,12 @@ export interface StreamState {
   isAgentRunning: boolean;
   runningAgentFamily: string | null;
   runningAgentSubtype: string | null;
+  /**
+   * The OCR step is extracting this turn's files (``ocr_progress`` →
+   * extracting, cleared by → done). The typing indicator then says
+   * «ريحان يستخرج المستندات» instead of «ريحان يفكّر».
+   */
+  extractingDocuments: boolean;
 }
 
 /**
@@ -516,6 +522,8 @@ interface ChatState {
     subtype?: string | null,
   ) => void;
   finishAgentRun: (conversationId: string) => void;
+  /** ``ocr_progress``: the OCR step started (true) or ended (false). */
+  setExtractingDocuments: (conversationId: string, extracting: boolean) => void;
   /** Mirror a reconnect attempt (``attempts`` = this send's count so far). */
   startReconnect: (conversationId: string, attempts: number) => void;
   resetReconnect: (conversationId: string) => void;
@@ -578,6 +586,7 @@ function newStreamState(sendId: number): StreamState {
     isAgentRunning: false,
     runningAgentFamily: null,
     runningAgentSubtype: null,
+    extractingDocuments: false,
   };
 }
 
@@ -1042,6 +1051,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     persistSplitRatio(clamped);
     set({ splitRatio: clamped });
   },
+
+  setExtractingDocuments: (conversationId, extracting) =>
+    set(
+      (state) =>
+        patchStream(state.streams, conversationId, () => ({
+          extractingDocuments: extracting,
+        })) ?? state,
+    ),
 
   startAgentRun: (conversationId, agentFamily, subtype) =>
     set(

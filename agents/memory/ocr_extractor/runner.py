@@ -48,7 +48,13 @@ _logfire = get_logfire()
 # URL; bigger ones take the big-file path (big_file.py). The upload routes cap
 # attachments separately (upload_session_service.MAX_FILE_SIZE).
 OCR_MAX_FILE_BYTES = 512 * 1024 * 1024
-__all__ = ["run_ocr_extraction", "OCR_MAX_FILE_BYTES", "budget_notices"]
+__all__ = [
+    "run_ocr_extraction",
+    "OCR_MAX_FILE_BYTES",
+    "OCR_FAILED_NOTICE",
+    "budget_notices",
+    "has_unread_attachments",
+]
 
 _SUPPORTED_MIME_TYPES = {"application/pdf", "image/png", "image/jpeg"}
 _SIGNED_URL_EXPIRY_S = 3600  # ~1 hour — Mistral fetches the file server-side
@@ -200,10 +206,18 @@ async def _read_budget(supabase: SupabaseClient, user_id: str) -> OcrBudget:
     return await quota.ocr_budget(supabase, user_id)
 
 
+#: The user's notice when a file could not be extracted at all.
+OCR_FAILED_NOTICE = (
+    "تعذّر استخراج بعض المرفقات، فتابع ريحان الإجابة دون الاستناد إلى محتواها."
+)
+
+
 def budget_notices(stats: OcrExtractionStats | None) -> list[str]:
     """The user-facing lines for this run's partial and unread files (D8b).
 
-    Shown by the orchestrator as ``status`` events, on both OCR paths.
+    Sent by the orchestrator in the ``ocr_progress`` event (phase ``done``) —
+    NOT as ``status``, which message_service never relays — and persisted on
+    the assistant row as ``metadata.ocr_notices``.
     """
     if stats is None:
         return []
@@ -213,17 +227,44 @@ def budget_notices(stats: OcrExtractionStats | None) -> list[str]:
     for pr in getattr(stats, "partial", None) or []:
         if pr.total_pages is None:
             lines.append(
-                f"قرأنا أول {len(pr.pages)} صفحة من «{pr.name}» حسب رصيدك، "
-                "وقد تكون فيه صفحات أخرى لم تُقرأ."
+                f"استخرجنا أول {len(pr.pages)} صفحة من «{pr.name}» حسب رصيدك، "
+                "وقد تكون فيه صفحات أخرى لم تُستخرج."
             )
         else:
             lines.append(
-                f"قرأنا {len(pr.pages)} صفحة من أصل {pr.total_pages} من «{pr.name}» "
-                f"حسب رصيدك: {format_ranges(pr.pages)}. بقية الصفحات لم تُقرأ."
+                f"استخرجنا {len(pr.pages)} صفحة من أصل {pr.total_pages} من «{pr.name}» "
+                f"حسب رصيدك: {format_ranges(pr.pages)}. بقية الصفحات لم تُستخرج."
             )
     for name in getattr(stats, "no_budget", None) or []:
-        lines.append(f"لم نقرأ «{name}» لأن رصيد قراءة الملفات نفد.")
+        lines.append(f"لم نستخرج «{name}» لأن رصيد استخراج الملفات نفد.")
     return lines
+
+
+def has_unread_attachments(supabase: SupabaseClient, conversation_id: str) -> bool:
+    """Whether this turn's OCR step has a file to extract — the same candidates
+    ``_run_inner`` would pick. Drives «ريحان يستخرج المستندات» in the client
+    while OCR runs. Best-effort: False on any failure (the indicator is cosmetic).
+    """
+    try:
+        rows = (
+            supabase.table("workspace_items")
+            .select("storage_path, metadata")
+            .eq("conversation_id", conversation_id)
+            .eq("kind", "attachment")
+            .is_("deleted_at", "null")
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    for r in getattr(rows, "data", None) or []:
+        meta = r.get("metadata") or {}
+        if "ocr_status" in meta or not r.get("storage_path"):
+            continue
+        if meta.get("upload_status") not in (None, "ready"):
+            continue
+        if meta.get("mime_type") in _SUPPORTED_MIME_TYPES:
+            return True
+    return False
 
 
 async def run_ocr_extraction(

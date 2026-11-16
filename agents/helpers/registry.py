@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Ceilings (helper_frame.md §7 Q1: per helper, today's values). OCR's is today's
 # whole-step budget. The summary and the pre-router hook had none (awaited until
 # they ended); 180 s only binds on a stalled provider, where today the turn hung.
-OCR_CEILING_S = 180.0
+OCR_CEILING_S = 600.0  # owner 2026-11-16: wait up to 10 min for big files (ocr_page_budget.md)
 SUMMARY_CEILING_S = 180.0
 PRE_ROUTER_MEMORY_CEILING_S = 180.0
 #: Same value as ``agents.orchestrator.MEMORY_WRITER_CEILING_S`` (a test pins it).

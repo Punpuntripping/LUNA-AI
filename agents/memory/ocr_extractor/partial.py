@@ -29,24 +29,25 @@ from .models import OcrPage
 
 def _gap_marker(first: int, last: int | None) -> str:
     if last is None:
-        return f"〔[نظام] ما بعد الصفحة {first - 1} لم يُقرأ.〕"
+        return f"〔[نظام] ما بعد الصفحة {first - 1} لم يُستخرج.〕"
     if first == last:
-        return f"〔[نظام] الصفحة {first} لم تُقرأ.〕"
-    return f"〔[نظام] الصفحات {first}–{last} ({last - first + 1} صفحة) لم تُقرأ.〕"
+        return f"〔[نظام] الصفحة {first} لم تُستخرج.〕"
+    return f"〔[نظام] الصفحات {first}–{last} ({last - first + 1} صفحة) لم تُستخرج.〕"
 
 
 def partial_header(read: Sequence[int], total_pages: int | None) -> str:
-    """The notice that opens a partial read's text."""
+    """The notice that opens a partial read's text (owner's wording 2026-11-16:
+    «استخراج», not «قراءة»)."""
     if total_pages is None:
         return (
-            f"〔[نظام] قُرئت أول {len(read)} صفحة فقط من هذا الملف بسبب حدّ رصيد "
-            "القراءة لدى المستخدم، وقد تكون فيه صفحات أخرى لم تُقرأ، فلا يُبنى على "
-            "ما لم يُقرأ ولا يُفترض.〕"
+            f"〔[نظام] استُخرجت أول {len(read)} صفحة فقط من هذا الملف بسبب حدّ رصيد "
+            "الاستخراج لدى المستخدم، وقد تكون فيه صفحات أخرى لم تُستخرج، فلا يُبنى "
+            "على ما لم يُستخرج ولا يُفترض.〕"
         )
     return (
-        f"〔[نظام] قُرئت {len(read)} صفحة فقط من أصل {total_pages} صفحة في هذا "
-        "الملف بسبب حدّ رصيد القراءة لدى المستخدم. الصفحات المقروءة: "
-        f"{format_ranges(read)}. لم تُقرأ بقية الصفحات، فلا يُبنى على محتواها "
+        f"〔[نظام] استُخرجت {len(read)} صفحة فقط من أصل {total_pages} صفحة في هذا "
+        "الملف بسبب حدّ رصيد الاستخراج لدى المستخدم. الصفحات المستخرجة: "
+        f"{format_ranges(read)}. لم تُستخرج بقية الصفحات، فلا يُبنى على محتواها "
         "ولا يُفترض.〕"
     )
 

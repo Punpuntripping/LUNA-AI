@@ -111,7 +111,9 @@ def test_the_summary_follows_ocr_and_runs_in_parallel():
 def test_ceilings():
     import agents.orchestrator as orch
 
-    assert registry.REGISTRY["ocr"].ceiling_s == 180.0
+    # 10 minutes since 2026-11-16 (big files, ocr_page_budget.md) — same as the
+    # inline path's wait in orchestrator.handle_message.
+    assert registry.REGISTRY["ocr"].ceiling_s == 600.0
     assert registry.REGISTRY["memory"].ceiling_s == orch.MEMORY_WRITER_CEILING_S == 60.0
     assert registry.REGISTRY["summary"].ceiling_s is not None
     assert registry.REGISTRY["pre_router_memory"].ceiling_s is not None

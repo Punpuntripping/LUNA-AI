@@ -72,7 +72,12 @@ from agents.memory.convo_memory_writer import (
     build_memory_writer_input,
     schedule_memory_writer,
 )
-from agents.memory.ocr_extractor import budget_notices, run_ocr_extraction
+from agents.memory.ocr_extractor import (
+    OCR_FAILED_NOTICE,
+    budget_notices,
+    has_unread_attachments,
+    run_ocr_extraction,
+)
 from agents.memory.summarize import summarize_workspace_item
 from agents.deep_search_v4.planner.logger import (
     EVENT_DECIDED,
@@ -140,6 +145,12 @@ MEMORY_WRITER_CEILING_S = 60.0
 _OCR_FAILED_STATUS = (
     "تعذّرت قراءة بعض المرفقات، وسيتابع المساعد الإجابة دون "
     "الاستناد إلى محتواها."
+)
+# The user's notice when OCR outran its ceiling on the helper frame: the run is
+# not cancelled, its text lands for the next turn.
+_OCR_STILL_RUNNING_NOTICE = (
+    "لم يكتمل استخراج المستندات بعد، فتابع ريحان الإجابة دونها؛ "
+    "سيكون محتواها متاحاً في رسالتك التالية."
 )
 
 
@@ -2788,12 +2799,16 @@ async def _handle_message_inner(
         ocr_item_ids: list[str] = []
         _ocr_failed = 0
         ocr_stats = None
+        # «ريحان يستخرج المستندات» while OCR runs (ocr_page_budget.md, owner 11-16).
+        _extracting = has_unread_attachments(supabase, conversation_id)
+        if _extracting:
+            yield {"type": "ocr_progress", "phase": "extracting"}
         try:
-            # Whole-step budget: N hung attachments (≤60s each after fix 2) must not
-            # eat the overall pipeline budget. Caps the worst case of k×60s.
+            # Whole-step budget — 10 minutes (owner 2026-11-16) for big files;
+            # the same as the helper frame's OCR ceiling.
             ocr_stats = await asyncio.wait_for(
                 run_ocr_extraction(supabase, conversation_id, user_id),
-                timeout=180.0,
+                timeout=600.0,
             )
             ocr_item_ids = ocr_stats.filled_item_ids
             _ocr_failed = ocr_stats.failed
@@ -2802,9 +2817,9 @@ async def _handle_message_inner(
             _ocr_failed = 1
         if _ocr_failed:
             yield {"type": "status", "text": _OCR_FAILED_STATUS}
-        # Page budget (ocr_page_budget.md D8b): say which pages of a file were read.
-        for _line in budget_notices(ocr_stats):
-            yield {"type": "status", "text": _line}
+        _notices = _ocr_notices(ocr_stats, failed=bool(_ocr_failed))
+        if _extracting or _notices:
+            yield {"type": "ocr_progress", "phase": "done", "notices": _notices}
 
         # 0b. Summarize the freshly-OCR'd attachments inline (awaited) before
         #     routing or resuming.
@@ -3059,17 +3074,38 @@ async def _run_pre_router_helpers(
     What changes: the summaries run in parallel, and an OCR run past its ceiling
     is not cancelled — its text and summaries land for the next turn.
     """
+    # «ريحان يستخرج المستندات» while OCR runs (ocr_page_budget.md, owner 11-16).
+    extracting = has_unread_attachments(turn.supabase, turn.conversation_id)
+    if extracting:
+        yield {"type": "ocr_progress", "phase": "extracting"}
     turn.start("ocr")
     ocr = (await turn.ready("router", only=("ocr",))).helper("ocr")
-    if ocr.reason == "timeout":
+    timed_out = ocr.reason == "timeout"
+    if timed_out:
         logger.warning("OCR past its ceiling; the router goes on without it")
     failed = (getattr(ocr.result, "failed", 0) or 0) if ocr.ok else 1
     if failed:
         yield {"type": "status", "text": _OCR_FAILED_STATUS}
-    # Page budget (ocr_page_budget.md D8b): say which pages of a file were read.
-    for line in budget_notices(ocr.result if ocr.ok else None):
-        yield {"type": "status", "text": line}
+    notices = _ocr_notices(ocr.result if ocr.ok else None, failed=bool(failed), timed_out=timed_out)
+    if extracting or notices:
+        yield {"type": "ocr_progress", "phase": "done", "notices": notices}
     await turn.ready("router", only=("summary",))
+
+
+def _ocr_notices(stats: "Any", *, failed: bool, timed_out: bool = False) -> list[str]:
+    """The user's notices for this turn's OCR (``ocr_progress`` → done).
+
+    ``status`` lines never reach the client (message_service drops them), so
+    these ride their own event and are persisted on the reply as
+    ``metadata.ocr_notices`` (ocr_page_budget.md D8b).
+    """
+    notices: list[str] = []
+    if timed_out:
+        notices.append(_OCR_STILL_RUNNING_NOTICE)
+    elif failed:
+        notices.append(OCR_FAILED_NOTICE)
+    notices.extend(budget_notices(stats))
+    return notices
 
 
 def _memory_consumer(agent_family: str | None) -> str:

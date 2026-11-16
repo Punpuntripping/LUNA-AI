@@ -875,6 +875,7 @@ export type {
   SSEAgentProgressData,
   SSEAgentProgress,
   SSEStatus,
+  SSEOcrProgress,
   SSEAgentRunFinished,
   SSEAgentQuestion,
   SSEAgentResumed,

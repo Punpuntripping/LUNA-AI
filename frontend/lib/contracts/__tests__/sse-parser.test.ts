@@ -136,9 +136,9 @@ test("unknown event names are dropped by toTypedSSEEvent", () => {
   assert.equal(toTypedSSEEvent({ event: "message", data: "{}", id: "" }), null);
 });
 
-test("SSE_EVENT_NAMES: 23 unique names", () => {
-  assert.equal(SSE_EVENT_NAMES.length, 23);
-  assert.equal(new Set(SSE_EVENT_NAMES).size, 23);
+test("SSE_EVENT_NAMES: 24 unique names", () => {
+  assert.equal(SSE_EVENT_NAMES.length, 24);
+  assert.equal(new Set(SSE_EVENT_NAMES).size, 24);
 });
 
 test("deep_search_gated is a known event with its payload typed", () => {

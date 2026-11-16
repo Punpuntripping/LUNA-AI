@@ -8,11 +8,18 @@ dispatched agent can see the document's text. See
 from __future__ import annotations
 
 from .models import OcrDocumentResult, OcrExtractionStats, OcrPage, PartialRead
-from .runner import budget_notices, run_ocr_extraction
+from .runner import (
+    OCR_FAILED_NOTICE,
+    budget_notices,
+    has_unread_attachments,
+    run_ocr_extraction,
+)
 
 __all__ = [
     "run_ocr_extraction",
     "budget_notices",
+    "has_unread_attachments",
+    "OCR_FAILED_NOTICE",
     "OcrDocumentResult",
     "OcrExtractionStats",
     "OcrPage",

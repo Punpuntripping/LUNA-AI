@@ -154,6 +154,61 @@ def test_init_request_outer_bound_is_250_mb():
         UploadInitRequest(filename="f.pdf", mime_type="application/pdf", size_bytes=250 * MB + 1)
 
 
+def test_ocr_progress_reaches_the_client_and_the_notices_are_saved(monkeypatch):
+    """`status` lines never reach the client; the OCR step's indicator and its
+    notices ride `ocr_progress` and the notices land in metadata.ocr_notices."""
+    import json
+
+    from backend.tests.test_deep_search_gate import CONV, USER as GATE_USER, _MsSupabase, run
+    from shared.privacy import PrivacyCodec
+
+    notice = "استخرجنا 100 صفحة من أصل 606 من «ملف.pdf» حسب رصيدك: 1–60، 314–333، 587–606. بقية الصفحات لم تُستخرج."
+
+    async def _check(*_a, **_k):
+        return None
+
+    async def _handle(**_kw):
+        yield {"type": "ocr_progress", "phase": "extracting"}
+        yield {"type": "status", "text": "internal line — never relayed"}
+        yield {"type": "ocr_progress", "phase": "done", "notices": [notice]}
+        yield {"type": "token", "text": "الجواب"}
+        yield {"type": "done", "usage": {}}
+
+    monkeypatch.setattr(quota, "check", _check)
+    monkeypatch.setattr(ms, "handle_message", _handle)
+    monkeypatch.setattr(ms, "_insert_turn_rows", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "write_audit_log", lambda *a, **k: None)
+    monkeypatch.setattr(ms, "_merged_message_metadata", lambda _sb, _mid, patch: dict(patch))
+    monkeypatch.setattr(ms, "build_turn_codec",
+                        lambda *a, **k: PrivacyCodec(real_to_fake={}, fake_to_real={}, enabled=False))
+
+    async def _connected() -> bool:
+        return False
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(redis=None)), is_disconnected=_connected,
+    )
+    fake = _MsSupabase()
+
+    async def _drain() -> list[str]:
+        return [chunk async for chunk in ms.send_message_stream(
+            fake, user_id=GATE_USER, conversation_id=CONV,
+            conv={"conversation_id": CONV, "case_id": None, "message_count": 2},
+            content="اش تقول الدعوى 410654", request=request, attachment_ids=None,
+        )]
+
+    events = []
+    for chunk in run(_drain()):
+        lines = dict(ln.split(": ", 1) for ln in chunk.strip().splitlines() if ": " in ln)
+        events.append((lines.get("event", ""), json.loads(lines.get("data", "{}"))))
+
+    ocr = [d for n, d in events if n == "ocr_progress"]
+    assert ocr == [{"phase": "extracting", "notices": []}, {"phase": "done", "notices": [notice]}]
+    assert "status" not in [n for n, _ in events]
+    metas = [u["metadata"] for t, u in fake.updates if t == "messages" and "metadata" in u]
+    assert metas and metas[-1]["ocr_notices"] == [notice]
+
+
 def test_page_counts_on_db_failure():
     assert ms._attachment_page_counts(_DB(fail=True), ["a", "b"]) == [1, 1]
     assert ms._attachment_page_counts(_DB(), []) == []

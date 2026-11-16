@@ -22,6 +22,9 @@ const ROTATION_MS = 7000;
 /** Used before any agent family is known (classifier still deciding). */
 const DEFAULT_PHRASES = ["يفكّر", "يتفكّر", "يحلّل"];
 
+/** While the OCR step extracts this turn's files (``ocr_progress``). */
+const EXTRACTING_PHRASES = ["يستخرج المستندات"];
+
 /** Used while a specific agent family is running. Keys match `agent_family`. */
 const AGENT_PHRASES: Record<string, string[]> = {
   deep_search: ["يبحث بعمق", "يحلّل المصادر", "يراجع الأنظمة"],
@@ -50,7 +53,11 @@ export function TypingIndicator({
   const runningAgentFamily = useChatStore(
     (s) => s.streams[conversationId]?.runningAgentFamily ?? null,
   );
-  const phrases = getPhrases(runningAgentFamily);
+  const extracting = useChatStore(
+    (s) => s.streams[conversationId]?.extractingDocuments ?? false,
+  );
+  // The OCR step runs before the router picks a family, so it wins while on.
+  const phrases = extracting ? EXTRACTING_PHRASES : getPhrases(runningAgentFamily);
 
   const [index, setIndex] = useState(0);
 

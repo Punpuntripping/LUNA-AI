@@ -1048,6 +1048,10 @@ async def send_message_stream(
     # Server-only `reply_metadata` (artifact_analyzer): merged into
     # messages.metadata at `done`, decoded, never sent to the client.
     captured_reply_metadata: dict = {}
+    # OCR page-budget notices (ocr_page_budget.md D8b): «استخرجنا 100 صفحة من
+    # أصل …» — from the `ocr_progress` (phase done) event, persisted to
+    # messages.metadata.ocr_notices at `done`.
+    captured_ocr_notices: list[str] = []
 
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
@@ -1152,6 +1156,21 @@ async def send_message_stream(
                             captured_referenced_ids.append(ref_id)
                         await queue.put(_sse_event("referenced_existing_item", {
                             "item_id": ref_id,
+                        }))
+
+                    elif event_type == "ocr_progress":
+                        # «ريحان يستخرج المستندات» while OCR runs, then the
+                        # page-budget notices. Static Arabic built from page
+                        # numbers and the user's own filename — store-real, no
+                        # decode. Unknown to older clients (ignored).
+                        notices = [
+                            str(n) for n in (event.get("notices") or []) if str(n).strip()
+                        ]
+                        if notices:
+                            captured_ocr_notices[:] = notices
+                        await queue.put(_sse_event("ocr_progress", {
+                            "phase": event.get("phase", ""),
+                            "notices": notices,
                         }))
 
                     elif event_type == "status":
@@ -1360,6 +1379,8 @@ async def send_message_stream(
                                     meta_patch.update(captured_follow_up)
                                 if captured_templates_used is not None:
                                     meta_patch["templates_used"] = captured_templates_used
+                                if captured_ocr_notices:
+                                    meta_patch["ocr_notices"] = captured_ocr_notices
                                 meta_patch.update(captured_reply_metadata)
                                 if meta_patch:
                                     try:

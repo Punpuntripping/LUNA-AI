@@ -145,8 +145,8 @@ function PartialReadNote({ meta }: { meta: AttachmentMetadata }) {
     .join("، ");
   const text =
     meta.ocr_page_total
-      ? `قُرئت ${read} صفحة من أصل ${meta.ocr_page_total} حسب رصيدك: ${ranges}`
-      : `قُرئت أول ${read} صفحة حسب رصيدك، وقد تكون في الملف صفحات أخرى لم تُقرأ`;
+      ? `استُخرجت ${read} صفحة من أصل ${meta.ocr_page_total} حسب رصيدك: ${ranges}`
+      : `استُخرجت أول ${read} صفحة حسب رصيدك، وقد تكون في الملف صفحات أخرى لم تُستخرج`;
   return (
     <div className="border-b bg-warning px-3 py-1.5 text-xs text-warning-fg tabular-nums">
       {text}

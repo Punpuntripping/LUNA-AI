@@ -30,17 +30,16 @@ MISTRAL_MAX_BYTES = 50 * 1024 * 1024
 # expiry ``asyncio.wait_for`` cancels the SDK call → TimeoutError escapes
 # ocr_document → the runner marks the row ``failed`` (never retried) and the
 # turn continues without it. Measured 2026-11-16: a call took 45–60 s whatever
-# its size (1 page: 47 s; 30 pages: 57 s), so the old flat 60 s sat at the edge.
-OCR_TIMEOUT_S = 120.0
-OCR_TIMEOUT_PER_PAGE_S = 1.0
-OCR_TIMEOUT_MAX_S = 600.0
+# its size locally (1 page: 47 s; 30 pages: 57 s), but from production two
+# 50-page calls did not return within 170 s and the file was lost. Owner
+# 2026-11-16: 10 minutes; the user sees «ريحان يستخرج المستندات» meanwhile
+# (agents/helpers/registry.OCR_CEILING_S waits as long).
+OCR_TIMEOUT_S = 600.0
 
 
-def ocr_timeout_s(page_count: int | None) -> float:
-    """The timeout for one call reading ``page_count`` pages (None = unknown)."""
-    if not page_count:
-        return OCR_TIMEOUT_S
-    return min(OCR_TIMEOUT_MAX_S, OCR_TIMEOUT_S + OCR_TIMEOUT_PER_PAGE_S * page_count)
+def ocr_timeout_s(page_count: int | None = None) -> float:  # noqa: ARG001 — kept for callers
+    """The timeout for one OCR call: 10 minutes, whatever its size."""
+    return OCR_TIMEOUT_S
 
 # MIME types Mistral OCR accepts in this module.
 _PDF_MIME = "application/pdf"

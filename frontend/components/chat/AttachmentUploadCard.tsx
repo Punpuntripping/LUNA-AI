@@ -185,13 +185,13 @@ export function AttachmentUploadCard({
             className="text-xs text-warning-fg tabular-nums"
             title={
               partialRead.pages.length > 0
-                ? `الصفحات التي ستُقرأ: ${formatRanges(partialRead.pages)} — حسب رصيدك`
-                : "نفد رصيد قراءة الملفات"
+                ? `الصفحات التي سنستخرجها: ${formatRanges(partialRead.pages)} — حسب رصيدك`
+                : "نفد رصيد استخراج الملفات"
             }
           >
             {partialRead.pages.length > 0
-              ? `سيُقرأ ${partialRead.pages.length} من ${partialRead.totalPages} صفحة`
-              : "نفد رصيد قراءة الملفات"}
+              ? `سنستخرج ${partialRead.pages.length} من ${partialRead.totalPages} صفحة`
+              : "نفد رصيد استخراج الملفات"}
           </p>
         )}
       </div>

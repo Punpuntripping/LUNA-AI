@@ -33,30 +33,30 @@ def _fits(text, pages):
 def test_partial_text_marks_every_gap():
     numbers = pick_pages(606, 100)
     text, anchored = assemble_partial(_pages(numbers), 606)
-    assert text.startswith("〔[نظام] قُرئت 100 صفحة فقط من أصل 606 صفحة")
+    assert text.startswith("〔[نظام] استُخرجت 100 صفحة فقط من أصل 606 صفحة")
     assert "1–60، 314–333، 587–606" in text.split("\n\n")[0]
-    assert "〔[نظام] الصفحات 61–313 (253 صفحة) لم تُقرأ.〕" in text
-    assert "〔[نظام] الصفحات 334–586 (253 صفحة) لم تُقرأ.〕" in text
+    assert "〔[نظام] الصفحات 61–313 (253 صفحة) لم تُستخرج.〕" in text
+    assert "〔[نظام] الصفحات 334–586 (253 صفحة) لم تُستخرج.〕" in text
     assert text.endswith("نص الصفحة 606")  # last block reaches the end: no tail marker
     assert _fits(text, anchored)
 
 
 def test_partial_text_tail_marker_and_single_page_gap():
     text, anchored = assemble_partial(_pages([1, 3]), 5)
-    assert "〔[نظام] الصفحة 2 لم تُقرأ.〕" in text
-    assert text.endswith("〔[نظام] الصفحات 4–5 (2 صفحة) لم تُقرأ.〕")
+    assert "〔[نظام] الصفحة 2 لم تُستخرج.〕" in text
+    assert text.endswith("〔[نظام] الصفحات 4–5 (2 صفحة) لم تُستخرج.〕")
     assert _fits(text, anchored)
 
 
 def test_partial_text_unknown_length():
     text, anchored = assemble_partial(_pages(range(1, 11)), None)
-    assert text.startswith("〔[نظام] قُرئت أول 10 صفحة فقط من هذا الملف")
-    assert text.endswith("〔[نظام] ما بعد الصفحة 10 لم يُقرأ.〕")
+    assert text.startswith("〔[نظام] استُخرجت أول 10 صفحة فقط من هذا الملف")
+    assert text.endswith("〔[نظام] ما بعد الصفحة 10 لم يُستخرج.〕")
     assert _fits(text, anchored)
 
 
 def test_header_never_claims_more_than_read():
-    assert "قُرئت 2 صفحة فقط من أصل 10" in partial_header([1, 2], 10)
+    assert "استُخرجت 2 صفحة فقط من أصل 10" in partial_header([1, 2], 10)
 
 
 # ── cutting ──────────────────────────────────────────────────────────────────
@@ -235,13 +235,13 @@ async def test_pro_606_pages_reads_100_and_marks_the_rest(monkeypatch, env):
     assert meta["ocr_status"] == "done" and meta["ocr_pages"] == 100
     assert meta["ocr_partial"] is True and meta["ocr_page_total"] == 606
     assert meta["ocr_page_ranges"] == [[1, 60], [314, 333], [587, 606]]
-    assert row["content_md"].startswith("〔[نظام] قُرئت 100 صفحة فقط من أصل 606")
+    assert row["content_md"].startswith("〔[نظام] استُخرجت 100 صفحة فقط من أصل 606")
     pages = db.tables["attachment_pages"]
     rows = [PageRow(p["page_no"], p["char_start"], p["content_md"]) for p in pages]
     assert len(_valid_pages(row["content_md"], rows)) == 100
     assert stats.partial == [PartialRead("big", "ملف.pdf", pick_pages(606, 100), 606)]
     assert ocr_runner.budget_notices(stats) == [
-        "قرأنا 100 صفحة من أصل 606 من «ملف.pdf» حسب رصيدك: 1–60، 314–333، 587–606. بقية الصفحات لم تُقرأ."
+        "استخرجنا 100 صفحة من أصل 606 من «ملف.pdf» حسب رصيدك: 1–60، 314–333، 587–606. بقية الصفحات لم تُستخرج."
     ]
 
 
@@ -273,7 +273,7 @@ async def test_no_pages_left_leaves_the_file_for_later(monkeypatch, env):
     stats = await ocr_runner.run_ocr_extraction(db, "c1", USER)
     assert "ocr_status" not in db.tables["workspace_items"][0]["metadata"]
     assert stats.no_budget == ["ملف.pdf"] and env["big"] == env["url"] == []
-    assert ocr_runner.budget_notices(stats) == ["لم نقرأ «ملف.pdf» لأن رصيد قراءة الملفات نفد."]
+    assert ocr_runner.budget_notices(stats) == ["لم نستخرج «ملف.pdf» لأن رصيد استخراج الملفات نفد."]
 
 
 @pytest.mark.asyncio
@@ -307,9 +307,38 @@ async def test_cutting_failure_falls_back_to_the_whole_file(monkeypatch, env):
     assert stats.partial and stats.failed == 0
 
 
+def test_has_unread_attachments():
+    done = _row("done", 5)
+    done["metadata"]["ocr_status"] = "done"
+    uploading = _row("up", 5)
+    uploading["metadata"]["upload_status"] = "uploading"
+    word = _row("w", 5)
+    word["metadata"]["mime_type"] = "application/msword"
+    assert not ocr_runner.has_unread_attachments(
+        FakeSupabase({"workspace_items": [done, uploading, word]}), "c1",
+    )
+    assert ocr_runner.has_unread_attachments(
+        FakeSupabase({"workspace_items": [done, _row("new", 606)]}), "c1",
+    )
+    assert not ocr_runner.has_unread_attachments(
+        FakeSupabase({"workspace_items": [_row("x", 1)]}, fail={"workspace_items"}), "c1",
+    )
+
+
+def test_orchestrator_notices():
+    import agents.orchestrator as orch
+
+    stats = OcrExtractionStats(partial=[PartialRead("x", "ملف.pdf", pick_pages(606, 100), 606)])
+    assert orch._ocr_notices(stats, failed=False)[0].startswith("استخرجنا 100 صفحة من أصل 606")
+    assert orch._ocr_notices(None, failed=True) == [ocr_runner.OCR_FAILED_NOTICE]
+    still = orch._ocr_notices(None, failed=True, timed_out=True)
+    assert still == [orch._OCR_STILL_RUNNING_NOTICE]
+    assert orch._ocr_notices(OcrExtractionStats(), failed=False) == []
+
+
 def test_notice_for_unknown_length():
     stats = OcrExtractionStats(partial=[PartialRead("x", "ملف.pdf", tuple(range(1, 101)), None)])
     assert ocr_runner.budget_notices(stats) == [
-        "قرأنا أول 100 صفحة من «ملف.pdf» حسب رصيدك، وقد تكون فيه صفحات أخرى لم تُقرأ."
+        "استخرجنا أول 100 صفحة من «ملف.pdf» حسب رصيدك، وقد تكون فيه صفحات أخرى لم تُستخرج."
     ]
     assert ocr_runner.budget_notices(None) == []
