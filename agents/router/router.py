@@ -32,6 +32,7 @@ from pydantic_ai.usage import UsageLimits
 from supabase import Client as SupabaseClient
 
 from agents.models import CheckPriorReports, ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
+from agents.utils.history import strip_system_tags
 from agents.tool_repository.edit_artifact import register_edit_artifact
 from agents.tool_repository.rayhan_docs import register_rayhan_docs
 from agents.tool_repository.save_memo import register_save_memo
@@ -279,7 +280,7 @@ The workspace holds the user's own documents — the files they uploaded (`kind=
 2. **Open it** with `unfold_workspace_item("WI-N")` and find the passage. Open several items in parallel when it could be in any of them. Dates and numbers in an uploaded text are often in Arabic-Indic digits (٢٥/٣/١٤٤٧) where the user typed Latin ones (25/3/1447) — they are the same.
 3. **Answer** with `ChatResponse`: the document (its title as the user sees it), where in it (the section, whose statement it is, the numbered point, the page when the text marks one), and the passage quoted word for word. Answer what was asked — the location and the text — and add nothing the document does not say.
 
-- If you cannot tell which item the user means, ask before opening anything: name the likely items by their titles.
+- **A vague pointer is a question, not a search.** When the message does not quote or name what it asks about, or leaves open which document it means — «وين مكتوب هذا الكلام؟»، «وين ذكروا هذا؟»، «في أي ملف؟» — do not open documents and guess, and do not take «هذا» to mean our last reply: that reply holds several statements. Ask instead, in one short `ChatResponse`, without opening anything — the summaries in your context are enough: list the candidate documents, each by its title as the user sees it and a few words from its summary saying what it is («ضبط الجلسة الثانية — فيه صحيفة الدعوى ومذكرة المدعي الجوابية»), and ask which one they mean — and which statement, if that is unclear too.
 - If the passage is not in the items you opened, say so plainly and ask which document they mean. Never give a location you did not read.
 - This is not `CheckPriorReports`: that check is for a question that may need a new search. Finding a passage in documents we already hold needs none.
 - A **library** source stays with simple_search: a نظام, مادة, حكم, تعميم or خدمة cited in one of our reports is opened by simple_search (§ the source rule below). The test is whose document it is — **the user's file or our own output: open it yourself; a document from the legal library: route it.**
@@ -522,6 +523,19 @@ def _validate_and_resolve_dispatch(
     (legacy schema bleed-through), the aliases-derived values overwrite
     them so the orchestrator always sees the canonical resolved UUIDs.
     """
+    if isinstance(value, ChatResponse):
+        # A system marker the model copied into its reply never reaches the user.
+        cleaned = strip_system_tags(value.message)
+        if cleaned != value.message:
+            if not cleaned:
+                raise ModelRetry(
+                    "Your reply was only a 〔[نظام] …〕 marker. Those markers are "
+                    "context only — write the reply itself."
+                )
+            logger.warning("router reply carried a system marker; stripped")
+            value.message = cleaned
+        return value
+
     if not isinstance(value, (DispatchAgent, CheckPriorReports)):
         return value
 

@@ -627,3 +627,28 @@ def test_resumed_simple_search_fallback_answers_from_what_we_hold(revert_env):
     assert _CRASH_TEXT not in _texts(events)
     assert revert_env.kwargs is not None and revert_env.kwargs["question"] == "في مذكرة المدعي"
     assert types.index("agent_run_finished") < types.index("token")
+
+
+# --------------------------------------------------------------------------- #
+# A system marker the router copies into its own reply never reaches the user
+# --------------------------------------------------------------------------- #
+
+
+def test_a_copied_system_marker_is_stripped_from_the_reply():
+    reply = ChatResponse(message="〔[نظام] هذا الردّ يستوضح المقصود قبل البحث〕\n\nأي عبارة تقصد؟")
+
+    out = rr._validate_and_resolve_dispatch(_router_ctx(None), reply)
+
+    assert out.message == "أي عبارة تقصد؟"
+
+
+def test_a_reply_that_is_only_a_marker_is_sent_back():
+    with pytest.raises(ModelRetry):
+        rr._validate_and_resolve_dispatch(
+            _router_ctx(None), ChatResponse(message="〔[نظام] هذا الردّ يستوضح المقصود〕"),
+        )
+
+
+def test_an_ordinary_reply_is_untouched():
+    reply = ChatResponse(message="الموضع في ضبط الجلسة الثانية (WI-5)، الصفحة ٢.")
+    assert rr._validate_and_resolve_dispatch(_router_ctx(None), reply).message == reply.message

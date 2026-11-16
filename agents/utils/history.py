@@ -1,6 +1,8 @@
 """Convert DB message rows to Pydantic AI ModelMessage list."""
 from __future__ import annotations
 
+import re
+
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -40,6 +42,21 @@ _SYSTEM_LINE_BRACKETS = str.maketrans("〔〕﹝﹞", "()()")
 #: A title sits in «…» inside such a line, so a title's own » would let the rest of
 #: it read as the app's words.
 _TITLE_QUOTES = str.maketrans("«»", '""')
+
+
+_SYSTEM_TAG_RE = re.compile(r"〔\[نظام\][^〔〕]*〕[ \t]*\n?")
+
+
+def strip_system_tags(text: str) -> str:
+    """``text`` without any 〔[نظام] …〕 marker a model copied into its reply.
+
+    The markers are written by the app into what agents read; a reply that
+    imitates one (seen 2026-11-16: «〔[نظام] هذا الردّ يستوضح المقصود قبل
+    البحث〕») would show the user a system line. Unchanged when there is none.
+    """
+    if not text or "〔[نظام]" not in text:
+        return text
+    return _SYSTEM_TAG_RE.sub("", text).strip()
 
 
 def neutralize_system_brackets(text: str) -> str:
