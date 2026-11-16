@@ -130,7 +130,7 @@ async def test_ocr_big_pdf_maps_pages_back(monkeypatch, tmp_path):
 
     calls = []
 
-    async def fake_ocr(url, mime, pages=None, *, expected_pages=None):
+    async def fake_ocr(url, mime, pages=None, *, expected_pages=None, timeout_s=None):
         assert url.startswith("data:application/pdf;base64,") and pages is None
         calls.append(expected_pages)
         return OcrDocumentResult(

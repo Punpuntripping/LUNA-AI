@@ -34,11 +34,14 @@ MISTRAL_MAX_BYTES = 50 * 1024 * 1024
 # 50-page calls did not return within 170 s and the file was lost. Owner
 # 2026-11-16: 10 minutes; the user sees «ريحان يستخرج المستندات» meanwhile
 # (agents/helpers/registry.OCR_CEILING_S waits as long).
-OCR_TIMEOUT_S = 600.0
+# 9 minutes, not 10: when Mistral fails the text-layer fallback needs time
+# inside the same 10-minute wait (helper OCR_CEILING_S). In practice Mistral's
+# own gateway drops a stuck call at about 4 minutes (ReadError, 2026-11-16).
+OCR_TIMEOUT_S = 540.0
 
 
 def ocr_timeout_s(page_count: int | None = None) -> float:  # noqa: ARG001 — kept for callers
-    """The timeout for one OCR call: 10 minutes, whatever its size."""
+    """The timeout for one OCR call: 9 minutes, whatever its size."""
     return OCR_TIMEOUT_S
 
 # MIME types Mistral OCR accepts in this module.
@@ -65,6 +68,7 @@ async def ocr_document(
     pages: Sequence[int] | None = None,
     *,
     expected_pages: int | None = None,
+    timeout_s: float | None = None,
 ) -> OcrDocumentResult:
     """Run Mistral OCR on a single document given its URL.
 
@@ -76,6 +80,7 @@ async def ocr_document(
             Ignored for images (one page).
         expected_pages: the document's length when ``pages`` is None and it
             is known (a cut) — sizes the timeout.
+        timeout_s: overrides the timeout (a caller with its own deadline).
 
     Returns:
         An ``OcrDocumentResult`` with the joined page markdown, the number of
@@ -98,7 +103,8 @@ async def ocr_document(
     try:
         response = await asyncio.wait_for(
             client.ocr.process_async(model=model, document=document, **kwargs),
-            timeout=ocr_timeout_s(len(pages) if pages is not None else expected_pages),
+            timeout=timeout_s if timeout_s is not None
+            else ocr_timeout_s(len(pages) if pages is not None else expected_pages),
         )
     finally:
         # The SDK holds an httpx client; close it so we don't leak sockets.

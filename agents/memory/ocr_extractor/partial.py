@@ -52,33 +52,106 @@ def partial_header(read: Sequence[int], total_pages: int | None) -> str:
     )
 
 
-def assemble_partial(
-    pages: Sequence[OcrPage], total_pages: int | None
-) -> tuple[str, list[OcrPage]]:
-    """``content_md`` for a partial read, plus each page re-anchored in it.
+def text_layer_header(pages: Sequence[int]) -> str:
+    """The notice for pages read from the PDF's own text layer (Mistral failed)."""
+    return (
+        f"〔[نظام] تعذّر OCR على الصفحات {format_ranges(pages)} فاستُخرج نصها من "
+        "طبقة النص المخزّنة في الملف نفسه: كلماتها دقيقة، لكن الأرقام والتواريخ "
+        "والجداول فيها قد تكون مبعثرة أو مقلوبة الترتيب، فلا يُعتمد على ترتيبها "
+        "دون تحقّق.〕"
+    )
 
-    ``pages`` are the pages OCR returned (any ``char_start`` on them is ignored).
-    ``total_pages`` None = the document's length is unknown; the text then says
-    there may be more after the last page read.
+
+def _lost_marker(first: int, last: int) -> str:
+    if first == last:
+        return f"〔[نظام] تعذّر استخراج الصفحة {first}.〕"
+    return f"〔[نظام] تعذّر استخراج الصفحات {first}–{last}.〕"
+
+
+def _text_layer_marker(first: int, last: int) -> str:
+    span = str(first) if first == last else f"{first}–{last}"
+    return f"〔[نظام] من طبقة نص الملف: {'الصفحة' if first == last else 'الصفحات'} {span}.〕"
+
+
+def _runs(pages: Sequence[int]) -> list[tuple[int, int]]:
+    runs: list[tuple[int, int]] = []
+    for p in sorted(pages):
+        if runs and p == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], p)
+        else:
+            runs.append((p, p))
+    return runs
+
+
+def assemble_marked(
+    pages: Sequence[OcrPage],
+    total_pages: int | None,
+    *,
+    budget_partial: bool,
+    text_layer_pages: Sequence[int] = (),
+    lost_pages: Sequence[int] = (),
+) -> tuple[str, list[OcrPage]]:
+    """``content_md`` for a read that is partial (budget), mixed (some pages
+    from the text layer) or lossy (pages neither source could read), plus each
+    page re-anchored in it.
+
+    ``pages`` are the pages read, from either source (any ``char_start`` on
+    them is ignored). ``total_pages`` None = the document's length is unknown.
+    Missing pages are marked as never extracted (budget) or as failed (lost);
+    a run of text-layer pages is announced where it starts.
     """
     ordered = sorted(pages, key=lambda p: p.page_no)
     read = [p.page_no for p in ordered]
-    parts: list[str] = [partial_header(read, total_pages)]
+    lost = set(lost_pages)
+    from_layer = set(text_layer_pages)
+    layer_starts = {first for first, _ in _runs(from_layer)}
+    layer_run_end = dict(_runs(from_layer))
+
+    parts: list[str] = []
+    if budget_partial:
+        parts.append(partial_header(read, total_pages))
+    if from_layer:
+        parts.append(text_layer_header(sorted(from_layer)))
+
+    def gap(first: int, last: int | None) -> None:
+        if last is None:
+            parts.append(_gap_marker(first, None))
+            return
+        # Split the missing run into lost pages and pages the budget skipped.
+        p = first
+        while p <= last:
+            kind = p in lost
+            q = p
+            while q + 1 <= last and ((q + 1) in lost) == kind:
+                q += 1
+            parts.append(_lost_marker(p, q) if kind else _gap_marker(p, q))
+            p = q + 1
+
     page_slots: list[int] = []
     prev = 0
     for p in ordered:
         if p.page_no > prev + 1:
-            parts.append(_gap_marker(prev + 1, p.page_no - 1))
+            gap(prev + 1, p.page_no - 1)
+        if p.page_no in layer_starts:
+            parts.append(_text_layer_marker(p.page_no, layer_run_end[p.page_no]))
         page_slots.append(len(parts))
         parts.append(p.markdown)
         prev = p.page_no
     if total_pages is None:
-        parts.append(_gap_marker(prev + 1, None))
+        if budget_partial:
+            gap(prev + 1, None)
     elif prev < total_pages:
-        parts.append(_gap_marker(prev + 1, total_pages))
+        gap(prev + 1, total_pages)
 
     text, offsets = join_pages(parts)
     return text, [
         OcrPage(page_no=p.page_no, markdown=p.markdown, char_start=offsets[slot])
         for p, slot in zip(ordered, page_slots)
     ]
+
+
+def assemble_partial(
+    pages: Sequence[OcrPage], total_pages: int | None
+) -> tuple[str, list[OcrPage]]:
+    """``content_md`` for a partial (budget) read — see :func:`assemble_marked`."""
+    return assemble_marked(pages, total_pages, budget_partial=True)

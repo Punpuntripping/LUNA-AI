@@ -216,6 +216,25 @@ question). Changes:
 - Owner wording: «استخراج» not «قراءة» everywhere (composer «سنستخرج 100 من 606 صفحة», notices,
   banner, and the agent-facing markers «استُخرجت … / لم تُستخرج»).
 
+**Text-layer fallback (owner 2026-11-16, built, NOT committed/deployed):** Mistral multi-page OCR stalled
+for both keys that evening (1 page OK; 10+ pages hung; its gateway dropped calls at ~240 s). When Mistral
+fails, the planned pages are read from the PDF's own text layer — `agents/memory/ocr_extractor/text_layer.py`
+(pypdf `extract_text` + NFKC, tatweel, diacritic spacing, bracket mirroring when flipped, Arabic-Indic digit
+runs reversed when the document's years say so — decided once per file from 20 sampled pages).
+- Cutting path: per-cut fallback; the first outage-type error (timeout, connection, 5xx, 429) sends the rest
+  of the file straight to the text layer; one Mistral deadline per file (`MISTRAL_DEADLINE_S` 480 s) so the
+  fallback lands inside the 10-minute wait. Whole-file URL path: `text_layer_document`. Mistral per-call
+  timeout 540 s.
+- **Free:** only Mistral pages are billed (`OcrDocumentResult.billed_pages`); a file read wholly from the
+  text layer writes no ledger row. Image pages with no text layer are "lost" (marked, told to the user).
+- Markers: header + «من طبقة نص الملف: الصفحات …» before each text-layer run, «تعذّر استخراج الصفحات …» for
+  lost pages; budget gaps keep «لم تُستخرج». Metadata `ocr_text_layer_ranges`, `ocr_lost_ranges`.
+- Quality (artifact https://claude.ai/artifact/J2iUn9MLWMXBQZ36Kmeg7u): words 93–96% vs Mistral and exact
+  where Mistral misread (يحوز→يجوز); dates' parts scatter in the line; tables flatten.
+- Real file with Mistral forced down: 96/100 pages from the text layer in 13 s, 4 image pages lost, 0 billed.
+- Reviewed by an independent agent; its 4 fixes applied (per-file deadline + breaker, per-file digit
+  decision, error logging, digits count toward "usable").
+
 **Real-file test** — `مدونة السوابق القضائية التأمينية.pdf` (202 MB, 1,183 pages), full runner with real
 Mistral; only the DB, the storage download and the quota read faked (Pro: 150 pages, none used):
 100 pages read (1–60, 602–621, 1164–1183) in 85–101 s, billed 100 pages ($0.10), 100 page rows all fit

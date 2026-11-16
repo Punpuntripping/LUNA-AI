@@ -27,6 +27,10 @@ interface AttachmentMetadata {
   ocr_pages?: number;
   ocr_page_total?: number | null;
   ocr_page_ranges?: [number, number][];
+  /** Pages read from the PDF's own text layer because Mistral failed (free). */
+  ocr_text_layer_ranges?: [number, number][];
+  /** Planned pages neither Mistral nor the text layer could read. */
+  ocr_lost_ranges?: [number, number][];
   /**
    * Retention-sweep marker (backend/app/services/attachment_cleanup.py): the
    * original file has been removed from storage. The item and its extracted
@@ -67,7 +71,9 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
   if (ocrText && (purged || !showOriginal)) {
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col">
-      {meta.ocr_partial && <PartialReadNote meta={meta} />}
+      {(meta.ocr_partial || meta.ocr_text_layer_ranges || meta.ocr_lost_ranges) && (
+        <PartialReadNote meta={meta} />
+      )}
       <ArtifactPreview
         content={ocrText}
         copyLabel="نسخ النص المستخرج"
@@ -139,17 +145,30 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
  * same notice and a marker at every skipped run, for the agents.
  */
 function PartialReadNote({ meta }: { meta: AttachmentMetadata }) {
+  const fmt = (runs?: [number, number][]) =>
+    (runs ?? []).map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join("، ");
   const read = meta.ocr_pages ?? 0;
-  const ranges = (meta.ocr_page_ranges ?? [])
-    .map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`))
-    .join("، ");
-  const text =
-    meta.ocr_page_total
-      ? `استُخرجت ${read} صفحة من أصل ${meta.ocr_page_total} حسب رصيدك: ${ranges}`
-      : `استُخرجت أول ${read} صفحة حسب رصيدك، وقد تكون في الملف صفحات أخرى لم تُستخرج`;
+  const lines: string[] = [];
+  if (meta.ocr_partial) {
+    lines.push(
+      meta.ocr_page_total
+        ? `استُخرجت ${read} صفحة من أصل ${meta.ocr_page_total} حسب رصيدك: ${fmt(meta.ocr_page_ranges)}`
+        : `استُخرجت أول ${read} صفحة حسب رصيدك، وقد تكون في الملف صفحات أخرى لم تُستخرج`,
+    );
+  }
+  if (meta.ocr_text_layer_ranges?.length) {
+    lines.push(
+      `الصفحات ${fmt(meta.ocr_text_layer_ranges)} من طبقة النص في الملف لا من OCR، ولم تُحسب من رصيدك؛ قد تكون الأرقام والتواريخ والجداول فيها غير مرتّبة`,
+    );
+  }
+  if (meta.ocr_lost_ranges?.length) {
+    lines.push(`تعذّر استخراج الصفحات ${fmt(meta.ocr_lost_ranges)}`);
+  }
   return (
     <div className="border-b bg-warning px-3 py-1.5 text-xs text-warning-fg tabular-nums">
-      {text}
+      {lines.map((l, i) => (
+        <p key={i}>{l}</p>
+      ))}
     </div>
   );
 }

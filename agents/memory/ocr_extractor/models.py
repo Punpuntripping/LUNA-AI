@@ -35,6 +35,10 @@ class OcrDocumentResult:
             built exactly as before; the pages are extra.
         total_pages: The document's real page count when it was counted (the
             big-file path parses the PDF); None otherwise.
+        text_layer_pages: Pages whose text came from the PDF's own text layer
+            because Mistral failed on them (text_layer.py). Never billed.
+        lost_pages: Planned pages neither source could read (Mistral failed
+            and the page has no text layer — an image page).
     """
 
     text: str
@@ -42,6 +46,14 @@ class OcrDocumentResult:
     model: str
     pages: list[OcrPage] = field(default_factory=list)
     total_pages: int | None = None
+    text_layer_pages: tuple[int, ...] = ()
+    lost_pages: tuple[int, ...] = ()
+
+    @property
+    def billed_pages(self) -> int:
+        """Pages Mistral extracted — what counts against the user's OCR pages.
+        Text-layer pages are free (owner, 2026-11-16)."""
+        return max(0, self.page_count - len(self.text_layer_pages))
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,23 @@ class PartialRead:
     name: str
     pages: tuple[int, ...]
     total_pages: int | None
+
+
+@dataclass(frozen=True)
+class FallbackRead:
+    """A file Mistral failed on, read (in whole or part) from its text layer.
+
+    Attributes:
+        item_id: The attachment's ``workspace_items.item_id``.
+        name: Its filename, for the user's notice.
+        text_layer_pages: Pages taken from the text layer (free).
+        lost_pages: Planned pages that could not be read at all.
+    """
+
+    item_id: str
+    name: str
+    text_layer_pages: tuple[int, ...]
+    lost_pages: tuple[int, ...] = ()
 
 
 @dataclass
@@ -80,6 +109,8 @@ class OcrExtractionStats:
     pages_stored: int = 0
     #: Files read in part because of the page budget (one notice each).
     partial: list[PartialRead] = field(default_factory=list)
+    #: Files read from their text layer because Mistral failed (one notice each).
+    fallback: list[FallbackRead] = field(default_factory=list)
     #: Names of files left unread this turn: no OCR pages left.
     no_budget: list[str] = field(default_factory=list)
     #: The quota could not be read; every file was left for the next turn.

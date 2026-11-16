@@ -14,7 +14,10 @@ over either limit, or has an unknown page count, this module:
    10-page cut weigh 40 MB (InDesign/Illustrator exports; the same 10 pages
    come to 0.5 MB without it) — and
 4. OCRs the cuts concurrently as ``data:`` URLs, mapping every returned page
-   back to its real page number.
+   back to its real page number. A cut Mistral fails on (timeout, dropped
+   connection, error) is read from the PDF's own text layer instead
+   (text_layer.py) — free, never billed; its pages that have no text layer
+   (image pages) are reported as lost.
 
 Memory stays bounded: cuts are made as their turn comes (``CONCURRENCY`` in
 flight), not all up front.
@@ -30,6 +33,7 @@ import io
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from typing import Sequence
 
 import httpx
@@ -38,6 +42,10 @@ from shared.quota.ocr_budget import pick_pages
 
 from .mistral_ocr import join_pages, ocr_document
 from .models import OcrDocumentResult, OcrPage
+from .text_layer import TextLayerPage, read_pages, sample_digits_reversed
+
+#: ``OcrDocumentResult.model`` when every page came from the text layer.
+TEXT_LAYER_MODEL = "pdf-text-layer"
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +65,14 @@ DOWNLOAD_TIMEOUT_S = 180.0
 MAX_FILES_AT_ONCE = 2
 #: One semaphore per event loop (the server runs one; tests run many).
 _file_slots: dict[int, asyncio.Semaphore] = {}
+#: Mistral's share of the 10-minute OCR wait (helper OCR_CEILING_S = 600 s),
+#: counted from the moment this file's cuts start: no Mistral call runs past
+#: it, and a cut whose turn comes after it goes straight to the text layer —
+#: so the fallback lands inside the wait even when the plan is many rounds of
+#: cuts (owner: Mistral stalled for minutes on 2026-11-16).
+MISTRAL_DEADLINE_S = 480.0
+#: A call needs at least this much of the deadline left to be worth starting.
+MIN_CALL_S = 30.0
 
 
 def _slots() -> asyncio.Semaphore:
@@ -173,18 +189,49 @@ async def _ocr_big_pdf(
             groups = [chosen[i:i + CHUNK_MAX_PAGES] for i in range(0, len(chosen), CHUNK_MAX_PAGES)]
 
             sem = asyncio.Semaphore(CONCURRENCY)
-            pdf_lock = asyncio.Lock()  # one pypdf write at a time (shared reader)
+            pdf_lock = asyncio.Lock()  # one pypdf call at a time (shared reader)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + MISTRAL_DEADLINE_S
+            # Set by the first outage-type failure: the rest of the file skips
+            # Mistral. The digit order is decided once per file, on first use.
+            state: dict = {"mistral_down": False, "flip_digits": None}
 
-            async def run(group: tuple[int, ...]) -> list[tuple[tuple[int, ...], OcrDocumentResult]]:
+            async def text_layer(cut_pages: tuple[int, ...]) -> _CutResult:
+                async with pdf_lock:
+                    if state["flip_digits"] is None:
+                        state["flip_digits"] = await asyncio.to_thread(
+                            sample_digits_reversed, reader, chosen,
+                        )
+                    read = await asyncio.to_thread(
+                        read_pages, reader, cut_pages, reverse_digits=state["flip_digits"],
+                    )
+                return _from_text_layer(read)
+
+            async def one_cut(cut_pages: tuple[int, ...], data: bytes) -> _CutResult:
+                left = deadline - loop.time()
+                if state["mistral_down"] or left < MIN_CALL_S:
+                    return await text_layer(cut_pages)
+                url = "data:application/pdf;base64," + base64.b64encode(data).decode("ascii")
+                try:
+                    res = await ocr_document(
+                        url, _PDF_MIME, expected_pages=len(cut_pages), timeout_s=left,
+                    )
+                    return _from_mistral(cut_pages, res)
+                except Exception as exc:  # noqa: BLE001 — Mistral failed: text layer
+                    if _is_outage(exc):
+                        state["mistral_down"] = True
+                    logger.warning(
+                        "OCR big-file: Mistral failed on pages %s–%s — %s %s: %s — text layer",
+                        cut_pages[0], cut_pages[-1], type(exc).__name__,
+                        getattr(exc, "status_code", ""), str(exc)[:300],
+                    )
+                    return await text_layer(cut_pages)
+
+            async def run(group: tuple[int, ...]) -> list[_CutResult]:
                 async with sem:
                     async with pdf_lock:
                         cuts = await asyncio.to_thread(cut_group, reader, group)
-                    out = []
-                    for cut_pages, data in cuts:
-                        url = "data:application/pdf;base64," + base64.b64encode(data).decode("ascii")
-                        res = await ocr_document(url, _PDF_MIME, expected_pages=len(cut_pages))
-                        out.append((cut_pages, res))
-                    return out
+                    return [await one_cut(cut_pages, data) for cut_pages, data in cuts]
 
             batches = await asyncio.gather(*(run(g) for g in groups))
     finally:
@@ -193,22 +240,93 @@ async def _ocr_big_pdf(
         except OSError:
             pass
 
-    numbered: list[tuple[int, str]] = []
-    model = ""
-    for batch in batches:
-        for cut_pages, res in batch:
-            model = model or res.model
-            # Mistral numbers a cut's pages from 0 in cut order; map them back.
-            for local, page in enumerate(res.pages):
-                idx = page.page_no - 1 if 0 < page.page_no <= len(cut_pages) else local
-                if idx < len(cut_pages):
-                    numbered.append((cut_pages[idx], page.markdown))
-    numbered.sort(key=lambda t: t[0])
+    return _assemble([c for batch in batches for c in batch], total, len(groups))
 
+
+def _is_outage(exc: BaseException) -> bool:
+    """Mistral is down or stalled (not a problem with this one cut): a timeout,
+    a dropped or refused connection, a 5xx or a 429. The rest of the file then
+    goes straight to the text layer."""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError, httpx.HTTPError)):
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and (status >= 500 or status == 429)
+
+
+async def text_layer_document(
+    file_url: str,
+    pages: Sequence[int] | None,
+    planned_total: int | None,
+) -> OcrDocumentResult:
+    """The chosen ``pages`` of the PDF at ``file_url``, read from its own text
+    layer only — the fallback when Mistral failed on the whole file (the URL
+    path, files within Mistral's 50 MB). Free: nothing here is billed. Not
+    queued behind the big-file slots, which a Mistral outage keeps busy.
+    Raises if the file cannot be opened."""
+    from pypdf import PdfReader
+
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    try:
+        await _download(file_url, path)
+        with open(path, "rb") as fh:
+            reader = await asyncio.to_thread(PdfReader, fh)
+            total = await asyncio.to_thread(lambda: len(reader.pages))
+            chosen = choose_pages(total, pages, planned_total)
+            flip = await asyncio.to_thread(sample_digits_reversed, reader, chosen)
+            read = await asyncio.to_thread(read_pages, reader, chosen, reverse_digits=flip)
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return _assemble([_from_text_layer(read)], total, 1)
+
+
+# ---------------------------------------------------------------------------
+# Assembly: Mistral cuts and text-layer cuts, in page order
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CutResult:
+    pages: list[tuple[int, str]]      # (real page number, text)
+    model: str = ""
+    text_layer: tuple[int, ...] = ()  # pages taken from the text layer
+    lost: tuple[int, ...] = ()        # planned pages with no text at all
+
+
+def _from_mistral(cut_pages: tuple[int, ...], res: OcrDocumentResult) -> _CutResult:
+    numbered: list[tuple[int, str]] = []
+    # Mistral numbers a cut's pages from 0 in cut order; map them back.
+    for local, page in enumerate(res.pages):
+        idx = page.page_no - 1 if 0 < page.page_no <= len(cut_pages) else local
+        if idx < len(cut_pages):
+            numbered.append((cut_pages[idx], page.markdown))
+    return _CutResult(pages=numbered, model=res.model)
+
+
+def _from_text_layer(read: Sequence[TextLayerPage]) -> _CutResult:
+    usable = [p for p in read if p.usable]
+    return _CutResult(
+        pages=[(p.page_no, p.text) for p in usable],
+        model=TEXT_LAYER_MODEL,
+        text_layer=tuple(p.page_no for p in usable),
+        lost=tuple(p.page_no for p in read if not p.usable),
+    )
+
+
+def _assemble(cuts: Sequence[_CutResult], total: int, groups: int) -> OcrDocumentResult:
+    numbered = sorted((pg for c in cuts for pg in c.pages), key=lambda t: t[0])
+    text_layer = tuple(sorted(p for c in cuts for p in c.text_layer))
+    lost = tuple(sorted(p for c in cuts for p in c.lost))
+    # The Mistral model id when any cut used it, else the text-layer marker.
+    model = next((c.model for c in cuts if c.model and c.model != TEXT_LAYER_MODEL), "") \
+        or (TEXT_LAYER_MODEL if text_layer else "")
     text, offsets = join_pages([md for _, md in numbered])
     logger.info(
-        "OCR big-file: %d of %d pages in %d group(s), %d chars",
-        len(numbered), total, len(groups), len(text),
+        "OCR big-file: %d of %d pages in %d group(s) (%d from the text layer, %d lost), %d chars",
+        len(numbered), total, groups, len(text_layer), len(lost), len(text),
     )
     return OcrDocumentResult(
         text=text,
@@ -219,4 +337,6 @@ async def _ocr_big_pdf(
             for (n, md), off in zip(numbered, offsets)
         ],
         total_pages=total,
+        text_layer_pages=text_layer,
+        lost_pages=lost,
     )
