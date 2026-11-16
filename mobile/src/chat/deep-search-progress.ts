@@ -81,6 +81,13 @@ export function applyStatus(prev: DeepSearchProgressState | null, text: string):
   return { ...prev, log };
 }
 
+/** A run that never left "planning" searched nothing (the planner handed the
+ * request back to the router, or the turn went to the prior-report check), so
+ * its reply gets no chip. Same rule as the web store's `sealDeepSearchSummary`. */
+export function isSealable(run: DeepSearchProgressState | null | undefined): run is DeepSearchProgressState {
+  return !!run && run.stage !== "planning";
+}
+
 export function sealSummary(run: DeepSearchProgressState, nowMs: number): DeepSearchSummary {
   return { sources: run.sources, elapsedMs: Math.max(0, nowMs - run.startedAt), log: run.log };
 }

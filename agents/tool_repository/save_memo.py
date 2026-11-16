@@ -48,6 +48,8 @@ from typing import Protocol, runtime_checkable
 
 from pydantic_ai import Agent, ModelRetry, RunContext
 
+from agents.tool_repository.handback_guard import hide_on_planner_handback
+
 logger = logging.getLogger(__name__)
 
 
@@ -245,7 +247,8 @@ def register_save_memo(agent: Agent) -> None:
     ``_route`` for SSE emission + force-attach.
     """
 
-    @agent.tool
+    # Withheld on the router's talk-only hand-back turn (handback_guard.py).
+    @agent.tool(prepare=hide_on_planner_handback)
     async def save_memo(  # noqa: RUF029 — supabase client is sync by design
         ctx: RunContext[HasMemoContext],
         title: str,

@@ -94,10 +94,9 @@ class PlannerDeps:
     attached_items: list[WorkspaceItemSnapshot] = field(default_factory=list)
 
     # The latest ``convo_context`` compaction summary (workspace_items.content_md
-    # written by ``convo_compactor``). ``recent_messages`` is a fixed-size tail of
-    # the conversation and is NOT filtered by ``compacted_through_message_id`` —
-    # so after a compaction the turns behind the cutoff are invisible to the
-    # decider unless this stands in for them. Mirrors the router's
+    # written by ``convo_compactor``). ``recent_messages`` holds every
+    # message AFTER ``compacted_through_message_id`` (the router's window), so the
+    # turns behind the cutoff reach the planner only through this summary. Mirrors the router's
     # ``RouterDeps.compaction_summary_md`` / ``inject_compaction_summary``.
     #
     # وضع السرية: stored REAL in the DB; the ORCHESTRATOR encodes it with the
@@ -150,6 +149,16 @@ class PlannerDeps:
     # deciding. Set by ``handle_planner_turn`` on a fresh dispatch of a long
     # message. False on resume, so the reply is never reviewed in turn.
     review_required: bool = False
+
+    # The hand-back (plan: planner full history + hand-back, 2026-11-16). Set by
+    # ``_run_deep_search`` after this is built. ``handback_allowed``: the router
+    # dispatched this turn, so a too-general request may go back to it for
+    # exploring — False on resume, editorial pins, the simple_search fall-back,
+    # the analyzer's search, and after a hand-back. ``after_handback``: the
+    # reply the user is answering was that exploration, so the decider is told
+    # to search now.
+    handback_allowed: bool = False
+    after_handback: bool = False
 
     # --- SSE event sink ----------------------------------------------------
     emit_sse: Callable[[dict], None] | None = None

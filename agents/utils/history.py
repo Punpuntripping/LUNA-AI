@@ -168,6 +168,26 @@ def build_pause_question_tag(row: dict) -> str:
     return f"〔[نظام] هذا سؤال طرحه متخصصٌ{fam_part} أثناء مهمته〕"
 
 
+#: Leads the router's reply that explored a request the deep_search planner
+#: handed back as too general to search. Read by the router, the planners and
+#: the responder (``responder/context.py::HISTORY_LEGEND`` explains it).
+HANDBACK_TAG = (
+    "〔[نظام] أعاد مخطّطُ البحث هذا الطلبَ دون بحث لأنه عامّ، "
+    "فهذا الردّ يستوضح الطلب قبل البحث〕"
+)
+
+
+def is_handback_reply(row: dict) -> bool:
+    """True for the router's reply written after a planner hand-back."""
+    metadata = row.get("metadata")
+    return isinstance(metadata, dict) and bool(metadata.get("planner_handback"))
+
+
+def build_handback_tag(row: dict) -> str:
+    """:data:`HANDBACK_TAG` for a hand-back reply, ``""`` for any other row."""
+    return HANDBACK_TAG if is_handback_reply(row) else ""
+
+
 def build_next_steps_note(next_steps: list[dict] | None) -> str | None:
     """One-line note naming the next-step chips offered under an assistant turn.
 
@@ -334,9 +354,10 @@ def messages_to_history(
 
     ``agent_question`` rows get the :func:`build_pause_question_tag` marker
     prepended, so the router can tell a specialist's question from its own
-    reply. ``agent_answer`` rows are ordinary user turns. The responder runs on
-    this same list, so ``responder/context.py::HISTORY_LEGEND`` explains the
-    marker too.
+    reply. ``agent_answer`` rows are ordinary user turns. The router's reply
+    after a planner hand-back gets :data:`HANDBACK_TAG`. The responder runs on
+    this same list, so ``responder/context.py::HISTORY_LEGEND`` explains both
+    markers too.
 
     Identifier masking (وضع السرية): the router's prior-turn history comes
     through here (via ``load_router_context``), NOT through the orchestrator's
@@ -389,6 +410,9 @@ def messages_to_history(
             pause_tag = build_pause_question_tag(row)
             if pause_tag:
                 text = f"{pause_tag}\n{text}"
+            handback_tag = build_handback_tag(row)
+            if handback_tag:
+                text = f"{handback_tag}\n{text}"
             text = append_quote_refs(text, row)
             # Chips offered under this turn (metadata.next_steps) — independent
             # of wi_provenance; encoded with the rest of the surface below.

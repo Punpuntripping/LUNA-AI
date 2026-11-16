@@ -91,6 +91,7 @@ jobs:
             backend/tests/test_workspace_item_create.py \
             agents/tests/test_conversation_memory*.py \
             agents/tests/test_router_full_history.py \
+            agents/tests/test_planner_full_history.py \
             agents/tests/test_today_context.py \
             agents/tests/test_search_publish_gaps.py \
             agents/tests/test_artifact_analyzer.py \

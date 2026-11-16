@@ -68,10 +68,9 @@ class WriterPlannerDeps:
     case_brief: str | None = None
 
     # The latest ``convo_context`` compaction summary (workspace_items.content_md
-    # written by ``convo_compactor``). ``recent_messages`` is a fixed-size tail of
-    # the conversation and is NOT filtered by ``compacted_through_message_id`` —
-    # so after a compaction the turns behind the cutoff are invisible here unless
-    # this stands in for them. Mirrors the router's
+    # written by ``convo_compactor``). ``recent_messages`` holds every
+    # message AFTER ``compacted_through_message_id`` (the router's window), so the
+    # turns behind the cutoff reach the planner only through this summary. Mirrors the router's
     # ``RouterDeps.compaction_summary_md`` / ``inject_compaction_summary``.
     #
     # وضع السرية: stored REAL in the DB; the ORCHESTRATOR encodes it with the turn

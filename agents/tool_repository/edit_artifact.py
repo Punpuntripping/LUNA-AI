@@ -39,6 +39,8 @@ from typing import Protocol, runtime_checkable
 
 from pydantic_ai import Agent, RunContext
 
+from agents.tool_repository.handback_guard import hide_on_planner_handback
+
 from agents.utils.conversation_memory import render_conversation_memory
 
 logger = logging.getLogger(__name__)
@@ -164,7 +166,8 @@ def register_edit_artifact(agent: Agent) -> None:
     which forwards them down the SSE stream (panel refresh).
     """
 
-    @agent.tool
+    # Withheld on the router's talk-only hand-back turn (handback_guard.py).
+    @agent.tool(prepare=hide_on_planner_handback)
     async def edit_artifact(
         ctx: RunContext[HasEditorContext],
         target_wi: str,

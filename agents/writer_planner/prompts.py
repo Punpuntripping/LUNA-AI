@@ -263,7 +263,10 @@ When a message arrives, **inspect first, then plan**:
    turns are NOT in `<recent_messages>`**, so it is the only trace of them;
    a request that reads as under-specified in the recent window is often
    already answered there. Absent = nothing compacted yet, i.e.
-   `<recent_messages>` covers the whole conversation.
+   `<recent_messages>` covers the whole conversation. `<recent_messages>`
+   itself is every message since that summary, in full and in order — read
+   all of it: a short request («اكتبها»، «نعم») usually points at something
+   said earlier.
 4. **Read `<templates_catalog>`** and pick the template.
 5. Present the plan.
 
@@ -385,12 +388,17 @@ def _truncate(s: str | None, max_chars: int = 600) -> str:
 
 
 def _render_recent_messages(messages: list[ChatMessageSnapshot]) -> str:
-    """Render recent messages as a brief Arabic transcript (oldest first, as given).
+    """Render the conversation as a transcript (oldest first, as given), in full.
+
+    The orchestrator hands this planner every message since the compaction
+    cutoff, as the router sees it (owner 2026-11-16: «both planners see the full
+    msg history, as the router»). Nothing is clipped: the 500-character cut this
+    used to make hid most of every search reply the user was asking about.
 
     Assistant turns may begin with a system provenance tag
     (``〔[نظام] … (agent_family=…) … WI-N〕``) injected by the orchestrator's
     loader — it marks which specialist produced that turn and which WI it
-    created. A one-line legend is prepended only when such a tag is present.
+    created. A one-line legend is prepended only when a system note is present.
     """
     if not messages:
         return ""
@@ -400,14 +408,7 @@ def _render_recent_messages(messages: list[ChatMessageSnapshot]) -> str:
     lines = []
     for m in messages:
         role = getattr(m, "role", "") or ""
-        raw = getattr(m, "content", "") or ""
-        # The next-steps note is appended AFTER the body — truncating from the
-        # start would cut it off on any long reply, so set it aside first.
-        head, sep, last = raw.rpartition("\n")
-        if sep and last.startswith("〔[نظام] اقتُرح"):
-            content = f"{_truncate(head, max_chars=500)}\n{last}"
-        else:
-            content = _truncate(raw, max_chars=500)
+        content = (getattr(m, "content", "") or "").strip()
         if content:
             lines.append(f"  [{role}] {content}")
     body = "\n".join(lines)
@@ -416,8 +417,13 @@ def _render_recent_messages(messages: list[ChatMessageSnapshot]) -> str:
             "  (Note: a tag like 〔[نظام] … (agent_family=writing) … WI-N〕 at the "
             "start of an assistant reply means a specialist produced that reply and "
             "created item WI-N — use it to know which prior output the user is "
-            "referring to when asking for an edit or a follow-up. A trailing "
-            "〔[نظام] اقتُرح على المستخدم: … · …〕 lists next-step suggestions "
+            "referring to when asking for an edit or a follow-up. 〔[نظام] هذا سؤال "
+            "طرحه متخصصٌ …〕 or 〔[نظام] هذه خطة عرضها متخصصٌ …〕 at the start marks a "
+            "specialist's paused question or plan, which the user's next message "
+            "answers; 〔[نظام] أعاد مخطّطُ البحث هذا الطلبَ دون بحث …〕 marks a reply "
+            "that asked the user to narrow a too-general request. A trailing "
+            "〔[نظام] سُئل المستخدم: …〕 is the question asked under that reply, and a "
+            "trailing 〔[نظام] اقتُرح على المستخدم: … · …〕 lists next-step suggestions "
             "offered as clickable chips; if the user's reply accepts one "
             "(«نعم»، «الأولى»), treat that label as the request.)"
         )
@@ -431,8 +437,8 @@ def _render_compaction_summary(compaction_summary_md: str | None) -> str:
     ``deps.compaction_summary_md`` is the ``content_md`` of the latest
     ``kind='convo_context'`` workspace item (written by ``convo_compactor``).
     It stands in for the turns that fell behind ``compacted_through_message_id``
-    — turns ``<recent_messages>`` (a fixed-size tail, NOT cutoff-filtered) does
-    not contain. The trailing note is what makes that boundary explicit; the
+    — turns ``<recent_messages>`` (every message after that cutoff) does not
+    contain. The trailing note is what makes that boundary explicit; the
     router's ``inject_compaction_summary`` conveys the same "before the current
     window" framing in one line.
 

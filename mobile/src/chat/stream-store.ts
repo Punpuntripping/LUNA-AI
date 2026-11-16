@@ -12,6 +12,7 @@ import type {
 import {
   applyProgress,
   applyStatus,
+  isSealable,
   sealSummary,
   type DeepSearchProgressState,
   type DeepSearchSummary,
@@ -283,7 +284,7 @@ export function createStreamStore(opts: StreamStoreOptions = {}): StreamStore {
       const cur = getState().streams[conversationId];
       if (!cur || cur.sendId !== sendId || !messageId) return;
       const run = cur.progress ?? cur.sealable;
-      if (!run) return;
+      if (!isSealable(run)) return;
       setState((s) => ({ summaries: { ...s.summaries, [messageId]: sealSummary(run, now()) } }));
     },
 
@@ -304,7 +305,7 @@ export function createStreamStore(opts: StreamStoreOptions = {}): StreamStore {
       setState((s) => ({
         parked: without(s.parked, conversationId),
         summaries:
-          seal && run.progress && !s.summaries[assistantMessageId]
+          seal && isSealable(run.progress) && !s.summaries[assistantMessageId]
             ? { ...s.summaries, [assistantMessageId]: sealSummary(run.progress, now()) }
             : s.summaries,
       }));

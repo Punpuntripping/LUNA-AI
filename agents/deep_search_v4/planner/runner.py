@@ -40,6 +40,7 @@ from .deps import PlannerDeps
 from .logger import (
     EVENT_DECIDED,
     EVENT_ERROR,
+    EVENT_HANDBACK,
     EVENT_PAUSED,
     EVENT_RESPONDED,
     EVENT_RETRIEVAL_DONE,
@@ -50,6 +51,7 @@ from .prompts import (
     LONG_MESSAGE_REVIEW_MIN_CHARS,
     build_decider_user_message,
     build_responder_user_message,
+    compose_request_query,
     render_responder_context,
 )
 
@@ -85,12 +87,19 @@ class PlannerTurnResult:
     before ``handle_planner_turn`` is called.
     """
 
-    kind: Literal["completed", "paused", "reverted"]
+    kind: Literal["completed", "paused", "reverted", "handback"]
     # completed
     response: PlannerResponse | None = None
     decision: PlannerDecision | None = None
     agg_output: "AggregatorOutput | None" = None
     degraded: bool = False
+    # What the search ran on: the user's message, or — when it needed earlier
+    # turns — those turns' words + the message (``compose_request_query``).
+    # The orchestrator publishes it as the artifact's query. None = the message.
+    retrieval_query: str | None = None
+    # handback — phase 1 found the request too general to search (fresh
+    # dispatch only, ``deps.handback_allowed``); the router explores it.
+    handback_note: str = ""
     # Unified responder only (RESPONDER_UNIFIED_FAMILIES ∋ deep_search): the
     # follow-up question + its internal basis. Carried here rather than on
     # ``PlannerResponse`` so the old responder's output schema (= its tool
@@ -535,6 +544,32 @@ async def _run_planner_turn(
                 # PlannerDecision in hand.
                 decision = output
                 _decider_result = result
+                # A general request goes back to the router to be explored with
+                # the user. Before the statute flush: nothing is published for a
+                # request that was not searched.
+                if getattr(decision, "aborted", False):
+                    if getattr(deps, "handback_allowed", False):
+                        _emit_planner_ledger(result)
+                        logger.info(
+                            "planner: request handed back to the router as too general"
+                        )
+                        emit(deps, {"event": EVENT_HANDBACK})
+                        try:
+                            _span = _logfire.current_span()
+                            if _span is not None:
+                                _span.set_attributes({"planner.handback": True})
+                        except Exception:
+                            pass
+                        return PlannerTurnResult(
+                            kind="handback",
+                            decision=decision,
+                            handback_note=(decision.handback_note or "").strip(),
+                        )
+                    logger.info(
+                        "planner: hand-back not available on this dispatch "
+                        "(after_handback=%s); searching",
+                        getattr(deps, "after_handback", False),
+                    )
                 # One statute_package workspace item per search: flush the
                 # articles accumulated by fetch_article during this decider phase.
                 flush_statute_package(deps)
@@ -649,7 +684,23 @@ async def _run_planner_turn(
     # decision 2026-11-05 — the planner no longer restates). On the resume path
     # the orchestrator has already put the original message, the planner's
     # question and the user's reply into `query` (`compose_resumed_query`).
-    retrieval_query = query
+    # When the message only makes sense with earlier turns («نعم» to a proposal
+    # to search), the decider's `request_quotes` — passages matched character
+    # for character in the history — go down before it (owner 2026-11-16).
+    try:
+        retrieval_query = compose_request_query(
+            getattr(decision, "request_quotes", None) or [],
+            getattr(deps, "recent_messages", None) or [],
+            query,
+        )
+    except Exception:  # never lose the search over the query text
+        logger.warning("planner: could not compose the request query", exc_info=True)
+        retrieval_query = query
+    if retrieval_query != query:
+        logger.info(
+            "planner: search runs on %d chars of quoted turns + the message",
+            len(retrieval_query) - len(query),
+        )
     agg_output: "AggregatorOutput | None" = None
     degraded = False
     t1 = time.perf_counter()
@@ -676,6 +727,7 @@ async def _run_planner_turn(
             decision=decision,
             agg_output=None,
             degraded=True,
+            retrieval_query=retrieval_query,
         )
 
     # ── PHASE 3 — respond ──────────────────────────────────────────────────
@@ -761,6 +813,7 @@ async def _run_planner_turn(
         decision=decision,
         agg_output=agg_output,
         degraded=degraded,
+        retrieval_query=retrieval_query,
     )
 
 
@@ -830,6 +883,7 @@ async def _phase3_unified(
         degraded=degraded,
         follow_up_question=follow_up,
         question_basis=basis,
+        retrieval_query=retrieval_query,
     )
 
 

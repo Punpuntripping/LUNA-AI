@@ -462,8 +462,18 @@ def _load_recent_messages(
     n: int = _RECENT_MESSAGES_N,
     *,
     user_id: str | None = None,
+    full: bool = False,
 ) -> list[ChatMessageSnapshot]:
     """Load the last N messages for the conversation as ChatMessageSnapshot objects.
+
+    ``full=True`` (the two planners — deep_search and writing) loads what the
+    router sees instead of a tail: every message strictly after
+    ``conversations.compacted_through_message_id``, through the router's own
+    loader (``agents.router.context._load_messages_after_cutoff``), so the
+    cutoff and the attachment tags cannot drift apart. ``n`` is ignored. A
+    specialist's paused question gets the router's pause marker, and the
+    router's reply after a planner hand-back gets ``HANDBACK_TAG``. Owner ask
+    2026-11-16: «both planners see the full msg history, as the router».
 
     Assistant turns that published a workspace item get a provenance tag
     prepended to their content (which agent produced the turn + which WI it
@@ -489,7 +499,10 @@ def _load_recent_messages(
     from agents.utils.history import (  # pure utils — no import cycle
         append_next_steps_note,
         append_quote_refs,
+        build_handback_tag,
+        build_pause_question_tag,
         build_provenance_tag,
+        is_handback_reply,
         provenance_item_ids,
         build_user_attachment_tag,
         neutralize_system_brackets,
@@ -499,17 +512,26 @@ def _load_recent_messages(
     codec = active_codec()
 
     try:
-        result = (
-            supabase.table("messages")
-            .select("message_id, role, content, artifact_ids, referenced_item_ids, metadata, created_at")
-            .eq("conversation_id", conversation_id)
-            .order("created_at", desc=True)
-            .limit(n + _RECENT_MESSAGES_BUFFER)
-            .execute()
-        )
-        # Newest-first → chronological; drop empty placeholder rows, keep last n.
-        ordered = list(reversed(result.data or []))
-        rows = [r for r in ordered if (r.get("content") or "").strip()][-n:]
+        if full:
+            from agents.router.context import _load_messages_after_cutoff
+
+            # Chronological already; drop the empty placeholder rows only.
+            rows = [
+                r for r in _load_messages_after_cutoff(supabase, conversation_id)
+                if (r.get("content") or "").strip()
+            ]
+        else:
+            result = (
+                supabase.table("messages")
+                .select("message_id, role, content, artifact_ids, referenced_item_ids, metadata, created_at")
+                .eq("conversation_id", conversation_id)
+                .order("created_at", desc=True)
+                .limit(n + _RECENT_MESSAGES_BUFFER)
+                .execute()
+            )
+            # Newest-first → chronological; drop empty placeholder rows, keep last n.
+            ordered = list(reversed(result.data or []))
+            rows = [r for r in ordered if (r.get("content") or "").strip()][-n:]
     except Exception as e:
         logger.warning("_load_recent_messages failed: %s", e)
         return []
@@ -520,13 +542,19 @@ def _load_recent_messages(
     # user rows get the build_user_attachment_tag marker — the user-turn twin
     # of the assistant provenance tag, and the SAME marker the router sees via
     # messages_to_history. Best-effort: on failure the turns render untagged.
+    # The router's loader (full mode) has already put them on each row.
     attachments_by_message: dict[str, list[str]] = {}
     user_msg_ids = [
         str(r["message_id"])
         for r in rows
         if r.get("message_id") and (r.get("role") or "") == "user"
     ]
-    if user_msg_ids and wi_provenance:
+    if full:
+        for r in rows:
+            ids = r.get("attached_wi_ids")
+            if ids and r.get("message_id"):
+                attachments_by_message[str(r["message_id"])] = [str(i) for i in ids]
+    elif user_msg_ids and wi_provenance:
         try:
             att_resp = (
                 supabase.table("message_attachments")
@@ -554,6 +582,11 @@ def _load_recent_messages(
                 tag = build_provenance_tag(artifact_ids, wi_provenance)
                 if tag:
                     content = f"{tag}\n{content}"
+        if role == "assistant" and full:
+            # The router's two leading markers, in its order (messages_to_history).
+            for lead in (build_pause_question_tag(row), build_handback_tag(row)):
+                if lead:
+                    content = f"{lead}\n{content}"
         if role == "assistant":
             # The quotes behind a prior-report reply's [n], then the chips offered
             # under it (metadata.next_steps) — the SAME surface the router sees via
@@ -576,6 +609,7 @@ def _load_recent_messages(
                 role=role,
                 content=content,
                 created_at=row.get("created_at") or "",
+                planner_handback=role == "assistant" and is_handback_reply(row),
             )
         )
     # Persist any fakes minted while encoding history — synchronously, before the
@@ -583,6 +617,18 @@ def _load_recent_messages(
     if codec is not None and user_id:
         persist_new_mappings(supabase, user_id, codec)
     return snapshots
+
+
+def _last_reply_was_handback(messages: list[ChatMessageSnapshot] | None) -> bool:
+    """True when the last assistant reply explored a planner hand-back.
+
+    This turn's own assistant placeholder is empty and never reaches the list,
+    so the last assistant snapshot is the reply the user is now answering.
+    """
+    for m in reversed(messages or []):
+        if getattr(m, "role", "") == "assistant":
+            return bool(getattr(m, "planner_handback", False))
+    return False
 
 
 # Cap on how many prior agent_search items to surface to the planner. Bounded
@@ -1230,7 +1276,7 @@ async def _resume_major_agent_inner(
                 conversation_id,
             )
             recent_messages = _load_recent_messages(
-                supabase, conversation_id, user_id=user_id
+                supabase, conversation_id, user_id=user_id, full=True,
             )
             # Resume skips the router, so there is no load_router_context value
             # to inherit — load (and encode) it here. Without this a resumed
@@ -1454,7 +1500,7 @@ async def _resume_major_agent_inner(
             conversation_id,
         )
         _resume_recent_messages = _load_recent_messages(
-            supabase, conversation_id, user_id=user_id
+            supabase, conversation_id, user_id=user_id, full=True,
         )
         # Resume skips the router, so there is no load_router_context value to
         # inherit — load (and encode) it here. Loaded ONCE and reused by the
@@ -1658,7 +1704,7 @@ async def _resume_major_agent_inner(
             conversation_id,
         )
         recent_messages = _load_recent_messages(
-            supabase, conversation_id, user_id=user_id
+            supabase, conversation_id, user_id=user_id, full=True,
         )
         # On resume the router has NOT re-run, so task_label is inherited from
         # the paused agent_runs row (populated at original dispatch time). Fall
@@ -2011,7 +2057,7 @@ async def _resume_simple_search_leg(
                     supabase, [], user_id, conversation_id
                 ),
                 recent_messages=_load_recent_messages(
-                    supabase, conversation_id, user_id=user_id
+                    supabase, conversation_id, user_id=user_id, full=True,
                 ),
                 compaction_summary_md=_load_compaction_summary(
                     supabase, conversation_id, user_id
@@ -2311,6 +2357,14 @@ def _record_deferred(
 
 # Needed for _record_deferred type annotation
 from typing import Any, Callable  # noqa: E402 — after class definitions
+
+
+class _HandBackToRouter(Exception):
+    """The deep_search planner found the request too general to search."""
+
+    def __init__(self, note: str = "") -> None:
+        super().__init__(note)
+        self.note = note or ""
 
 
 class _RevertToAnalyzer(Exception):
@@ -3410,6 +3464,9 @@ async def _route(
             router_context=ctx,
             analyzer_handoff=handoff,
             analyzer_checked=handoff is not None,
+            # The router chose this family: a too-general request may come back.
+            # Not when the user accepted a partial verdict's offer to search.
+            allow_handback=handoff is None,
         ):
             yield ev
         return
@@ -3418,6 +3475,87 @@ async def _route(
     logger.error("run_router returned unexpected type: %s", type(result))
     yield {"type": "token", "text": "حدث خطأ في توجيه الطلب. يرجى المحاولة مرة أخرى."}
     yield {"type": "done", "usage": _zero_usage("error")}
+
+
+async def _route_after_handback(
+    question: str,
+    handback_note: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    welcome: "WelcomeState | None" = None,
+    router_context: "Any | None" = None,
+) -> AsyncGenerator[dict, None]:
+    """The router's chat reply after the deep_search planner handed a request back.
+
+    The planner found the request too general to search (a broad topic, an
+    article on a theme, a field with no question in it). The router runs again
+    on the same turn with the planner's note and may only talk: it reflects back
+    what it understood and asks what the search would need (``RouterDeps.
+    planner_handback`` — its validator refuses any dispatch). The reply is
+    marked ``metadata.planner_handback`` so every agent reading the history
+    knows the user's next message answers it, and the planner does not hand the
+    same request back twice. Owner ask 2026-11-16: «route back to the router,
+    explore and reflect».
+    """
+    from agents.router.context import load_router_context
+    from agents.router.router import HANDBACK_FALLBACK_AR, run_router
+    from agents.utils.welcome import mark_welcomed
+    from backend.app.services.masking_service import active_codec, persist_new_mappings
+    from shared.workspace.preview_lock import resolve_lock_policy
+
+    wi_lock_policy = await resolve_lock_policy(supabase, user_id)
+    ctx = router_context or load_router_context(
+        supabase, user_id, conversation_id, case_id, wi_lock_policy=wi_lock_policy,
+    )
+    # Any fake minted by a fresh load must be stored before the router reads it.
+    persist_new_mappings(supabase, user_id, active_codec())
+
+    router_result = await run_router(
+        question=question,
+        supabase=supabase,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        case_id=case_id,
+        case_memory_md=ctx.case_memory_md,
+        case_metadata=ctx.case_metadata,
+        user_preferences=ctx.user_preferences,
+        user_call_name=ctx.user_call_name,
+        welcome=welcome,
+        message_history=ctx.message_history,
+        workspace_item_summaries=ctx.workspace_item_summaries,
+        compaction_summary_md=ctx.compaction_summary_md,
+        wi_lock_policy=wi_lock_policy,
+        conversation_memory=ctx.conversation_memory,
+        planner_handback=handback_note or "",
+    )
+    for ev in router_result.sse_events:
+        yield ev
+    result = router_result.output
+    if isinstance(result, ChatResponse) and (result.message or "").strip():
+        message = result.message
+    else:
+        logger.warning(
+            "router after hand-back returned %s for conversation %s — using the "
+            "fallback question", type(result).__name__, conversation_id,
+        )
+        message = HANDBACK_FALLBACK_AR
+
+    # Server-only: merged into this reply's metadata by message_service.
+    yield {
+        "type": "reply_metadata",
+        "metadata": {
+            "planner_handback": True,
+            "planner_handback_note": handback_note or "",
+        },
+    }
+    words = message.split(" ")
+    for i, word in enumerate(words):
+        yield {"type": "token", "text": word if i == 0 else f" {word}"}
+        await asyncio.sleep(0.03)
+    mark_welcomed(supabase, user_id, welcome)
+    yield {"type": "done", "usage": _zero_usage("router")}
 
 
 # ---------------------------------------------------------------------------
@@ -3585,8 +3723,14 @@ async def _dispatch(
     conversation_memory_md: str | None = None,
     analyzer_handoff: dict | None = None,
     analyzer_checked: bool = False,
+    allow_handback: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
+
+    ``allow_handback`` (set by ``_route`` only): the deep_search planner may
+    hand a request it finds too general to search back to the router, which
+    then explores it with the user in a chat reply (``_route_after_handback``).
+    Every other caller leaves it False, and the planner then searches.
 
     Ownership gate: a router-emitted ``target_item_id`` that is not a live
     item of (user_id, conversation_id) is dropped to None before anything
@@ -3679,6 +3823,8 @@ async def _dispatch(
     err_payload: dict | None = None
     status = "ok"
     reverted = False
+    # Set when the deep_search planner hands a general request back (below).
+    handback_note: str | None = None
     # With the analyzer off, the planner has nothing to revert to.
     analyzer_checked = analyzer_checked or not analyzer_enabled(user_id)
 
@@ -3723,8 +3869,11 @@ async def _dispatch(
             attached_items = _load_attached_items(
                 supabase, attached_item_ids, user_id, conversation_id
             )
+            # The two planners read the whole conversation, as the router does;
+            # the other families keep the short tail.
             recent_messages = _load_recent_messages(
-                supabase, conversation_id, user_id=user_id
+                supabase, conversation_id, user_id=user_id,
+                full=agent_family in ("deep_search", "writing"),
             )
 
             # The rendered block travels, not the state: the specialists need
@@ -3748,6 +3897,11 @@ async def _dispatch(
                 welcome=welcome,
                 analyzer_handoff=analyzer_handoff,
                 analyzer_checked=analyzer_checked,
+                allow_handback=(
+                    allow_handback
+                    and agent_family == "deep_search"
+                    and pinned_plan is None
+                ),
             )
 
             if agent_family == "deep_search":
@@ -3817,6 +3971,8 @@ async def _dispatch(
 
                 if ds_outcome.kind == "reverted":
                     raise _RevertToAnalyzer()
+                if ds_outcome.kind == "handback":
+                    raise _HandBackToRouter(ds_outcome.handback_note)
                 if ds_outcome.kind == "paused":
                     # The pause-triggering decider's cost is emitted by
                     # handle_planner_turn (phase-1 pause path → deep_search.planner).
@@ -4054,8 +4210,16 @@ async def _dispatch(
                         )
                         welcome = None
                     else:
+                        # The planner reads the whole conversation, as the
+                        # router does — not the short tail simple_search got.
                         ds_handoff = await _run_deep_search(
-                            major_input, supabase,
+                            major_input.model_copy(update={
+                                "recent_messages": _load_recent_messages(
+                                    supabase, conversation_id,
+                                    user_id=user_id, full=True,
+                                ),
+                            }),
+                            supabase,
                             assistant_message_id=assistant_message_id,
                         )
                         if ds_handoff.kind == "paused":
@@ -4134,6 +4298,12 @@ async def _dispatch(
 
         except _RevertToAnalyzer:
             reverted = True
+
+        except _HandBackToRouter as hb:
+            # No search ran (the quota counts only runs that reached retrieval).
+            # The router answers this turn, below, once this run is closed.
+            handback_note = hb.note
+            status = "handback"
 
         except _SkipRunRecord as skip:
             # Phase-1 ask_user pause — _run_deep_search returned kind="paused"
@@ -4239,6 +4409,20 @@ async def _dispatch(
         ):
             yield ev
 
+    if handback_note is not None:
+        # After the close above, for the same reason as the revert.
+        async for ev in _route_after_handback(
+            question=describe_query,
+            handback_note=handback_note,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            welcome=welcome,
+            router_context=router_context,
+        ):
+            yield ev
+
 
 # ---------------------------------------------------------------------------
 # Specialist runners
@@ -4255,12 +4439,15 @@ class _DeepSearchOutcome:
       ran; the caller runs the artifact_analyzer.
     - ``kind="paused"`` — phase 1 called ``ask_user``; ``planner_result`` +
       ``deferred`` carry the pause state for :func:`_record_deferred`.
+    - ``kind="handback"`` — phase 1 found the request too general to search;
+      ``handback_note`` tells the router why. No search ran.
     """
 
-    kind: str  # "completed" | "paused" | "reverted"
+    kind: str  # "completed" | "paused" | "reverted" | "handback"
     result: SpecialistResult | None = None
     planner_result: Any = None
     deferred: Any = None
+    handback_note: str = ""
 
 
 async def _run_deep_search(
@@ -4420,6 +4607,15 @@ async def _run_deep_search(
             analyzer_handoff=input.analyzer_handoff,
             analyzer_checked=input.analyzer_checked,
         )
+        # A request handed back once and explored with the user is not handed
+        # back again: the user has answered, so this run searches.
+        deps.after_handback = _last_reply_was_handback(input.recent_messages)
+        deps.handback_allowed = bool(
+            getattr(input, "allow_handback", False)
+            and decision is None
+            and pinned_plan is None
+            and not deps.after_handback
+        )
 
         # Flush the attached-item fakes minted just above BEFORE the decider LLM
         # reads them (a fresh-process resume reloads the codec from DB). Delta-only
@@ -4447,6 +4643,11 @@ async def _run_deep_search(
         if turn.kind == "reverted":
             return _DeepSearchOutcome(kind="reverted")
 
+        if turn.kind == "handback":
+            return _DeepSearchOutcome(
+                kind="handback", handback_note=turn.handback_note or "",
+            )
+
         if turn.kind == "paused":
             # Phase-1 ask_user pause — hand the raw pause state back to the
             # caller, which records the awaiting_user row.
@@ -4471,8 +4672,11 @@ async def _run_deep_search(
             and getattr(response, "build_artifact", True)
         )
         # The query the search ran on — the user's message as written (on a
-        # resume: original + question + reply, verbatim). Never reworded.
-        effective_describe_query = input.describe_query
+        # resume: original + question + reply; when the message only made sense
+        # with earlier turns: those turns' words + the message). Never reworded.
+        effective_describe_query = (
+            getattr(turn, "retrieval_query", None) or input.describe_query
+        )
         if should_publish:
             try:
                 publish_input = SearchPublishInput(

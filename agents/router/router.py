@@ -186,6 +186,11 @@ class RouterDeps:
     # the run. The memory agent runs beside the router, so they are the entries
     # from before this message.
     conversation_memory: list[MemoryEntry] = field(default_factory=list)
+    # Set only on the router's second run of a turn, after the deep_search
+    # planner handed the request back as too general to search: the planner's
+    # note. The router may then only talk — explore the request with the user —
+    # and its validator refuses any dispatch (``orchestrator._route_after_handback``).
+    planner_handback: str | None = None
 
 
 @dataclass
@@ -471,6 +476,16 @@ router_agent = Agent(
 
 # ── Output validator (belt-and-suspenders for attached_item_ids cap) ──────────
 
+# The hand-back turn (``RouterDeps.planner_handback``): times a dispatch is sent
+# back before the validator answers with the plain question below instead.
+_HANDBACK_RETRIES = 2
+#: The router's reply on a hand-back turn when it produced none of its own (it
+#: kept dispatching, or failed). Plain and safe: it only asks.
+HANDBACK_FALLBACK_AR = (
+    "قبل أن أبدأ البحث أحتاج أن أفهم طلبك بدقة أكبر: ما الجانب الذي تريد "
+    "التركيز عليه تحديداً، وما الغرض الذي ستستخدم فيه النتيجة؟"
+)
+
 
 @router_agent.output_validator
 def _validate_and_resolve_dispatch(
@@ -495,6 +510,18 @@ def _validate_and_resolve_dispatch(
     """
     if not isinstance(value, (DispatchAgent, CheckPriorReports)):
         return value
+
+    if getattr(ctx.deps, "planner_handback", None) is not None:
+        if ctx.retry < _HANDBACK_RETRIES:
+            raise ModelRetry(
+                "This turn the search planner returned the request to you as too "
+                "general to search. No specialist may run this turn: reply with "
+                "ChatResponse, as the section «This turn — the request came back "
+                "from the search planner» says."
+            )
+        # Never fail the turn over it: a plain question is still the right move.
+        logger.warning("router kept dispatching on a hand-back turn; asking instead")
+        return ChatResponse(message=HANDBACK_FALLBACK_AR)
 
     if not (value.task_label or "").strip():
         raise ModelRetry(
@@ -660,6 +687,36 @@ def inject_conversation_memory(ctx: RunContext[RouterDeps]) -> str:
     return f"\n{render_router_memory(ctx.deps.conversation_memory)}\n"
 
 
+@router_agent.instructions
+def inject_planner_handback(ctx: RunContext[RouterDeps]) -> str:
+    """The hand-back turn only: explore and reflect, do not dispatch.
+
+    Registered after the memory so every turn without a hand-back keeps the
+    whole prefix it had.
+    """
+    handback = getattr(ctx.deps, "planner_handback", None)
+    if handback is None:
+        return ""
+    note = _esc(handback.strip()) or "(لا ملاحظة)"
+    return (
+        "\n## This turn — the request came back from the search planner\n\n"
+        "You routed the user's message to deep_search, and the search planner "
+        "returned it without searching: it is too general to search well yet. "
+        f"The planner's note: «{note}»\n\n"
+        "No specialist runs this turn. Reply with `ChatResponse` only, in Arabic, "
+        "and use it to explore the request with the user and reflect it back:\n"
+        "1. In one or two sentences, what you understood they want — in your own "
+        "words, so they can correct you.\n"
+        "2. At most two short questions on what the search needs to be useful: "
+        "the angle or part of the topic that matters to them, the facts of their "
+        "situation, or what the result is for. Offering two or three concrete "
+        "angles to choose from is often the easiest question to answer.\n"
+        "Do not answer the legal substance, do not name a law, article or ruling "
+        "that is not already in the conversation, and do not mention the planner, "
+        "a hand-back or a search that did not run.\n"
+    )
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 
@@ -778,6 +835,7 @@ async def run_router(
     welcome: WelcomeState | None = None,
     wi_lock_policy: LockPolicy | None = None,
     conversation_memory: list[MemoryEntry] | None = None,
+    planner_handback: str | None = None,
 ) -> RouterRunResult:
     """Run the router agent to classify user intent and respond or dispatch.
 
@@ -813,6 +871,9 @@ async def run_router(
             nothing locks. Lands on ``RouterDeps`` and nowhere else.
         conversation_memory: This conversation's ENCODED memory entries, from
             the loader. Empty with the feature off for this user.
+        planner_handback: Set only when the deep_search planner handed this
+            turn's request back as too general to search: its note. The router
+            then explores the request in a ChatResponse and may not dispatch.
 
     Returns:
         A ``RouterRunResult`` wrapping the structured output (ChatResponse if
@@ -846,6 +907,7 @@ async def run_router(
         user_message=question,
         wi_lock_policy=wi_lock_policy,
         conversation_memory=list(conversation_memory or []),
+        planner_handback=planner_handback,
     )
 
     # PII note: user_id intentionally NOT on this span. The monitor recovers
@@ -864,6 +926,7 @@ async def run_router(
         has_compaction_summary=bool(compaction_summary_md),
         wi_preview_lock=wi_lock_policy is not None,
         memory_entry_count=len(deps.conversation_memory),
+        planner_handback=planner_handback is not None,
     ) as span:
         try:
             result = await router_agent.run(

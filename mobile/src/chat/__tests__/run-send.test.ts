@@ -154,6 +154,20 @@ describe("send — deep search progress around done", () => {
     assert.equal(h.store.getState().streams[C1], undefined);
   });
 
+  test("a run that never left planning seals no chip (the planner handed the request back)", async () => {
+    const h = harness();
+    const { promise } = await startSend(h);
+    const s = h.streams[0];
+    s.push(frame("message_start", START));
+    s.push(frame("agent_run_started", { agent_family: "deep_search" }));
+    s.push(frame("agent_progress", { stage: "planning", text: "تحليل السؤال وتخطيط البحث" }));
+    s.push(frame("agent_run_finished", { agent_family: "deep_search" }));
+    s.push(frame("token", { text: "ما الزاوية التي تريدها؟" }));
+    s.push(frame("done", DONE));
+    await promise;
+    assert.equal(h.store.getState().summaries.a1, undefined);
+  });
+
   test("stage never walks backwards and empty stage/text are tolerated", async () => {
     const h = harness();
     const { promise } = await startSend(h);

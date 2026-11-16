@@ -198,6 +198,11 @@ class ChatMessageSnapshot(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: str
+    # True on the router's reply that explored a request the deep_search
+    # planner handed back as too general (``metadata.planner_handback``). The
+    # planner reads it to know the user has since answered, so it searches
+    # instead of handing the same request back twice.
+    planner_handback: bool = False
 
 
 class WorkspaceItemSnapshot(BaseModel):
@@ -252,16 +257,26 @@ class MajorAgentInput(BaseModel):
     )
     recent_messages: list[ChatMessageSnapshot] = Field(
         default_factory=list,
-        description="Last N chat messages (default 3, per-agent overridable).",
+        description=(
+            "The chat history. For deep_search and writing: every message since "
+            "the compaction cutoff, as the router sees it. Other families keep a "
+            "short tail."
+        ),
     )
+    # deep_search only: True when the router dispatched this turn, so the
+    # planner may hand a general request back to it for exploring (plan:
+    # planner full history + hand-back, 2026-11-16). False on resume legs,
+    # editorial pins, the simple_search fall-back and the analyzer's search.
+    allow_handback: bool = False
     compaction_summary_md: str | None = Field(
         default=None,
         description=(
             "content_md of the latest kind='convo_context' workspace item — the "
             "convo_compactor's summary of the turns that fell behind "
-            "conversations.compacted_through_message_id. ``recent_messages`` is "
-            "a fixed-size tail and is NOT filtered by that cutoff, so without "
-            "this the specialists see no trace of a compacted conversation. "
+            "conversations.compacted_through_message_id. The planners' "
+            "``recent_messages`` start after that cutoff (the other families' "
+            "short tail ignores it), so without this they see no trace of a "
+            "compacted conversation. "
             "وضع السرية: carried ALREADY ENCODED with the turn codec (the "
             "orchestrator encodes at load; masked-mode-off is byte passthrough)."
         ),

@@ -1203,7 +1203,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const run = stream
         ? (stream.deepSearchProgress ?? stream.deepSearchSealable)
         : null;
-      if (!run || !messageId) return state;
+      // A run that never left "planning" searched nothing: the planner handed
+      // the request back to the router, or the turn went to the prior-report
+      // check. Its reply is not a search result, so it gets no chip.
+      if (!run || !messageId || run.stage === "planning") return state;
       return {
         deepSearchSummaries: {
           ...state.deepSearchSummaries,

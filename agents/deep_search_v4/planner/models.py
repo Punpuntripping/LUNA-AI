@@ -114,11 +114,36 @@ class PlannerDecision(BaseModel):
     aborted: bool = Field(
         default=False,
         description=(
-            "Set True when the user's reply after an ask_user deferral is not "
-            "something this run can plan on — either it answers nothing, or it "
-            "is a DIFFERENT request (a lookup, a drafting ask, an app "
-            "question). The orchestrator drops the pause and re-routes the "
-            "reply via the router instead of running phases 2-3."
+            "The hand-back to the router. On a fresh dispatch: the request is "
+            "too general to search (a broad topic or theme with no legal "
+            "question in it) — the router explores it with the user instead; "
+            "write handback_note. After an ask_user deferral: the reply is not "
+            "something this run can plan on — it answers nothing, or it is a "
+            "DIFFERENT request (a lookup, a drafting ask, an app question), and "
+            "the router re-routes it. Either way phases 2-3 do not run."
+        ),
+    )
+    handback_note: str = Field(
+        default="",
+        description=(
+            "With aborted on a fresh dispatch: one or two Arabic sentences for "
+            "the router — what the user is asking for, and what is missing "
+            "before it can be searched (the angle, the facts, the purpose). "
+            "Empty otherwise."
+        ),
+    )
+    request_quotes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Only when the user's latest message cannot be searched on its own "
+            "because its request lives in earlier messages («نعم» to a proposal "
+            "to search, «تفضل», an answer to the router's question, a chip "
+            "accepted by typing): the passages of earlier messages that carry "
+            "the request, each copied character for character — the original "
+            "request, the question or proposal the message answers. They go "
+            "down to the search before the latest message, word for word. "
+            "Empty (the default) when the latest message stands on its own. "
+            "Never your own words: a passage not found verbatim is rejected."
         ),
     )
     already_covered: bool = Field(
@@ -189,7 +214,7 @@ class PlannerDecision(BaseModel):
     # Which aliases actually count is decided downstream
     # (``shared/case_documents.parse_wi_aliases``).
 
-    @field_validator("case_full_text_wis", "reg_full_text_wis", mode="before")
+    @field_validator("case_full_text_wis", "reg_full_text_wis", "request_quotes", mode="before")
     @classmethod
     def _coerce_alias_list(cls, v):
         if v is None:
@@ -197,6 +222,11 @@ class PlannerDecision(BaseModel):
         if isinstance(v, str):
             return [v] if v.strip() else []
         return v
+
+    @field_validator("handback_note", mode="before")
+    @classmethod
+    def _coerce_note(cls, v):
+        return "" if v is None else v
 
 
 class PriorSearchSummary(BaseModel):

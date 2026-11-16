@@ -37,10 +37,13 @@ from .deps import PlannerDeps
 from .models import PlannerDecision, PlannerResponse
 from .prompts import (
     LONG_MESSAGE_REVIEW_RULE,
+    MAX_REQUEST_QUOTE_CHARS,
+    MAX_REQUEST_QUOTES,
     PLANNER_DECIDER_SYSTEM_PROMPT,
     PLANNER_RESPONDER_SYSTEM_PROMPT,
     build_decider_instructions,
     build_responder_instructions,
+    locate_request_quotes,
 )
 
 
@@ -97,6 +100,9 @@ PLANNER_RESPONDER_LIMITS = UsageLimits(
 # Times a long message's decision is sent back before the turn goes ahead
 # without the review. Below the decider's output_retries, which would fail the run.
 _REVIEW_RETRIES = 2
+# Times a decision with an unmatched ``request_quotes`` passage is sent back
+# before the passage is dropped. Same reasoning as above.
+_QUOTE_RETRIES = 2
 
 
 def create_planner_decider(
@@ -165,6 +171,50 @@ def create_planner_decider(
         )
         return value
 
+    @agent.output_validator
+    def _check_request_quotes(
+        ctx: RunContext[PlannerDeps],
+        value: PlannerDecision | DeferredToolRequests,
+    ) -> PlannerDecision | DeferredToolRequests:
+        """Every ``request_quotes`` passage must exist, word for word, earlier on.
+
+        The search runs on these passages, so a passage the model wrote itself
+        would be exactly the rewording the owner forbade (2026-11-05). Sent back
+        while retries last; after that the unmatched passages are dropped and the
+        decision stands — a quote is never worth the turn.
+        """
+        if not isinstance(value, PlannerDecision) or not value.request_quotes:
+            return value
+        quotes = [q for q in value.request_quotes if str(q or "").strip()]
+        _found, missing = locate_request_quotes(quotes, ctx.deps.recent_messages)
+        total = sum(len(str(q)) for q in quotes)
+        too_many = len(quotes) > MAX_REQUEST_QUOTES or total > MAX_REQUEST_QUOTE_CHARS
+        if (missing or too_many) and ctx.retry < _QUOTE_RETRIES:
+            problems: list[str] = []
+            if missing:
+                problems.append(
+                    "These `request_quotes` passages are not in any message before "
+                    "the latest one, character for character: "
+                    + " | ".join(f"«{str(q)[:120]}»" for q in missing)
+                    + ". Copy each passage exactly as it appears in <recent_messages>, "
+                    "or drop it."
+                )
+            if too_many:
+                problems.append(
+                    f"Keep `request_quotes` to at most {MAX_REQUEST_QUOTES} passages "
+                    f"and {MAX_REQUEST_QUOTE_CHARS} characters: only the request and "
+                    "the question or proposal the latest message answers."
+                )
+            raise ModelRetry(" ".join(problems))
+        kept = [q for q in quotes if q not in missing][:MAX_REQUEST_QUOTES]
+        if missing or kept != quotes:
+            logger.warning(
+                "planner_decider: dropped %d unmatched / surplus request_quotes",
+                len(quotes) - len(kept),
+            )
+        value.request_quotes = kept
+        return value
+
     @agent.tool_plain
     async def ask_user(question: str) -> str:  # noqa: RUF029
         """Ask one clarifying question — or reflect your understanding back for
@@ -172,9 +222,10 @@ def create_planner_decider(
 
         Use it WHENEVER planning genuinely needs the user's input — whenever a
         sharper search or a truer reading of their situation depends on it.
-        Don't hesitate when it serves the user. Common situations:
-          1. The query names a corpus/domain but no concrete legal question, so
-             no useful retrieval can be derived (e.g. «ابحث في القضايا البنكية»).
+        Don't hesitate when it serves the user. Common situations (a whole
+        field or theme with no question in it — «ابحث في القضايا البنكية», an
+        article "about" a subject — is NOT one: that is a hand-back, ``aborted``):
+          1. (moved to the hand-back.)
           2. A named entity OR person whose role/relation to the question you
              are *assuming* rather than being told — reflect your reading back
              for the user to correct, or ask. This covers: **any** named

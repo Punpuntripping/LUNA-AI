@@ -108,13 +108,23 @@ You do not restate, rephrase or summarize the question. The user's message — d
 
 So your job is not to clean the question up. It is to make sure the message can be searched as it stands: if the parties, the legal intent, or the role of a mentioned body or person cannot be identified with confidence from the message and its context, **do not guess — use `ask_user`** (see the section below).
 
+**Only the latest message goes down — not the conversation.** `<recent_messages>` is for you alone. So when the latest message cannot be searched on its own because its request lives in earlier messages — «نعم» or «تفضل» to a proposal to search, «ابدا», «مرفق» after the router asked for the facts, an answer to a question the router asked, a suggestion chip accepted by typing — put in `request_quotes` the passages of earlier messages that carry the request: the user's original request, and the question or proposal the latest message answers (or the accepted chip's label). Copy each passage **character for character** from `<recent_messages>`; the code rejects any passage it cannot find there. They go down before the latest message as a word-for-word transcript. Leave `request_quotes` empty when the latest message stands on its own — that is most turns. Never put your own words in it.
+
+## A general request — hand it back to the router (`aborted`)
+
+A deep search answers a legal question. Some requests are not one yet: a broad topic or theme with no question and no facts in it — an article, a post or a lecture "about" a subject, a whole field («ابحث في القضايا البنكية»، «قضايا جنائية»), «كل شي عن نظام العمل». Searching it now returns a generic sweep that serves no one, and asking one question is not enough to shape it. Do not search it and do not `ask_user`: set `"aborted": true` (fill the other fields as usual) and write `handback_note` — one or two Arabic sentences for the router: what the user is after, and what is missing before it can be searched (the angle, the user's facts, what the result is for). The router explores it with the user in the chat, and their answer comes back to you as a new request.
+
+How to tell: from what the user has said, could a search aim at particular rulings or articles, or would it have to sweep a whole field? Content about a theme — an article, a post, a lecture, a presentation — stays general until **the user** names the question or the angle it should argue, **even when they asked for rulings, and even when they already said yes to a search**: agreeing to search does not say what to search for, and an angle the router proposed in its own reply is the router's guess, not the user's choice.
+
+Not general — plan the search: a specific question, a situation with facts, a named نظام or مادة or حكم, a document the user attached and asks about, or a short reply that completes a specific earlier request (use `request_quotes`). Read the whole of `<recent_messages>` before judging: a request that looks bare may have been made specific earlier. When the request was already explored with the user — the reply before their latest message is tagged 〔[نظام] أعاد مخطّطُ البحث …〕 — it is no longer yours to hand back: plan the search on what they answered.
+
 ## The injected context — read it before deciding
 
 Injected below (as available):
 
 - `<case_brief>` — the case information and its memory (if the conversation is linked to a case).
 - `<conversation_summary>` — a summary of the **earlier part of this conversation**, written when it grew long enough to be compacted: what the user asked for, what was produced, and what is still open. **Those turns are NOT in `<recent_messages>`** — this block is the only trace of them, so read it as the conversation's back-story before reading the recent window. (Absent = nothing has been compacted yet, i.e. `<recent_messages>` covers the whole conversation.)
-- `<recent_messages>` — the latest conversation messages (role, content, creation time).
+- `<recent_messages>` — the whole conversation since `<conversation_summary>` (or from its start when there is none): every message the user sees, in order, the latest one last (role, content, creation time).
 - `<prior_searches>` — prior search tasks in the conversation: `title`, `describe_query`, `confidence`, and (when available) a `summary` that recaps what the search covered and what it missed.
 - `<attached_items>` — attached items the router selected, with their full content (memos / notes / highly relevant documents). An uploaded document carries `doc_type` — what it is (`judgment`, `contract`, `claim`, …) — and `forwarded="true"` when it travels downstream as a case document (below).
 
@@ -122,7 +132,7 @@ Four kinds of block flow to the executors and the aggregator: `case_brief`, `pla
 
 Case documents are forwarded for you: every attached item marked `forwarded="true"` (an uploaded judgment, claim, hearing minutes, memo, statement, expert report, financial record, contract or letter — or an upload with no type yet) reaches both executors with its title, type and summary, and reaches the aggregator **with its full text**. The one thing you decide about them is which documents each executor also reads in full (`case_full_text_wis` / `reg_full_text_wis`).
 
-Everything else — `<conversation_summary>`, `<recent_messages>`, and every attached item without `forwarded="true"` (a chat, an official record, the user's notes, a reference text, a draft, a prior card) — is for you alone: if you find in it a fact the search needs, carry it into `planner_brief`.
+Everything else — `<conversation_summary>`, `<recent_messages>`, and every attached item without `forwarded="true"` (a chat, an official record, the user's notes, a reference text, a draft, a prior card) — is for you alone. The request itself goes down only through `request_quotes`, word for word (above); any other fact the search needs, carry into `planner_brief`.
 
 ## The `unfold_workspace_item` tool — reveal a prior item's sources
 
@@ -160,7 +170,7 @@ A field passed to the executors and the aggregator. **Empty is the default** for
 
 Use it **whenever planning genuinely needs it** — whenever a sharper search or a truer reading of the user's situation depends on it. Do not hesitate to call it when you see it serves the user; the most prominent situations:
 
-1. The query names **a domain or a corpus without a specific legal question**, so no useful retrieval can be derived («ابحث في القضايا البنكية» ← ask about the specific issue).
+1. *(A whole field or theme with no question in it is not this tool's case — it is a hand-back; see the section above.)*
 2. **A mentioned body or person whose role/relation to the question you are assuming rather than being told** — so you cannot plan the search without guessing. The rule: do not assume the role — reflect your understanding back to the user for correction, or ask them. This covers:
    - **Any company, brand, or app mentioned by name** (not a generic type): what is its relation to the question? An opponent? A lessor? A seller? An insurer? An employer? A platform? — do not settle it by guessing even if it seems likely.
    - **A government body that is not clearly identifiable, or whose role here is unclear** — unlike a well-known public body whose role is obvious (such as «ناجز» for filing a case), which needs no question.
@@ -183,11 +193,14 @@ Return a JSON object matching this schema only (no text outside it, no comments)
   "planner_brief": "<فارغ افتراضاً؛ حقائق المرفقات/القضية اللازمة للبحث عند وجودها>",
   "case_full_text_wis": ["<WI-N لوثيقة مُمرَّرة يقرأ بحثُ الأحكام نصّها كاملاً — فارغ افتراضاً>"],
   "reg_full_text_wis": ["<WI-N لوثيقة مُمرَّرة يقرأ بحثُ الأنظمة نصّها كاملاً — فارغ افتراضاً>"],
-  "context_labels": ["prior_search_lessons"]
+  "context_labels": ["prior_search_lessons"],
+  "request_quotes": ["<فارغ افتراضاً؛ مقطع منسوخ حرفياً من رسالة سابقة يحمل الطلب، حين لا تُبحث الرسالة الأخيرة وحدها>"],
+  "aborted": false,
+  "handback_note": "<فارغ إلا مع aborted لطلب عامّ>"
 }
 ```
 
-Note: `rationale` and `planner_brief` are written in Arabic.
+Note: `rationale`, `planner_brief` and `handback_note` are written in Arabic.
 
 ## After answering an `ask_user`
 
@@ -210,6 +223,15 @@ Decision: `{"mode": "reg_compliance_led", "support": false, "rationale": "قاع
 
 Query: <query>شركة فصلتني فجأة، النظام وش يقول عن الفصل التعسفي، ووين أرفع شكوى، وكم ممكن المحكمة تحكم لي تعويض؟</query>
 Decision: `{"mode": "full", "support": false, "rationale": "القاعدة والإجراء (كلاهما ضمن المنفّذ النظامي) مع محور قضائي صريح عن مقدار التعويض الذي تحكم به المحكمة ← full."}`
+
+Query (a general request ← hand it back): <query>أبي أجهّز محاضرة لطلاب القانون عن التحكيم التجاري، واستشهد فيها بأحكام</query>
+Decision: `{"mode": "case_led", "support": false, "rationale": "موضوع واسع بلا سؤال ولا زاوية؛ أي بحث الآن مسحٌ عامّ.", "aborted": true, "handback_note": "المستخدم يحضّر محاضرة لطلاب القانون عن التحكيم التجاري مستشهداً بأحكام، ولم يحدد محورها (اتفاق التحكيم، بطلان الحكم، تنفيذه، أو غيرها) فلا يمكن توجيه البحث إلى أحكام بعينها."}`
+
+Query (content on a theme, even after the user agreed to a search ← hand it back): `<recent_messages>` shows the user asking «أبي أكتب ثريد في إكس عن حقوق المستأجر وأستشهد بأحكام», the router replying «أقترح أن أبحث أولاً في نظام الإيجار والأحكام ذات الصلة ثم أكتب الثريد. هل أبدأ بالبحث؟», then the latest message <query>نعم</query>
+Decision: `{"mode": "case_led", "support": false, "rationale": "محتوى عن موضوع واسع؛ موافقة المستخدم على اقتراح البحث لا تحدد الزاوية.", "aborted": true, "handback_note": "المستخدم يريد ثريداً في إكس عن حقوق المستأجر مستشهداً بأحكام، ولم يحدد أي حق أو نزاع يريد أن يدور عليه (الإخلاء، زيادة الأجرة، الصيانة، استرداد التأمين…) فأي بحث الآن مسحٌ عامّ."}`
+
+Query (the request lives in earlier messages ← `request_quotes`): `<recent_messages>` shows the user asking «كم مدة فترة التجربة وهل يجوز تمديدها؟», the router replying «هل العقد محدد المدة أم غير محدد المدة؟», then the latest message <query>محدد المدة</query>
+Decision: `{"mode": "reg_compliance_led", "support": false, "rationale": "سؤال نظامي عن فترة التجربة، والرسالة الأخيرة جوابٌ عن سؤال الموجّه.", "request_quotes": ["كم مدة فترة التجربة وهل يجوز تمديدها؟", "هل العقد محدد المدة أم غير محدد المدة؟"]}`
 
 Query (ambiguous parties ← `ask_user`): <query>نا عندي معامله بديوان المظالم ع معين رافعها من شهر ١١ هجري، وعندنا تحول لشركة الصحة القابضة؛ إذا صدر لي الحكم بعد التحول ينفذونه والا لا؟</query>
 Decision: call `ask_user`. The legal parties are unclear: it is not evident who is the plaintiff and who is the defendant, and «معين» may be an operating system / platform inside the Diwan rather than a party to the dispute, so the search cannot be planned without guessing. Suggested question: «حتى أفيدك بدقة: مَن المدّعي ومَن المدّعى عليه في معاملة ديوان المظالم؟ وهل ”معين“ اسمُ خصمٍ أم منصةٌ/نظامٌ داخل الديوان؟ وما علاقة ”الصحة القابضة“ بالنزاع؟»
@@ -426,6 +448,20 @@ The review is one short message in simple Modern Standard Arabic, whatever diale
 Do not name a law or an article, and do not state a legal conclusion: this is a check of the facts, not an answer."""
 
 
+#: Rendered when the reply the user is answering explored a hand-back
+#: (``deps.after_handback``). The code ignores a second hand-back anyway; this
+#: keeps the decider from spending its decision on one.
+AFTER_HANDBACK_NOTE = (
+    "## This turn — the user has answered your hand-back\n\n"
+    "You handed this request back as too general, and the router asked the user "
+    "to narrow it (the reply tagged 〔[نظام] أعاد مخطّطُ البحث …〕). Their latest "
+    "message is the answer. Do not hand it back again: plan the search, with "
+    "`request_quotes` carrying the original request and the router's question, "
+    "word for word. `ask_user` stays available if one specific fact is still "
+    "missing."
+)
+
+
 def build_decider_user_message(query: str) -> str:
     """Wrap the raw user query in an XML-ish ``<query>`` block for phase 1."""
     return f"<query>{_esc(query)}</query>"
@@ -478,6 +514,83 @@ def compose_resumed_query(messages) -> str:
     return "\n\n".join([original, *exchanges])
 
 
+#: Speaker labels of the transcript :func:`compose_request_query` builds.
+TRANSCRIPT_USER_LABEL = "المستخدم:"
+TRANSCRIPT_ASSISTANT_LABEL = "ريحان:"
+#: Bounds on ``request_quotes`` — the decider is sent back past them.
+MAX_REQUEST_QUOTES = 4
+MAX_REQUEST_QUOTE_CHARS = 6000
+
+
+def _norm_ws(text: str) -> str:
+    """Unescape and collapse whitespace — how a quote is matched, and kept."""
+    return " ".join(html.unescape(str(text or "")).split())
+
+
+def _earlier_messages(messages) -> list:
+    """The messages before the user's latest one: the only place a quote may come from.
+
+    The latest message is the ``<query>`` itself, so quoting it would only
+    repeat it. When no user message is present, every message counts.
+    """
+    msgs = list(messages or [])
+    for i in range(len(msgs) - 1, -1, -1):
+        if getattr(msgs[i], "role", "") == "user":
+            return msgs[:i]
+    return msgs
+
+
+def locate_request_quotes(quotes, messages) -> tuple[list[tuple[int, int, str, str]], list[str]]:
+    """Find each quote, word for word, in a message before the user's latest one.
+
+    Returns ``(found, missing)``. ``found`` holds ``(message_index, position,
+    role, text)`` with ``text`` the quote as matched (whitespace collapsed),
+    newest occurrence first when a passage repeats. ``missing`` holds the quotes
+    found nowhere — the decider's validator sends those back.
+    """
+    earlier = _earlier_messages(messages)
+    bodies = [_norm_ws(getattr(m, "content", "")) for m in earlier]
+    found: list[tuple[int, int, str, str]] = []
+    missing: list[str] = []
+    for quote in quotes or []:
+        text = _norm_ws(quote)
+        if not text:
+            continue
+        for idx in range(len(bodies) - 1, -1, -1):
+            pos = bodies[idx].find(text)
+            if pos >= 0:
+                found.append((idx, pos, getattr(earlier[idx], "role", "user"), text))
+                break
+        else:
+            missing.append(quote)
+    return found, missing
+
+
+def compose_request_query(quotes, messages, query: str) -> str:
+    """The search query when the latest message needs earlier turns, all verbatim.
+
+    A transcript in conversation order: each quoted passage under its speaker,
+    then the latest message (``query``) under the user's label. Nothing is
+    reworded — the passages were matched character for character in
+    ``messages`` (:func:`locate_request_quotes`), and ``query`` is the user's
+    message as written (on a resume, the composed original + question + reply).
+    No usable quote → ``query`` unchanged, which is every ordinary turn.
+    """
+    found, _missing = locate_request_quotes(quotes, messages)
+    if not found:
+        return query
+    lines: list[str] = []
+    seen: set[str] = set()
+    for _idx, _pos, role, text in sorted(found, key=lambda f: (f[0], f[1])):
+        if text in seen:
+            continue
+        seen.add(text)
+        label = TRANSCRIPT_USER_LABEL if role == "user" else TRANSCRIPT_ASSISTANT_LABEL
+        lines.append(f"{label} {text}")
+    lines.append(f"{TRANSCRIPT_USER_LABEL} {query}")
+    return "\n".join(lines)
+
+
 def build_responder_user_message(query: str) -> str:
     """Wrap the raw user query for phase 3.
 
@@ -519,8 +632,8 @@ def _render_compaction_summary(compaction_summary_md: str | None) -> str | None:
     ``deps.compaction_summary_md`` is the ``content_md`` of the latest
     ``kind='convo_context'`` workspace item (written by ``convo_compactor``).
     It stands in for the turns that fell behind ``compacted_through_message_id``
-    — turns the decider's ``<recent_messages>`` window (a fixed-size tail, NOT
-    cutoff-filtered) does not contain. The trailing note is what makes the
+    — turns the decider's ``<recent_messages>`` (every message after that
+    cutoff, as the router sees it) does not contain. The trailing note is what makes the
     boundary explicit to the LLM; the router's ``inject_compaction_summary``
     conveys the same "before the current window" framing in one line.
 
@@ -569,12 +682,21 @@ def _render_recent_messages(messages) -> str | None:
     parts.append("</recent_messages>")
     if has_tag:
         parts.append(
-            "<!-- A tag like 〔[نظام] … (agent_family=…) … WI-N〕 at the start of "
-            "an assistant reply means a specialist produced that reply and "
-            "created item WI-N (context only). A reply may also END with "
-            "〔[نظام] اقتُرح على المستخدم: … · …〕 — the next-step suggestions "
-            "offered under it as clickable chips; if the user's reply accepts "
-            "one («نعم»، «الأولى»), treat that chip's label as the request. -->"
+            "<!-- System notes, context only. At the start of an assistant reply: "
+            "〔[نظام] … (agent_family=…) … WI-N〕 means a specialist produced that "
+            "reply and created item WI-N; 〔[نظام] هذا سؤال طرحه متخصصٌ …〕 or "
+            "〔[نظام] هذه خطة عرضها متخصصٌ …〕 means a specialist paused mid-task "
+            "to ask or to show its plan, and the user's next message answers it; "
+            "〔[نظام] أعاد مخطّطُ البحث هذا الطلبَ دون بحث …〕 means a request was "
+            "handed back as too general and that reply asked the user to narrow "
+            "it, so the user's next message is their answer. At the end of a "
+            "reply: 〔[نظام] سُئل المستخدم: …〕 is the question asked under it, "
+            "and 〔[نظام] اقتُرح على المستخدم: … · …〕 the next-step chips offered "
+            "under it — if the user's reply accepts one («نعم»، «الأولى»), that "
+            "chip's label is the request. At the start of a user message: "
+            "〔[نظام] أرفق المستخدم مع هذه الرسالة: …〕 names what they attached. "
+            "None of these notes is ever a passage for `request_quotes` except a "
+            "chip's label. -->"
         )
     return "\n".join(parts)
 
@@ -721,6 +843,8 @@ def build_decider_instructions(deps) -> str:
         blocks.append(
             f"<prior_coverage>\n{_esc(render_prior_coverage(handoff))}\n</prior_coverage>"
         )
+    if getattr(deps, "after_handback", False):
+        blocks.append(AFTER_HANDBACK_NOTE)
 
     if not blocks:
         # Nothing to render — return a header-only stub so the LLM knows the
@@ -909,6 +1033,9 @@ __all__ = [
     "build_decider_user_message",
     "build_responder_user_message",
     "compose_resumed_query",
+    "compose_request_query",
+    "locate_request_quotes",
+    "AFTER_HANDBACK_NOTE",
     "build_decider_instructions",
     "build_responder_instructions",
     "render_responder_context",

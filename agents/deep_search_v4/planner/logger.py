@@ -62,6 +62,8 @@ EVENT_PAUSED = "planner_paused"
 EVENT_RETRIEVAL_DONE = "planner_retrieval_done"
 EVENT_RESPONDED = "planner_responded"
 EVENT_ERROR = "planner_error"
+# Phase 1 handed a too-general request back to the router (no search ran).
+EVENT_HANDBACK = "planner_handback"
 
 
 def emit(deps: Any, event: dict) -> None:
@@ -85,4 +87,5 @@ __all__ = [
     "EVENT_RETRIEVAL_DONE",
     "EVENT_RESPONDED",
     "EVENT_ERROR",
+    "EVENT_HANDBACK",
 ]
