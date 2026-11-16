@@ -6,6 +6,14 @@ and writes the text back into the attachment's own ``workspace_items.content_md`
 With ``ATTACHMENT_SEGMENTER_ENABLED`` on for the user it also writes one
 ``attachment_pages`` row per page (migration 215), best-effort.
 
+How much of each file is read is the OCR page budget's call
+(``shared/quota/ocr_budget.py``, plan ``ocr_page_budget.md``): one quota read
+per run, all of the run's files planned together (smallest first). A file the
+budget cannot fully cover is read in part — the text then marks every skipped
+run of pages (``partial.py``) and the stats carry a notice for the user. A file
+with no budget left is left untouched (no ``ocr_status``), so it is read on a
+later turn once pages are available again.
+
 Best-effort by contract — it must **never raise**. Every per-candidate failure
 is caught, logged, and recorded on the row as an ``ocr_status`` marker so the
 file is never re-attempted. The function returns whatever succeeded.
@@ -19,12 +27,16 @@ from supabase import Client as SupabaseClient
 from agents.utils.segmenter_flags import segmenter_enabled
 from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import record_call
+from shared import quota
 from shared.config import get_settings
 from shared.observability import get_logfire
+from shared.quota.ocr_budget import FilePlan, OcrBudget, page_ranges, plan_files
 from shared.storage.client import get_signed_url
 
-from .mistral_ocr import OCR_MAX_PAGES, ocr_document
-from .models import OcrExtractionStats, OcrPage
+from .big_file import ocr_big_pdf
+from .mistral_ocr import MISTRAL_MAX_BYTES, MISTRAL_MAX_PAGES, ocr_document
+from .models import OcrDocumentResult, OcrExtractionStats, OcrPage, PartialRead
+from .partial import assemble_partial
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
@@ -32,11 +44,11 @@ _logfire = get_logfire()
 # ---------------------------------------------------------------------------
 # Module constants (see .claude/plans/ocr_extraction_agent.md)
 # ---------------------------------------------------------------------------
-OCR_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB — over this → skipped_too_large
-# OCR_MAX_PAGES is owned by mistral_ocr; re-exported for callers/tests.
-# No per-user cap here: the plan's ocr_pages_monthly quota is enforced by the
-# message gate (message_service._estimate_ocr_pages) + the post-OCR settle.
-__all__ = ["run_ocr_extraction", "OCR_MAX_FILE_BYTES", "OCR_MAX_PAGES"]
+# Over this → skipped_too_large. Files up to MISTRAL_MAX_BYTES go to Mistral by
+# URL; bigger ones take the big-file path (big_file.py). The upload routes cap
+# attachments separately (upload_session_service.MAX_FILE_SIZE).
+OCR_MAX_FILE_BYTES = 512 * 1024 * 1024
+__all__ = ["run_ocr_extraction", "OCR_MAX_FILE_BYTES", "budget_notices"]
 
 _SUPPORTED_MIME_TYPES = {"application/pdf", "image/png", "image/jpeg"}
 _SIGNED_URL_EXPIRY_S = 3600  # ~1 hour — Mistral fetches the file server-side
@@ -117,6 +129,103 @@ def _store_pages(
     return len(rows)
 
 
+def _file_size(metadata: dict) -> int:
+    try:
+        return int(metadata.get("file_size_bytes") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _page_count(metadata: dict) -> int | None:
+    """The file's page count for planning: 1 for an image, else the upload-time
+    estimate (``metadata.page_count``); None when unknown."""
+    if str(metadata.get("mime_type") or "").startswith("image/"):
+        return 1
+    try:
+        n = int(metadata.get("page_count"))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _display_name(row: dict) -> str:
+    meta = row.get("metadata") or {}
+    return str(meta.get("filename") or row.get("title") or "المرفق")
+
+
+def _needs_cutting(metadata: dict, plan: FilePlan) -> bool:
+    """Read a PDF by cutting out its pages (big_file.py) rather than handing
+    Mistral the whole file: when it is read in part (fewer bytes to Mistral, and
+    the real page count replaces the client's estimate), when its length is
+    unknown, or when it is over one of Mistral's limits."""
+    if metadata.get("mime_type") != "application/pdf":
+        return False
+    return (
+        not plan.complete
+        or plan.total_pages is None
+        or plan.total_pages > MISTRAL_MAX_PAGES
+        or _file_size(metadata) > MISTRAL_MAX_BYTES
+    )
+
+
+async def _ocr(
+    signed_url: str, mime_type: str, metadata: dict, plan: FilePlan, item_id: str,
+) -> OcrDocumentResult:
+    if not _needs_cutting(metadata, plan):
+        return await ocr_document(signed_url, mime_type, plan.pages)
+    try:
+        return await ocr_big_pdf(signed_url, plan.pages, plan.total_pages)
+    except Exception:  # noqa: BLE001
+        # A PDF pypdf cannot open (encrypted, damaged) can still go to Mistral
+        # whole, with the page list — when it is within Mistral's limits.
+        if _file_size(metadata) > MISTRAL_MAX_BYTES or (plan.total_pages or 0) > MISTRAL_MAX_PAGES:
+            raise
+        logger.warning("OCR: cutting failed for item %s — sending the whole file", item_id, exc_info=True)
+        return await ocr_document(signed_url, mime_type, plan.pages)
+
+
+def _partial_total(plan: FilePlan, result: OcrDocumentResult) -> int | None | bool:
+    """``False`` when the whole document was read; otherwise the document's page
+    total for the partial-read notice (None = not known)."""
+    total = result.total_pages if result.total_pages is not None else plan.total_pages
+    if total is not None:
+        return False if result.page_count >= total else total
+    if plan.pages is None:
+        return False
+    # Unknown length: fewer pages back than asked for means the document ended.
+    return False if result.page_count < len(plan.pages) else None
+
+
+async def _read_budget(supabase: SupabaseClient, user_id: str) -> OcrBudget:
+    return await quota.ocr_budget(supabase, user_id)
+
+
+def budget_notices(stats: OcrExtractionStats | None) -> list[str]:
+    """The user-facing lines for this run's partial and unread files (D8b).
+
+    Shown by the orchestrator as ``status`` events, on both OCR paths.
+    """
+    if stats is None:
+        return []
+    from shared.quota.ocr_budget import format_ranges
+
+    lines: list[str] = []
+    for pr in getattr(stats, "partial", None) or []:
+        if pr.total_pages is None:
+            lines.append(
+                f"قرأنا أول {len(pr.pages)} صفحة من «{pr.name}» حسب رصيدك، "
+                "وقد تكون فيه صفحات أخرى لم تُقرأ."
+            )
+        else:
+            lines.append(
+                f"قرأنا {len(pr.pages)} صفحة من أصل {pr.total_pages} من «{pr.name}» "
+                f"حسب رصيدك: {format_ranges(pr.pages)}. بقية الصفحات لم تُقرأ."
+            )
+    for name in getattr(stats, "no_budget", None) or []:
+        lines.append(f"لم نقرأ «{name}» لأن رصيد قراءة الملفات نفد.")
+    return lines
+
+
 async def run_ocr_extraction(
     supabase: SupabaseClient,
     conversation_id: str,
@@ -172,6 +281,9 @@ async def run_ocr_extraction(
                 "failed": stats.failed,
                 "empty": stats.empty,
                 "pages_stored": stats.pages_stored,
+                "partial": len(stats.partial),
+                "no_budget": len(stats.no_budget),
+                "budget_unavailable": stats.budget_unavailable,
             })
         except Exception:  # noqa: BLE001
             pass
@@ -202,7 +314,7 @@ async def _run_inner(
     # 1. Load attachment rows for the conversation.
     rows = (
         supabase.table("workspace_items")
-        .select("item_id, storage_path, metadata")
+        .select("item_id, title, storage_path, metadata")
         .eq("conversation_id", conversation_id)
         .eq("kind", "attachment")
         .is_("deleted_at", "null")
@@ -233,10 +345,11 @@ async def _run_inner(
 
     bucket = settings.STORAGE_BUCKET_DOCUMENTS
 
+    # 2. Screen out what OCR can never read (marked, never retried).
+    readable: list[dict] = []
     for row in candidates:
         item_id = row.get("item_id")
         metadata = row.get("metadata") or {}
-        storage_path = row.get("storage_path")
         mime_type = metadata.get("mime_type")
 
         # --- Unsupported mime --------------------------------------------
@@ -246,21 +359,46 @@ async def _run_inner(
             continue
 
         # --- Size --------------------------------------------------------
-        file_size = metadata.get("file_size_bytes") or 0
-        try:
-            file_size = int(file_size)
-        except (TypeError, ValueError):
-            file_size = 0
-        if file_size > OCR_MAX_FILE_BYTES:
+        if _file_size(metadata) > OCR_MAX_FILE_BYTES:
             stats.skipped_too_large += 1
             _mark_status(supabase, item_id, metadata, "skipped_too_large")
             continue
 
         # --- Missing storage path (linked-from-case attachments have only a
         #     document_id; those are out of scope for this step) -----------
-        if not storage_path:
+        if not row.get("storage_path"):
             stats.skipped_unsupported += 1
             _mark_status(supabase, item_id, metadata, "skipped_unsupported")
+            continue
+
+        readable.append(row)
+    if not readable:
+        return stats.filled_item_ids
+
+    # 3. The page budget — one quota read, every file planned together (D5).
+    #    Unreadable quota → read nothing and mark nothing: the files are picked
+    #    up on the next turn rather than spending pages that cannot be counted.
+    try:
+        budget = await _read_budget(supabase, user_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("OCR: quota read failed — files left for the next turn", exc_info=True)
+        stats.budget_unavailable = True
+        return stats.filled_item_ids
+    plans = plan_files(
+        [(row.get("item_id"), _page_count(row.get("metadata") or {})) for row in readable],
+        budget,
+    )
+
+    for row, plan in zip(readable, plans):
+        item_id = row.get("item_id")
+        metadata = row.get("metadata") or {}
+        storage_path = row.get("storage_path")
+        mime_type = metadata.get("mime_type")
+        name = _display_name(row)
+
+        # --- No pages left: leave it for a later turn (no ocr_status) -------
+        if plan.pages == ():
+            stats.no_budget.append(name)
             continue
 
         # --- Signed URL --------------------------------------------------
@@ -278,7 +416,7 @@ async def _run_inner(
 
         # --- Mistral OCR call --------------------------------------------
         try:
-            ocr_result = await ocr_document(signed_url, mime_type)
+            ocr_result = await _ocr(signed_url, mime_type, metadata, plan, item_id)
         except Exception as exc:  # noqa: BLE001
             stats.failed += 1
             logger.warning("OCR: Mistral call failed for item %s", item_id, exc_info=True)
@@ -287,17 +425,35 @@ async def _run_inner(
             )
             continue
 
-        text = (ocr_result.text or "").strip()
-        if not text:
+        if not (ocr_result.text or "").strip():
             stats.empty += 1
             _mark_status(supabase, item_id, metadata, "empty")
             continue
+
+        # --- Partial read: mark the skipped pages in the text -------------
+        partial_total = _partial_total(plan, ocr_result)
+        read_pages = [p.page_no for p in ocr_result.pages]
+        if partial_total is not False:
+            text, anchored = assemble_partial(ocr_result.pages, partial_total)
+            ocr_result = OcrDocumentResult(
+                text=text, page_count=ocr_result.page_count,
+                model=ocr_result.model, pages=anchored,
+            )
+            stats.partial.append(PartialRead(
+                item_id=item_id, name=name, pages=tuple(read_pages),
+                total_pages=partial_total,
+            ))
+        text = (ocr_result.text or "").strip()
 
         # --- Persist content + status -----------------------------------
         merged = dict(metadata)
         merged["ocr_status"] = "done"
         merged["ocr_pages"] = ocr_result.page_count
         merged["ocr_chars"] = len(text)
+        if partial_total is not False:
+            merged["ocr_partial"] = True
+            merged["ocr_page_total"] = partial_total
+            merged["ocr_page_ranges"] = [list(r) for r in page_ranges(read_pages)]
         try:
             (
                 supabase.table("workspace_items")

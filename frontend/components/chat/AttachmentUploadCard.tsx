@@ -4,11 +4,14 @@ import { useEffect, useState } from "react";
 import { FileText, X, Check, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { generatePdfThumbnail } from "@/lib/pdf-thumbnail";
+import { formatRanges, type OcrFilePreview } from "@/lib/ocr-budget";
 import type { PendingFile } from "@/types";
 
 interface AttachmentUploadCardProps {
   file: PendingFile;
   onRemove: (id: string) => void;
+  /** How many of this PDF's pages the reading allowance covers (shown only when not all). */
+  ocrPreview?: OcrFilePreview;
   className?: string;
 }
 
@@ -40,8 +43,11 @@ function formatBytes(bytes: number): string {
 export function AttachmentUploadCard({
   file,
   onRemove,
+  ocrPreview,
   className,
 }: AttachmentUploadCardProps) {
+  const partialRead =
+    ocrPreview && ocrPreview.pages.length < ocrPreview.totalPages ? ocrPreview : null;
   const isUploading =
     file.uploadStatus === "queued" || file.uploadStatus === "uploading";
   const isCompleted = file.uploadStatus === "completed";
@@ -171,6 +177,21 @@ export function AttachmentUploadCard({
         {isFailed && (
           <p className="text-xs text-destructive">
             {file.errorMessage ?? "فشل الرفع"}
+          </p>
+        )}
+
+        {partialRead && !isFailed && (
+          <p
+            className="text-xs text-warning-fg tabular-nums"
+            title={
+              partialRead.pages.length > 0
+                ? `الصفحات التي ستُقرأ: ${formatRanges(partialRead.pages)} — حسب رصيدك`
+                : "نفد رصيد قراءة الملفات"
+            }
+          >
+            {partialRead.pages.length > 0
+              ? `سيُقرأ ${partialRead.pages.length} من ${partialRead.totalPages} صفحة`
+              : "نفد رصيد قراءة الملفات"}
           </p>
         )}
       </div>

@@ -89,6 +89,7 @@ from typing import Any, Optional
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
+from shared.quota.ocr_budget import OcrBudget, budget_from_state
 from shared.quota.redis_store import Meter
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,20 @@ async def _quota_state(supabase: SupabaseClient, user_id: str) -> dict[str, Any]
         rows = getattr(res, "data", None) or []
         return rows[0] if rows else None
     return await asyncio.to_thread(_call)
+
+
+async def ocr_budget(supabase: SupabaseClient, user_id: str) -> "OcrBudget":
+    """The user's OCR page budget for the OCR runner (plan ocr_page_budget.md).
+
+    The same RPC row the gate reads, so the runner plans against exactly what
+    the gate enforced a moment earlier. A user with no plan (locked) gets a zero
+    budget. Raises on DB failure — the runner then leaves its files unread for
+    the next turn instead of spending pages it cannot count.
+    """
+    st = await _quota_state(supabase, user_id)
+    if st is None or st.get("locked"):
+        return OcrBudget(total=0, used=0, per_file_cap=1)
+    return budget_from_state(st)
 
 
 def _rolling_reset(oldest_iso: Any, window_seconds: int) -> datetime:
@@ -969,6 +984,7 @@ async def check(
     *,
     needs_ocr: bool = False,
     est_ocr_pages: int = 0,
+    ocr_page_counts: list[int] | None = None,
     needs_ord: bool = True,
     needs_web: bool = False,
     est_web_calls: int = 0,
@@ -1013,6 +1029,14 @@ async def check(
     little; conservative, accepted. A window that is genuinely spent still
     reports ``reason="limit"``; only a reserve-only shortfall reports
     ``reason="parallel_reserve"`` (the user is not out of points).
+
+    ``ocr_page_counts`` (plan ocr_page_budget.md, D9): one entry per attachment
+    this send will OCR. When given it replaces ``needs_ocr``/``est_ocr_pages``:
+    a file bigger than the budget is no longer refused — the OCR runner reads
+    the pages the budget allows (shared/quota/ocr_budget.py) and says so — so
+    the gate blocks only when NOTHING can be read: the plan has no OCR, or no
+    page is left. An empty list = nothing to OCR (a blog chip, a file already
+    extracted) = no OCR check at all.
     """
     try:
         st = await _quota_state(supabase, user_id)
@@ -1099,7 +1123,18 @@ async def check(
                 reason="parallel_reserve",
             )
 
-    if needs_ocr and st.get("ocr_pages_monthly") is not None:
+    if ocr_page_counts is not None:
+        if ocr_page_counts and st.get("ocr_pages_monthly") is not None:
+            m_limit = int(st["ocr_pages_monthly"])
+            ocr_resets = _rolling_reset(st.get("ocr_oldest"), MONTH_WINDOW_S)
+            if m_limit <= 0:
+                raise await _quota_block(supabase, plan, "ocr", "monthly", 0, 0, ocr_resets)
+            used_pages = int(st.get("ocr_pages") or 0)
+            if used_pages >= m_limit:                  # not one page left
+                raise await _quota_block(
+                    supabase, plan, "ocr", "monthly", used_pages, m_limit, ocr_resets,
+                )
+    elif needs_ocr and st.get("ocr_pages_monthly") is not None:
         m_limit = int(st["ocr_pages_monthly"])
         ocr_resets = _rolling_reset(st.get("ocr_oldest"), MONTH_WINDOW_S)
         if m_limit <= 0:

@@ -19,6 +19,15 @@ interface AttachmentMetadata {
    */
   ocr_status?: string;
   /**
+   * OCR page budget (plan ocr_page_budget.md): set when only some pages were
+   * read. ``ocr_page_ranges`` are the inclusive 1-based runs read;
+   * ``ocr_page_total`` is the document's length (null when unknown).
+   */
+  ocr_partial?: boolean;
+  ocr_pages?: number;
+  ocr_page_total?: number | null;
+  ocr_page_ranges?: [number, number][];
+  /**
    * Retention-sweep marker (backend/app/services/attachment_cleanup.py): the
    * original file has been removed from storage. The item and its extracted
    * text survive — this is the only thing that is gone, so there is nothing to
@@ -57,6 +66,8 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
 
   if (ocrText && (purged || !showOriginal)) {
     return (
+      <div className="flex h-full min-h-0 flex-1 flex-col">
+      {meta.ocr_partial && <PartialReadNote meta={meta} />}
       <ArtifactPreview
         content={ocrText}
         copyLabel="نسخ النص المستخرج"
@@ -78,6 +89,7 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
           )
         }
       />
+      </div>
     );
   }
 
@@ -117,6 +129,27 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
         <OcrStatusNote status={meta.ocr_status} />
       )}
       <OriginalFileView item={item} />
+    </div>
+  );
+}
+
+/**
+ * The lasting record of a partial read (plan ocr_page_budget.md D8): which
+ * pages the reading allowance covered. The extracted text itself carries the
+ * same notice and a marker at every skipped run, for the agents.
+ */
+function PartialReadNote({ meta }: { meta: AttachmentMetadata }) {
+  const read = meta.ocr_pages ?? 0;
+  const ranges = (meta.ocr_page_ranges ?? [])
+    .map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`))
+    .join("، ");
+  const text =
+    meta.ocr_page_total
+      ? `قُرئت ${read} صفحة من أصل ${meta.ocr_page_total} حسب رصيدك: ${ranges}`
+      : `قُرئت أول ${read} صفحة حسب رصيدك، وقد تكون في الملف صفحات أخرى لم تُقرأ`;
+  return (
+    <div className="border-b bg-warning px-3 py-1.5 text-xs text-warning-fg tabular-nums">
+      {text}
     </div>
   );
 }

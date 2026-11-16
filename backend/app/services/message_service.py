@@ -544,22 +544,21 @@ def _insert_attachment_links(
     supabase.table("message_attachments").insert(rows).execute()
 
 
-def _estimate_ocr_pages(supabase: SupabaseClient, attachment_ids: list) -> int:
-    """Project the OCR page total for this message's attachments so the quota
-    gate counts a multi-page document accurately *before* OCR runs.
+def _attachment_page_counts(supabase: SupabaseClient, attachment_ids: list) -> list[int]:
+    """One entry per attachment this send will OCR: its page count (the
+    upload-time client estimate, ``metadata.page_count``), or a 1-page floor
+    when unknown. Feeds the quota gate's ``ocr_page_counts``.
 
-    Per attachment, prefers the authoritative post-OCR count (``metadata.ocr_pages``,
-    present on a re-sent attachment), else the upload-time client estimate
-    (``metadata.page_count``), else a 1-page floor (unknown). Falls back to one
-    page per attachment on any query failure — the gate must still run, and the
-    post-OCR settle bills the real count regardless.
+    Left out, because OCR will never read them:
+      * non-``attachment`` kinds — blog paste-chips and notes ride the same
+        ``attachment_ids`` array;
+      * attachments that already carry ``metadata.ocr_status`` — OCR attempts a
+        file once (``ocr_extractor.runner``), so a re-sent file costs nothing.
 
-    ``attachment_ids`` can also carry non-attachment workspace items (blog
-    paste-chips ride the same array) — those never reach OCR, so resolved
-    non-``attachment`` kinds contribute 0 instead of the safety floor.
+    A failed lookup counts one page per id — the gate must still run.
     """
     if not attachment_ids:
-        return 0
+        return []
     try:
         result = (
             supabase.table("workspace_items")
@@ -568,26 +567,32 @@ def _estimate_ocr_pages(supabase: SupabaseClient, attachment_ids: list) -> int:
             .execute()
         )
     except Exception as e:  # noqa: BLE001
-        logger.warning("OCR page estimate query failed; using 1/attachment: %s", e)
-        return len(attachment_ids)
+        logger.warning("OCR page count query failed; using 1/attachment: %s", e)
+        return [1] * len(attachment_ids)
 
     rows_by_id = {
         r.get("item_id"): r
         for r in (getattr(result, "data", None) or [])
     }
-    total = 0
+    counts: list[int] = []
     for aid in attachment_ids:
         row = rows_by_id.get(aid)
         if row is not None and row.get("kind") != "attachment":
-            continue  # blog import / note — no OCR, no page projection
+            continue  # blog import / note — no OCR
         meta = (row or {}).get("metadata") or {}
-        raw = meta.get("ocr_pages") or meta.get("page_count")
+        if "ocr_status" in meta:
+            continue  # already attempted — OCR never reads it again
         try:
-            pages = int(raw)
+            pages = int(meta.get("page_count"))
         except (TypeError, ValueError):
             pages = 0
-        total += pages if pages > 0 else 1  # unknown → 1-page floor
-    return total
+        counts.append(pages if pages > 0 else 1)  # unknown → 1-page floor
+    return counts
+
+
+def _estimate_ocr_pages(supabase: SupabaseClient, attachment_ids: list) -> int:
+    """Total of :func:`_attachment_page_counts` (kept for the eval scripts)."""
+    return sum(_attachment_page_counts(supabase, attachment_ids))
 
 
 def _delete_message_row(supabase: SupabaseClient, message_id: str) -> None:
@@ -765,19 +770,19 @@ async def send_message_stream(
     # quota.check so each limited window must also hold the points reserve.
     # k == 0 skips the cap read entirely: a lone send is exactly as before.
     #
-    # Project OCR pages from each attachment's stored page count (client-reported
-    # at upload; real ocr_pages on a re-sent file) so the gate counts multi-page
-    # documents accurately before OCR runs — not 1 page per file. Falls back to a
-    # 1-page floor per attachment when unknown. The post-OCR settle remains the
-    # authoritative billing count; this only drives the pre-send block decision.
-    est_ocr_pages = 0
+    # OCR page budget (plan ocr_page_budget.md): the gate gets one page count per
+    # file this send will OCR and refuses only when NOT ONE page can be read. A
+    # file bigger than what is left is no longer refused — the OCR runner reads
+    # the pages the budget allows and tells the user which. The post-OCR ledger
+    # row stays the authoritative billing count.
+    ocr_page_counts: list[int] = []
     if attachment_ids:
         try:
-            est_ocr_pages = await run_db(
-                _estimate_ocr_pages, supabase, attachment_ids
+            ocr_page_counts = await run_db(
+                _attachment_page_counts, supabase, attachment_ids
             )
         except Exception:  # noqa: BLE001
-            est_ocr_pages = len(attachment_ids)
+            ocr_page_counts = [1] * len(attachment_ids)
     # A passing check returns the send's deep-search gate (migration 197, plan
     # deep_search_plan_gate.md) — built from the same RPC row, handed to
     # handle_message below. The orchestrator asks it at every deep_search entry
@@ -794,8 +799,7 @@ async def send_message_stream(
             getattr(request.app.state, "redis", None),
             supabase,
             user_id,
-            needs_ocr=bool(attachment_ids),
-            est_ocr_pages=est_ocr_pages,
+            ocr_page_counts=ocr_page_counts,
             needs_ord=True,
             needs_web=False,  # future skill
             inflight_runs=len(_inflight_others),

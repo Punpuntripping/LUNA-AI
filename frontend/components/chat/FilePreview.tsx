@@ -1,8 +1,13 @@
 "use client";
 
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
+import { usageApi } from "@/lib/api";
+import { usageKeys } from "@/hooks/use-usage";
+import { budgetFromUsage, planFiles } from "@/lib/ocr-budget";
 import { AttachmentUploadCard } from "@/components/chat/AttachmentUploadCard";
-import type { PendingFile } from "@/types";
+import type { PendingFile, UsageReport } from "@/types";
 
 interface FilePreviewProps {
   files: PendingFile[];
@@ -14,9 +19,25 @@ interface FilePreviewProps {
 /**
  * Horizontal strip of attachment cards shown above the chat input. Each
  * card renders its own progress / status / cancel UI — this component
- * only handles the layout.
+ * only handles the layout, plus the OCR page-budget preview: when a PDF is
+ * bigger than what its reading allowance covers, its card says how many of
+ * its pages will be read (plan ocr_page_budget.md D8c). /usage is fetched only
+ * once a PDF with a known page count is attached.
  */
 export function FilePreview({ files, onRemove, className }: FilePreviewProps) {
+  const hasCountedPdf = files.some((f) => (f.pageCount ?? 0) > 0);
+  const { data: usage } = useQuery<UsageReport>({
+    queryKey: usageKeys.current(),
+    queryFn: usageApi.get,
+    enabled: hasCountedPdf,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const previews = useMemo(() => {
+    const budget = budgetFromUsage(usage);
+    return budget ? planFiles(files, budget) : null;
+  }, [files, usage]);
+
   if (files.length === 0) return null;
 
   return (
@@ -32,6 +53,7 @@ export function FilePreview({ files, onRemove, className }: FilePreviewProps) {
           key={file.id}
           file={file}
           onRemove={onRemove}
+          ocrPreview={previews?.get(file.id)}
         />
       ))}
     </div>

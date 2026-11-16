@@ -72,7 +72,7 @@ from agents.memory.convo_memory_writer import (
     build_memory_writer_input,
     schedule_memory_writer,
 )
-from agents.memory.ocr_extractor import run_ocr_extraction
+from agents.memory.ocr_extractor import budget_notices, run_ocr_extraction
 from agents.memory.summarize import summarize_workspace_item
 from agents.deep_search_v4.planner.logger import (
     EVENT_DECIDED,
@@ -2709,6 +2709,7 @@ async def _handle_message_inner(
         #     _load_reply_attachment_ids.
         ocr_item_ids: list[str] = []
         _ocr_failed = 0
+        ocr_stats = None
         try:
             # Whole-step budget: N hung attachments (≤60s each after fix 2) must not
             # eat the overall pipeline budget. Caps the worst case of k×60s.
@@ -2723,6 +2724,9 @@ async def _handle_message_inner(
             _ocr_failed = 1
         if _ocr_failed:
             yield {"type": "status", "text": _OCR_FAILED_STATUS}
+        # Page budget (ocr_page_budget.md D8b): say which pages of a file were read.
+        for _line in budget_notices(ocr_stats):
+            yield {"type": "status", "text": _line}
 
         # 0b. Summarize the freshly-OCR'd attachments inline (awaited) before
         #     routing or resuming.
@@ -2984,6 +2988,9 @@ async def _run_pre_router_helpers(
     failed = (getattr(ocr.result, "failed", 0) or 0) if ocr.ok else 1
     if failed:
         yield {"type": "status", "text": _OCR_FAILED_STATUS}
+    # Page budget (ocr_page_budget.md D8b): say which pages of a file were read.
+    for line in budget_notices(ocr.result if ocr.ok else None):
+        yield {"type": "status", "text": line}
     await turn.ready("router", only=("summary",))
 
 

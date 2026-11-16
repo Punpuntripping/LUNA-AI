@@ -29,16 +29,36 @@ class OcrDocumentResult:
     Attributes:
         text: The joined markdown text of every extracted page.
         page_count: The number of pages Mistral *actually* extracted
-            (``len(response.pages)``, capped at ``OCR_MAX_PAGES``).
+            (``len(response.pages)``) — what is billed.
         model: The Mistral OCR model id used (e.g. ``mistral-ocr-latest``).
         pages: Every extracted page with its offset inside ``text``. ``text`` is
             built exactly as before; the pages are extra.
+        total_pages: The document's real page count when it was counted (the
+            big-file path parses the PDF); None otherwise.
     """
 
     text: str
     page_count: int
     model: str
     pages: list[OcrPage] = field(default_factory=list)
+    total_pages: int | None = None
+
+
+@dataclass(frozen=True)
+class PartialRead:
+    """A file the page budget let OCR read only in part (plan ocr_page_budget.md).
+
+    Attributes:
+        item_id: The attachment's ``workspace_items.item_id``.
+        name: Its filename, for the user's notice.
+        pages: The 1-based page numbers read, ascending.
+        total_pages: The document's page count; None when not known.
+    """
+
+    item_id: str
+    name: str
+    pages: tuple[int, ...]
+    total_pages: int | None
 
 
 @dataclass
@@ -58,3 +78,9 @@ class OcrExtractionStats:
     filled_item_ids: list[str] = field(default_factory=list)
     #: attachment_pages rows written (segmenter flag on only; best-effort).
     pages_stored: int = 0
+    #: Files read in part because of the page budget (one notice each).
+    partial: list[PartialRead] = field(default_factory=list)
+    #: Names of files left unread this turn: no OCR pages left.
+    no_budget: list[str] = field(default_factory=list)
+    #: The quota could not be read; every file was left for the next turn.
+    budget_unavailable: bool = False

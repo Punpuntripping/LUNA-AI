@@ -73,6 +73,12 @@ tiktoken>=0.7.0,<1.0.0
 # (agents/memory/ocr_extractor uses client.ocr.process_async / mistral-ocr-latest).
 mistralai>=1.5.0,<2.0.0
 
+# PDF cutting for OCR (agents/memory/ocr_extractor/big_file.py): Mistral refuses
+# documents over 1,000 pages / 50 MB, so a partial or oversized read cuts out the
+# chosen pages first. Pure Python, no dependencies on 3.11. Added to the lock by
+# hand as one line (no re-resolve of anything else).
+pypdf==7.1.0
+
 # Web push «إجابتك جاهزة» (pwa_step1.md §1D) — VAPID-signed, aes128gcm-encrypted
 # pushes from backend/app/services/push_service.py. Pulls http-ece + py-vapid;
 # cryptography>=47 is already satisfied by the lock (49.0.0).

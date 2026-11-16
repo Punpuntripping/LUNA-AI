@@ -11,6 +11,7 @@ from agents.memory.ocr_extractor import mistral_ocr
 from agents.memory.ocr_extractor import runner as ocr_runner
 from agents.memory.ocr_extractor.mistral_ocr import join_pages
 from agents.memory.ocr_extractor.models import OcrDocumentResult, OcrPage
+from shared.quota.ocr_budget import OcrBudget
 
 
 def _legacy(markdowns: list[str]) -> str:
@@ -112,7 +113,8 @@ USER = "user-1"
 def _db() -> FakeSupabase:
     return FakeSupabase({"workspace_items": [{
         "item_id": ITEM, "conversation_id": "c1", "kind": "attachment", "deleted_at": None,
-        "storage_path": "u/f.pdf", "metadata": {"mime_type": "application/pdf", "file_size_bytes": 10},
+        "storage_path": "u/f.pdf",
+        "metadata": {"mime_type": "application/pdf", "file_size_bytes": 10, "page_count": 2},
     }]})
 
 
@@ -125,10 +127,14 @@ def ocr_env(monkeypatch):
         pages=[OcrPage(i + 1, m, o) for i, (m, o) in enumerate(zip(md, offsets))],
     )
 
-    async def fake_ocr(url, mime):
+    async def fake_ocr(url, mime, pages=None, **_k):
         return result
 
+    async def unlimited(_db, _user):
+        return OcrBudget(total=None, used=0, per_file_cap=None)
+
     monkeypatch.setattr(ocr_runner, "ocr_document", fake_ocr)
+    monkeypatch.setattr(ocr_runner, "_read_budget", unlimited)
     monkeypatch.setattr(ocr_runner, "get_signed_url", lambda *a, **k: "https://signed")
     monkeypatch.setattr(
         ocr_runner, "get_settings",

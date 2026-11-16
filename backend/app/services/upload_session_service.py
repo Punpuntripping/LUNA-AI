@@ -46,7 +46,12 @@ logger = logging.getLogger(__name__)
 ALLOWED_MIME_TYPES: frozenset[str] = frozenset(
     {"application/pdf", "image/png", "image/jpeg"}
 )
-MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MB
+MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MB — case documents
+# Chat attachments (plan ocr_page_budget.md §10, migration 217). OCR cuts out
+# only the pages it reads (ocr_extractor/big_file.py), so a file bigger than
+# Mistral's 50 MB / 1,000-page limits can still be read. The `documents` bucket
+# limit (217) and the composer cap (ChatInput.MAX_FILE_SIZE) match this.
+ATTACHMENT_MAX_FILE_SIZE: int = 250 * 1024 * 1024  # 250 MB
 
 # Magic-byte prefixes for the three accepted MIME types.
 MAGIC_BYTES: dict[str, bytes] = {
@@ -76,6 +81,7 @@ def init_upload(
     filename: str,
     mime_type: str,
     size_bytes: int,
+    max_size: int = MAX_FILE_SIZE,
 ) -> dict:
     """Reserve a storage path for a resumable upload and return the contract
     the client needs.
@@ -93,7 +99,9 @@ def init_upload(
         mime_type: Client-declared MIME type. Validated against
             ``ALLOWED_MIME_TYPES``.
         size_bytes: Client-declared size in bytes. Validated against
-            ``MAX_FILE_SIZE``.
+            ``max_size``.
+        max_size: The cap for this kind of upload — ``MAX_FILE_SIZE`` (case
+            documents, the default) or ``ATTACHMENT_MAX_FILE_SIZE``.
 
     Returns:
         ``{"bucket": str, "path": str, "upload_url": str,
@@ -119,11 +127,11 @@ def init_upload(
             code=ErrorCode.DOC_EMPTY,
             detail="الملف فارغ",
         )
-    if size_bytes > MAX_FILE_SIZE:
+    if size_bytes > max_size:
         raise LunaHTTPException(
             status_code=400,
             code=ErrorCode.DOC_TOO_LARGE,
-            detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
+            detail=f"حجم الملف يتجاوز الحد الأقصى ({max_size // (1024 * 1024)} ميغابايت)",
         )
 
     settings = get_settings()
@@ -297,6 +305,7 @@ def cancel_storage_object(
 __all__ = [
     "ALLOWED_MIME_TYPES",
     "MAX_FILE_SIZE",
+    "ATTACHMENT_MAX_FILE_SIZE",
     "MAGIC_BYTES",
     "UPLOAD_URL_TTL_SECONDS",
     "init_upload",

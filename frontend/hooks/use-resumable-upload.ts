@@ -154,11 +154,13 @@ export function runResumableUpload(
           size_bytes: file.size,
         });
       } else {
-        // OCR-quota projection: count PDF pages in-browser so the gate sees the
-        // real page total before OCR runs (image / parse failure → 1-page floor).
-        // Estimate only — the server clamps it and the post-OCR settle bills the
-        // authoritative Mistral count.
-        let pageCount = 1;
+        // OCR page budget: count PDF pages in-browser so the server can plan
+        // which pages to read before OCR runs. An image is 1 page; a PDF the
+        // browser cannot parse sends NO count — the server then counts it
+        // itself (ocr_extractor/big_file.py) instead of planning for 1 page.
+        // Estimate only — the post-OCR ledger bills the authoritative count.
+        let pageCount: number | undefined =
+          file.type === "application/pdf" ? undefined : 1;
         if (file.type === "application/pdf") {
           const n = await getPdfPageCount(file);
           if (n && n > 0) {

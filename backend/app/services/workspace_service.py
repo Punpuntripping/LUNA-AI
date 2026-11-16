@@ -794,6 +794,9 @@ def init_attachment_upload(
         filename=filename,
         mime_type=mime_type,
         size_bytes=size_bytes,
+        # Chat attachments go up to 250 MB — OCR cuts out only the pages it
+        # reads (ocr_page_budget.md §10). Case documents keep the 50 MB default.
+        max_size=upload_session_service.ATTACHMENT_MAX_FILE_SIZE,
     )
 
     now_iso = datetime.now(timezone.utc).isoformat()

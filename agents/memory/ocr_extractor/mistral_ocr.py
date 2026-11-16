@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Sequence
 
 from mistralai import Mistral
 
@@ -18,14 +19,28 @@ from shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Page cap handed to Mistral. The first ``OCR_MAX_PAGES`` pages are extracted;
-# the rest of an over-long document are ignored (never rejected).
-OCR_MAX_PAGES = 30
+# There is no page cap here any more (removed 2026-11-16, plan
+# ocr_page_budget.md D1): which pages are read is decided per file by the OCR
+# page budget (shared/quota/ocr_budget.py) and passed in as ``pages``. The only
+# hard ceilings are Mistral's own per-document limits.
+MISTRAL_MAX_PAGES = 1_000
+MISTRAL_MAX_BYTES = 50 * 1024 * 1024
 
-# Per-attachment OCR call timeout (seconds). On expiry ``asyncio.wait_for``
-# cancels the SDK call → TimeoutError escapes ocr_document → the runner marks
-# the row ``failed`` (never retried) and the turn continues without it.
-OCR_TIMEOUT_S = 60.0
+# Per-call OCR timeout (seconds): a base plus a per-page allowance, capped. On
+# expiry ``asyncio.wait_for`` cancels the SDK call → TimeoutError escapes
+# ocr_document → the runner marks the row ``failed`` (never retried) and the
+# turn continues without it. Measured 2026-11-16: a call took 45–60 s whatever
+# its size (1 page: 47 s; 30 pages: 57 s), so the old flat 60 s sat at the edge.
+OCR_TIMEOUT_S = 120.0
+OCR_TIMEOUT_PER_PAGE_S = 1.0
+OCR_TIMEOUT_MAX_S = 600.0
+
+
+def ocr_timeout_s(page_count: int | None) -> float:
+    """The timeout for one call reading ``page_count`` pages (None = unknown)."""
+    if not page_count:
+        return OCR_TIMEOUT_S
+    return min(OCR_TIMEOUT_MAX_S, OCR_TIMEOUT_S + OCR_TIMEOUT_PER_PAGE_S * page_count)
 
 # MIME types Mistral OCR accepts in this module.
 _PDF_MIME = "application/pdf"
@@ -45,12 +60,23 @@ def _build_document(file_url: str, mime_type: str) -> dict:
     raise ValueError(f"unsupported mime type for OCR: {mime_type!r}")
 
 
-async def ocr_document(file_url: str, mime_type: str) -> OcrDocumentResult:
-    """Run Mistral OCR on a single document given its signed URL.
+async def ocr_document(
+    file_url: str,
+    mime_type: str,
+    pages: Sequence[int] | None = None,
+    *,
+    expected_pages: int | None = None,
+) -> OcrDocumentResult:
+    """Run Mistral OCR on a single document given its URL.
 
     Args:
-        file_url: A publicly fetchable URL (Supabase Storage signed URL).
+        file_url: A fetchable URL — a Supabase Storage signed URL, a Mistral
+            file-store signed URL, or a ``data:`` URL.
         mime_type: One of ``application/pdf``, ``image/png``, ``image/jpeg``.
+        pages: 1-based page numbers to read, ascending. None = every page.
+            Ignored for images (one page).
+        expected_pages: the document's length when ``pages`` is None and it
+            is known (a cut) — sizes the timeout.
 
     Returns:
         An ``OcrDocumentResult`` with the joined page markdown, the number of
@@ -64,15 +90,16 @@ async def ocr_document(file_url: str, mime_type: str) -> OcrDocumentResult:
     model = settings.MISTRAL_OCR_MODEL
     document = _build_document(file_url, mime_type)
 
+    kwargs: dict = {}
+    if pages is not None and mime_type == _PDF_MIME:
+        # Mistral numbers pages from 0.
+        kwargs["pages"] = [p - 1 for p in pages]
+
     client = Mistral(api_key=settings.MISTRAL_API_KEY)
     try:
         response = await asyncio.wait_for(
-            client.ocr.process_async(
-                model=model,
-                document=document,
-                pages=list(range(OCR_MAX_PAGES)),
-            ),
-            timeout=OCR_TIMEOUT_S,
+            client.ocr.process_async(model=model, document=document, **kwargs),
+            timeout=ocr_timeout_s(len(pages) if pages is not None else expected_pages),
         )
     finally:
         # The SDK holds an httpx client; close it so we don't leak sockets.

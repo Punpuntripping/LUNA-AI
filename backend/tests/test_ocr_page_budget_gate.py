@@ -1,0 +1,159 @@
+"""The OCR side of the send gate under the page budget (plan ocr_page_budget.md D9).
+
+A file bigger than what is left is no longer refused — the OCR runner reads the
+pages the budget allows. The gate refuses only when NOT ONE page can be read.
+The counts it gets leave out what OCR will never read (blog chips, notes, files
+already extracted).
+"""
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from backend.app.services import message_service as ms
+from shared import quota
+
+USER = "aaaaaaaa-0000-0000-0000-000000000001"
+
+
+def _state(limit, used=0):
+    return {
+        "plan_id": "pro", "effective_plan_id": "pro", "locked": False,
+        "ocr_pages_monthly": limit, "ocr_pages": used, "ocr_oldest": None,
+    }
+
+
+@pytest.fixture
+def gate(monkeypatch):
+    holder: dict[str, Any] = {}
+
+    async def state(_sb, _uid):
+        return holder["st"]
+
+    async def block(_sb, plan, meter, period, used, limit, resets, reason="limit"):
+        return quota.QuotaExceeded(meter, period, used, limit, resets, plan_id=plan)
+
+    async def ds_gate(_sb, _st):
+        return None
+
+    monkeypatch.setattr(quota, "_quota_state", state)
+    monkeypatch.setattr(quota, "_quota_block", block)
+    monkeypatch.setattr(quota, "_deep_search_gate", ds_gate)
+
+    async def run(st, **kw):
+        holder["st"] = st
+        return await quota.check(None, None, USER, needs_ord=False, **kw)
+
+    return run
+
+
+@pytest.mark.asyncio
+async def test_big_file_with_pages_left_passes(gate):
+    await gate(_state(150), ocr_page_counts=[606])  # Khalid's file on Pro: no longer refused
+    await gate(_state(50), ocr_page_counts=[606])   # nor on the 50-page trial
+
+
+@pytest.mark.asyncio
+async def test_no_page_left_blocks(gate):
+    with pytest.raises(quota.QuotaExceeded) as e:
+        await gate(_state(150, used=150), ocr_page_counts=[3])
+    assert e.value.meter == "ocr" and e.value.used == 150 and e.value.limit == 150
+
+
+@pytest.mark.asyncio
+async def test_plan_without_ocr_blocks_a_file(gate):
+    with pytest.raises(quota.QuotaExceeded):
+        await gate(_state(0), ocr_page_counts=[1])
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_ocr_never_blocks(gate):
+    await gate(_state(0), ocr_page_counts=[])
+    await gate(_state(150, used=150), ocr_page_counts=[])
+
+
+@pytest.mark.asyncio
+async def test_unlimited_plan_passes(gate):
+    await gate(_state(None, used=10_000), ocr_page_counts=[606])
+
+
+@pytest.mark.asyncio
+async def test_legacy_projection_unchanged(gate):
+    with pytest.raises(quota.QuotaExceeded):
+        await gate(_state(150), needs_ocr=True, est_ocr_pages=606)
+
+
+# ── what the gate is told to count ───────────────────────────────────────────
+
+class _DB:
+    def __init__(self, rows=None, fail=False):
+        self.rows, self.fail = rows or [], fail
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_a):
+        return self
+
+    def in_(self, _col, ids):
+        self.ids = set(ids)
+        return self
+
+    def execute(self):
+        if self.fail:
+            raise RuntimeError("db down")
+        return SimpleNamespace(data=[r for r in self.rows if r["item_id"] in self.ids])
+
+
+def test_page_counts_skip_what_ocr_never_reads():
+    db = _DB([
+        {"item_id": "big", "kind": "attachment", "metadata": {"page_count": 606}},
+        {"item_id": "done", "kind": "attachment", "metadata": {"page_count": 40, "ocr_status": "done"}},
+        {"item_id": "blog", "kind": "agent_search", "metadata": {}},
+        {"item_id": "unknown", "kind": "attachment", "metadata": {}},
+    ])
+    counts = ms._attachment_page_counts(db, ["big", "done", "blog", "unknown", "missing"])
+    assert counts == [606, 1, 1]
+    assert ms._estimate_ocr_pages(db, ["big", "unknown"]) == 607
+
+
+MB = 1024 * 1024
+
+
+def _init(size, **kw):
+    from backend.app.services import upload_session_service as us
+
+    return us.init_upload(
+        None, user_id="u", case_id=None, conversation_id="c",
+        filename="f.pdf", mime_type="application/pdf", size_bytes=size, **kw,
+    )
+
+
+def test_attachments_go_to_250_mb_case_documents_stay_at_50():
+    from backend.app.errors import LunaHTTPException
+    from backend.app.services import upload_session_service as us
+
+    assert _init(202 * MB, max_size=us.ATTACHMENT_MAX_FILE_SIZE)["size_bytes"] == 202 * MB
+    with pytest.raises(LunaHTTPException) as e:
+        _init(251 * MB, max_size=us.ATTACHMENT_MAX_FILE_SIZE)
+    assert "250" in str(e.value.detail)
+    with pytest.raises(LunaHTTPException) as e:
+        _init(60 * MB)  # the default — case documents
+    assert "50" in str(e.value.detail)
+
+
+def test_init_request_outer_bound_is_250_mb():
+    from pydantic import ValidationError
+
+    from backend.app.models.requests import UploadInitRequest
+
+    UploadInitRequest(filename="f.pdf", mime_type="application/pdf", size_bytes=250 * MB)
+    with pytest.raises(ValidationError):
+        UploadInitRequest(filename="f.pdf", mime_type="application/pdf", size_bytes=250 * MB + 1)
+
+
+def test_page_counts_on_db_failure():
+    assert ms._attachment_page_counts(_DB(fail=True), ["a", "b"]) == [1, 1]
+    assert ms._attachment_page_counts(_DB(), []) == []

@@ -392,7 +392,10 @@ class UploadInitRequest(BaseModel):
     """
     filename: str = Field(..., min_length=1, max_length=500)
     mime_type: str = Field(..., min_length=1, max_length=100)
-    size_bytes: int = Field(..., gt=0, le=50 * 1024 * 1024)
+    # The outer bound for both routes (chat attachments: 250 MB). Each route's
+    # own cap is enforced in upload_session_service.init_upload — case
+    # documents stay at 50 MB there.
+    size_bytes: int = Field(..., gt=0, le=250 * 1024 * 1024)
     # Client-reported page count (PDF parsed in-browser; images → 1). Feeds the
     # OCR quota gate's upfront projection so a multi-page document is counted
     # before OCR runs. An ESTIMATE only — the post-OCR settle (real Mistral page

@@ -93,7 +93,11 @@ const COMPOSER_SAFE_AREA = "pb-[calc(0.75rem+env(safe-area-inset-bottom))]";
 
 const MAX_CHARS = 10_000;
 const MAX_FILES = 5;
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+// Chat attachments up to 250 MB (ocr_page_budget.md §10): OCR cuts out only
+// the pages it reads, so Mistral's 50 MB limit no longer applies to the file.
+// Matches upload_session_service.ATTACHMENT_MAX_FILE_SIZE and the `documents`
+// bucket limit (migration 217).
+const MAX_FILE_SIZE = 250 * 1024 * 1024;
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
 // Blog paste-chips (blog_import plan §D4): max pasted blogs held in the
 // composer at once. A blog token is 32 lowercase hex chars.
@@ -888,7 +892,7 @@ export function ChatInput({
           return;
         }
         if (file.size > MAX_FILE_SIZE) {
-          setValidationError("الحد الأقصى لحجم الملف 50 ميجابايت");
+          setValidationError("الحد الأقصى لحجم الملف 250 ميجابايت");
           return;
         }
       }
