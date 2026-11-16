@@ -527,3 +527,103 @@ def test_only_the_routers_dispatch_lets_the_planner_hand_back(dispatch_env):
     _dispatch(allow_handback=False)
 
     assert dispatch_env["input"].allow_handback is False
+
+
+# --------------------------------------------------------------------------- #
+# simple_search → deep_search: a planner revert answers, never crashes
+# (convo 4ea4e212, 2026-11-16: «حدد مكان هذه الافادة من المدعي» ended on
+# «عذراً، حدث خطأ أثناء تنفيذ المهمة» after 5m42s)
+# --------------------------------------------------------------------------- #
+
+
+_CRASH_TEXT = "عذراً، حدث خطأ"
+
+
+class _PriorCheckSpy:
+    def __init__(self) -> None:
+        self.kwargs: dict | None = None
+
+    def __call__(self, **kwargs: Any):
+        self.kwargs = kwargs
+
+        async def _gen():
+            yield {"type": "token", "text": "الموضع في ضبط الجلسة"}
+            yield {"type": "done", "usage": {}}
+
+        return _gen()
+
+
+@pytest.fixture
+def revert_env(monkeypatch):
+    async def _no_gate(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def _reverted(*_a: Any, **_k: Any) -> Any:
+        return orch._DeepSearchOutcome(kind="reverted")
+
+    async def _ss_gives_up(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("searched the library 9 times, found nothing")
+
+    async def _settled(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(orch, "_check_deep_search_gate", _no_gate)
+    monkeypatch.setattr(orch, "analyzer_enabled", lambda _u: True)
+    monkeypatch.setattr(orch, "_load_attached_items", lambda *_a, **_k: [])
+    monkeypatch.setattr(orch, "_load_recent_messages", lambda *_a, **_k: [])
+    monkeypatch.setattr(orch, "_load_compaction_summary", lambda *_a, **_k: None)
+    monkeypatch.setattr(orch, "_load_conversation_memory", lambda *_a, **_k: None)
+    monkeypatch.setattr(orch, "_settle_memory_writer", _settled)
+    monkeypatch.setattr(orch, "_note_simple_search_handoff", lambda *_a, **_k: None)
+    monkeypatch.setattr(orch, "_resolve_pause_loud", lambda *_a, **_k: None)
+    monkeypatch.setattr(orch, "resolve_pause", lambda *_a, **_k: True)
+    monkeypatch.setattr(orch, "_run_deep_search", _reverted)
+    monkeypatch.setattr(orch, "run_simple_search", _ss_gives_up)
+    monkeypatch.setattr("agents.simple_search.runner.resume_simple_search", _ss_gives_up)
+    spy = _PriorCheckSpy()
+    monkeypatch.setattr(orch, "_run_prior_check", spy)
+    return spy
+
+
+def _texts(events: list[dict]) -> str:
+    return "".join(e.get("text", "") for e in events if e.get("type") == "token")
+
+
+def test_fresh_simple_search_fallback_answers_from_what_we_hold(revert_env):
+    async def _collect() -> list[dict]:
+        return [
+            ev async for ev in orch._dispatch(
+                agent_family="simple_search", describe_query="حدد مكان هذه الافادة",
+                task_label="موضع إفادة المدعي", target_item_id=None,
+                attached_item_ids=["wi-9"], subtype=None, supabase=object(),
+                user_id=USER, conversation_id=CONVO, case_id=None,
+                assistant_message_id="am1", router_context=_router_context(),
+            )
+        ]
+
+    events = asyncio.run(_collect())
+    types = [e["type"] for e in events]
+
+    assert _CRASH_TEXT not in _texts(events)
+    assert revert_env.kwargs is not None and revert_env.kwargs["after_revert"] is True
+    assert revert_env.kwargs["attached_item_ids"] == ["wi-9"]
+    assert types.index("agent_run_finished") < types.index("token")
+
+
+def test_resumed_simple_search_fallback_answers_from_what_we_hold(revert_env):
+    async def _collect() -> list[dict]:
+        return [
+            ev async for ev in orch._resume_simple_search_leg(
+                pending={"run_id": "run-ss-1", "task_label": "موضع إفادة المدعي"},
+                user_reply="في مذكرة المدعي", supabase=object(), user_id=USER,
+                conversation_id=CONVO, case_id=None, user_message_id="um1",
+                assistant_message_id="am1",
+            )
+        ]
+
+    events = asyncio.run(_collect())
+    types = [e["type"] for e in events]
+
+    assert _CRASH_TEXT not in _texts(events)
+    assert revert_env.kwargs is not None and revert_env.kwargs["question"] == "في مذكرة المدعي"
+    assert types.index("agent_run_finished") < types.index("token")

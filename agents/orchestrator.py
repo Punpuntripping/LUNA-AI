@@ -2098,6 +2098,30 @@ async def _resume_simple_search_leg(
                 yield {"type": "agent_run_finished", "agent_family": "simple_search"}
                 return
 
+            if ds_handoff.kind == "reverted":
+                # The planner found the answer already held: no search ran and
+                # there is no result to stream. Answer from what we hold, the
+                # same move the deep_search dispatch makes (it used to read
+                # ``None.sse_events`` here and end the turn on the error banner).
+                yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+                async for ev in _run_prior_check(
+                    question=user_reply,
+                    supabase=supabase,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    user_message_id=user_message_id,
+                    assistant_message_id=assistant_message_id,
+                    task_label=(pending.get("task_label") or "").strip() or user_reply[:80],
+                    target_item_id=None,
+                    attached_item_ids=[],
+                    compaction_summary_md=major_input.compaction_summary_md,
+                    conversation_memory_md=conversation_memory_md,
+                    after_revert=True,
+                ):
+                    yield ev
+                return
+
             ds_result = ds_handoff.result
             for ev in ds_result.sse_events:
                 if ev.get("streamed"):
@@ -4237,6 +4261,13 @@ async def _dispatch(
                                 run_id=run_id,
                             )
                             raise _SkipRunRecord()
+                        if ds_handoff.kind == "reverted":
+                            # The planner found the answer already held: answer
+                            # from it after this run closes, exactly as the
+                            # deep_search branch does. Without this the turn read
+                            # ``None.sse_events`` and ended on the error banner
+                            # (convo 4ea4e212, 2026-11-16).
+                            raise _RevertToAnalyzer()
                         run_result = ds_handoff.result
                     # Skip the simple_search result assembly below entirely —
                     # deep_search (or its refusal) owns this turn's answer now.
