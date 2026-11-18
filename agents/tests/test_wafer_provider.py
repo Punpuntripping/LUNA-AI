@@ -1,9 +1,10 @@
 """Wafer as a DeepSeek V4.1 Flash 1017 host (2026-11-11).
 
-Wafer heads the router, both deep_search expanders and the artifact_analyzer,
-with Baseten V4.1 as backup; the aggregator and agent_writer stay on Baseten
-with Wafer as backup. These tests pin the chains, the reasoning each Wafer cell
-sends, the cost lookup of Wafer's echo name, and the missing-key skip.
+Wafer heads every V4.1 slot with Baseten V4.1 as backup: the router, both
+deep_search expanders and the artifact_analyzer since 2026-11-11, the aggregator
+and agent_writer since 2026-11-18. These tests pin the chains, the reasoning
+each Wafer cell sends, the cost lookup of Wafer's echo name, and the
+missing-key skip.
 """
 from __future__ import annotations
 
@@ -28,8 +29,10 @@ BASETEN = "baseten-deepseek-v4.1-flash-1017"
 ALIBABA = "deepseek-v4-flash"
 OPENROUTER = "or-deepseek-v4-flash"
 
-WAFER_HEADED = ("router", "reg_compliance_expander", "case_search_expander", "artifact_analyzer")
-BASETEN_HEADED = ("aggregator", "agent_writer")
+SYNTHESIS = ("aggregator", "agent_writer")
+WAFER_HEADED = (
+    "router", "reg_compliance_expander", "case_search_expander", "artifact_analyzer", *SYNTHESIS,
+)
 
 
 @pytest.mark.parametrize("slot", WAFER_HEADED)
@@ -38,11 +41,23 @@ def test_wafer_headed_slots_fall_back_to_baseten_v41(slot: str) -> None:
     assert primary_model_of_slot(slot) == WAFER
 
 
-@pytest.mark.parametrize("slot", BASETEN_HEADED)
-def test_aggregator_and_writer_keep_baseten_with_wafer_backup(slot: str) -> None:
-    policy = AGENT_MODELS[slot]
-    assert policy.reasoning == "max"
-    assert resolve_chain(policy) == [BASETEN, WAFER, ALIBABA, OPENROUTER]
+def test_no_slot_heads_on_baseten_v41() -> None:
+    # Baseten V4.1 is a backup cell only (owner, 2026-11-18).
+    heads = {slot: primary_model_of_slot(slot) for slot in AGENT_MODELS}
+    assert [slot for slot, head in heads.items() if head == BASETEN] == []
+
+
+@pytest.mark.parametrize("slot", SYNTHESIS)
+def test_aggregator_and_writer_keep_max_reasoning(slot: str) -> None:
+    assert AGENT_MODELS[slot].reasoning == "max"
+    assert agent_models._reasoning_settings(WAFER, "max") == {
+        "extra_body": {"reasoning_effort": "max"}
+    }
+
+
+def test_aggregator_usage_bills_at_the_wafer_head() -> None:
+    # Aggregator usage entries without a model name are priced by the role's head.
+    assert model_of_subagent("aggregator") == WAFER
 
 
 def test_reasoning_levels_are_unchanged_by_the_move() -> None:

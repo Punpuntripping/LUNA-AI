@@ -285,21 +285,23 @@ _V41 = "baseten-deepseek-v4.1-flash-1017"
 # inputs: quality tie (blind judges 7.4 vs 7.6), ~30% slower decode (109 vs 157
 # tok/s), 61% cheaper ($0.13/$0.50 vs $0.30/$1.20 per 1M), ZDR on every request.
 _WAFER_V41 = "wafer-deepseek-v4.1-flash-1017"
-# Heavy synthesis (aggregator, agent_writer) stays on Baseten for speed, with
-# Wafer as the backup: V4.1 (Baseten) → V4.1 (Wafer) → 0731 (Alibaba) → OR.
-_V41_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max", head=_V41, backup=_WAFER_V41)
-# Wafer-headed slots (owner decision 2026-11-11): V4.1 (Wafer) → V4.1 (Baseten)
-# → 0731 (Alibaba) → OR. Medium = the expanders; default = router and
+# Every V4.1 slot heads on Wafer: V4.1 (Wafer) → V4.1 (Baseten) → 0731
+# (Alibaba) → OR. Router / expanders / artifact_analyzer since 2026-11-11; the
+# heavy synthesis slots (aggregator, agent_writer) followed on 2026-11-18 (owner
+# decision), after a week of Wafer serving the light slots with no errors.
+# Max = aggregator + agent_writer; medium = the expanders; default = router and
 # artifact_analyzer (Wafer sends reasoning_effort=high for "default" — see
-# _reasoning_settings).
+# _reasoning_settings). Revert the synthesis slots = swap head/backup on
+# _WAFER_V41_MAX.
+_WAFER_V41_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max", head=_WAFER_V41, backup=_V41)
 _WAFER_V41_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium", head=_WAFER_V41, backup=_V41)
 _WAFER_V41_DEFAULT = ModelPolicy("tier_2", primary="deepseek", head=_WAFER_V41, backup=_V41)
 
 AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "planner_decider":            _FLASH,
     "planner_responder":          _FLASH,
-    "aggregator":                 _V41_MAX,
-    "agent_writer":               _V41_MAX,
+    "aggregator":                 _WAFER_V41_MAX,
+    "agent_writer":               _WAFER_V41_MAX,
     # Layer-2 Major planner that sits in front of writing_executor.
     # Talks to the user (ask_user, present_plan_for_approval), inspects prior-WI
     # content on demand via unfold_workspace_item, and hands a WriterPackage to
@@ -528,7 +530,7 @@ def get_agent_model(
 # entries) → its primary model on the happy path. Mirrors AGENT_MODELS:
 #   expander       → AGENT_MODELS["*_search_expander"]      = _WAFER_V41_MEDIUM (V4.1, Wafer)
 #   reranker       → AGENT_MODELS["*_search_reranker"]      = _RERANKER (qwen3.7-flash)
-#   aggregator     → AGENT_MODELS["aggregator"]             = _V41_MAX (V4.1, Baseten)
+#   aggregator     → AGENT_MODELS["aggregator"]             = _WAFER_V41_MAX (V4.1, Wafer)
 #   sector_picker  → AGENT_MODELS["sector_picker"]          = _FLASH (0731, Baseten)
 # Unknown roles fall back to _DEFAULT_MODEL (a conservative tier_1 estimate; the
 # router no longer runs on it — it's _WAFER_V41_DEFAULT now). When a FallbackModel cell other
@@ -540,7 +542,7 @@ _SUBAGENT_MODEL: dict[str, str] = {
     # on their usage entries (via primary_model_of_slot), which wins over this
     # role lookup. Kept for entries emitted before that change.
     "reranker":      "qwen3.7-flash",
-    "aggregator":    _V41,
+    "aggregator":    _WAFER_V41,
     "sector_picker": _BASETEN_FLASH,
 }
 

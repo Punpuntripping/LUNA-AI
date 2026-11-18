@@ -136,8 +136,8 @@ class Settings(BaseSettings):
     BASETEN_BASE_URL: str = "https://inference.baseten.co/v1"
 
     # Wafer Serverless (OpenAI-compatible) — serves the same DeepSeek V4.1 Flash
-    # 1017 as Baseten. Head of the router / expanders / artifact_analyzer, and
-    # the backup cell behind Baseten for the aggregator and writer (see
+    # 1017 as Baseten. Head of every V4.1 slot (router, expanders,
+    # artifact_analyzer, aggregator, writer), with Baseten as backup (see
     # agents/utils/agent_models.py). Zero data retention on every request.
     # Unset => the Wafer cells are skipped and those chains start at Baseten.
     WAFER_API_KEY: Optional[str] = None

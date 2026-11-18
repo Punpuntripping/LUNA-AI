@@ -777,8 +777,8 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         cached_input_price=0.028,
     ),
 
-    # Baseten-served DeepSeek V4.1 Flash 1017 — the aggregator / writer /
-    # expander head (agent_models._V41_*). Priced separately from 0731 (own
+    # Baseten-served DeepSeek V4.1 Flash 1017 — the backup cell behind Wafer on
+    # every V4.1 slot (agent_models._WAFER_V41*). Priced separately from 0731 (own
     # model_pricing row, migration 179). Baseten caps thinking at ~4096 tokens
     # unless reasoning.max_tokens is sent — see agent_models._reasoning_settings.
     "baseten-deepseek-v4.1-flash-1017": ModelConfig(
@@ -794,8 +794,9 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
     ),
 
     # Wafer-served DeepSeek V4.1 Flash 1017 — the SAME weights as the Baseten
-    # entry above. Head of the router / expanders / artifact_analyzer and the
-    # backup cell of the aggregator / writer (agent_models._WAFER_V41*). Echoes
+    # entry above. Head of every V4.1 slot — router, expanders,
+    # artifact_analyzer, and since 2026-11-18 the aggregator and agent_writer
+    # (agent_models._WAFER_V41*). Echoes
     # "DeepSeek-V4.1-Flash-1017", an exact model_id match here — see
     # registry_key_for. Wafer list price (pass.wafer.ai/v1/models, 2026-11-11).
     # Wafer runs this model with reasoning OFF unless an effort is sent — see
