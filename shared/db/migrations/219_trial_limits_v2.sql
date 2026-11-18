@@ -4,6 +4,10 @@
 -- Owner decision, 2026-11-18: new free-trial claims get 10 points per 5-hour
 -- session, 50 points per rolling week and 25 OCR pages (was 15 / 74 / 50).
 --
+-- ⚠ Applied as written (both rows). The owner then kept the 14-day trial at
+-- 15 / 74 / 50, so 219b drops the unused marketing_lawyer_14_v2 row and moves
+-- only the 7-day trial.
+--
 -- NEW CLAIMS ONLY. The 65 trials running on 2026-11-18 stay on their plan row,
 -- and so do the plan codes minted on marketing_lawyer / marketing_lawyer_14.
 -- Editing those rows would cut both mid-term. So the new limits go on two NEW

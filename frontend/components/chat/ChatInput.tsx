@@ -37,7 +37,7 @@ import { ComposerPlusMenu } from "@/components/chat/ComposerPlusMenu";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
 import {
   FREE_OCR_PAGES,
-  FREE_TRIAL_OCR_PAGES,
+  freeTrialOcrPages,
 } from "@/components/promo/free-trial-content";
 import { useFreeTrialStore } from "@/stores/free-trial-store";
 // Chat-depth analytics (product_analytics §3b). Fire-and-forget, individually
@@ -488,11 +488,12 @@ export function ChatInput({
   const pdfOfferShownRef = useRef(false);
   const maybeOfferFreeWeek = useCallback(() => {
     if (pdfOfferShownRef.current) return;
-    if (!useFreeTrialStore.getState().eligible) return;
+    const trial = useFreeTrialStore.getState();
+    if (!trial.eligible) return;
     const pages = useChatStore
       .getState()
       .pendingFiles.reduce((sum, f) => sum + (f.pageCount ?? 0), 0);
-    if (pages <= FREE_OCR_PAGES || pages > FREE_TRIAL_OCR_PAGES) return;
+    if (pages <= FREE_OCR_PAGES || pages > freeTrialOcrPages(trial.days)) return;
     pdfOfferShownRef.current = true;
     setPdfOfferPages(pages);
   }, []);

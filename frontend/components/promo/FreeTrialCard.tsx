@@ -51,7 +51,7 @@ export function FreeTrialCard({
       <PromoTermsLink className="mt-1.5 text-xs" />
 
       <ul className="mt-5 flex flex-col gap-2.5">
-        {[length.points, ...FREE_TRIAL_COPY.features].map((feature) => (
+        {[...length.limits, ...FREE_TRIAL_COPY.features].map((feature) => (
           <li
             key={feature}
             className="flex items-start gap-2 text-sm text-foreground"

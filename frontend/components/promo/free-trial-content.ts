@@ -1,28 +1,36 @@
 /**
  * Single source for the free-week copy (migration 205). The week is offered as
  * the Basic card at 0, so the name, tagline and struck list price come from the
- * catalog. The limits below are the granted plan's (`marketing_lawyer_v2` /
- * `marketing_lawyer_14_v2`, migration 219: 10 per session, 50 a week, 25 pages),
- * which differ from Basic's, so Basic's feature list is deliberately not reused.
- * Trials claimed before 219b keep the old rows (15 / 74 / 50); this copy is only
- * ever shown before a claim, so it describes the new rows alone.
+ * catalog. The limits below are the granted plan's, which differ from Basic's,
+ * so Basic's feature list is deliberately not reused.
+ *
+ * Two plans, told apart by length (the server sends `days`, see
+ * `free_trial_days()`):
+ *   - 7 days  → `marketing_lawyer_v2` (migration 219): 10 / session, 50 / week, 25 pages
+ *   - 14 days → `marketing_lawyer_14`: 15 / session, 74 / week, 50 pages
+ * Keep `freeTrialLength` in step with those rows. An unknown length falls back to
+ * 7 days, the smaller limits, so the card can never promise more than the claim
+ * grants.
  */
 
 /** The catalog card the week is presented as. */
 export const FREE_TRIAL_PLAN_ID = "basic" as const;
 
 /**
- * `plans.ocr_pages_monthly` for `free` and for the granted plan. Used only to
- * decide when to show the offer, so a drift here mistimes a popup and nothing
- * more: the quota gate reads the database on every send.
+ * `plans.ocr_pages_monthly` for `free`, and (`freeTrialOcrPages`) for the granted
+ * plan. Used only to decide when to show the offer, so a drift here mistimes a
+ * popup and nothing more: the quota gate reads the database on every send.
  */
 export const FREE_OCR_PAGES = 3;
-export const FREE_TRIAL_OCR_PAGES = 25;
+
+export function freeTrialOcrPages(days: number): number {
+  return days >= 14 ? 50 : 25;
+}
 
 /** The server sets the length per account. This is only the fallback. */
 export const FREE_TRIAL_DEFAULT_DAYS = 7;
 
-/** The wording that changes with the trial's length. */
+/** The wording, and the limits, that change with the trial's length. */
 export function freeTrialLength(days: number) {
   const twoWeeks = days >= 14;
   const span = twoWeeks ? "أسبوعين" : "أسبوع";
@@ -30,7 +38,12 @@ export function freeTrialLength(days: number) {
     title: `جرّب ريحان مجاناً لمدة ${span}`,
     badge: twoWeeks ? "أسبوعان مجاناً" : "أسبوع مجاني",
     period: `لمدة ${span}`,
-    points: twoWeeks ? "50 نقطة استخدام أسبوعياً" : "50 نقطة استخدام طوال الأسبوع",
+    /** The card's limit lines, in display order. */
+    limits: [
+      twoWeeks ? "74 نقطة استخدام أسبوعياً" : "50 نقطة استخدام طوال الأسبوع",
+      twoWeeks ? "15 نقطة لكل جلسة (5 ساعات)" : "10 نقاط لكل جلسة (5 ساعات)",
+      `${freeTrialOcrPages(days)} صفحة استخراج نص`,
+    ],
   };
 }
 
@@ -46,9 +59,8 @@ export const FREE_TRIAL_COPY = {
   pdfLead: (pages: number): string =>
     `عدد صفحات ملفك ${pages}، والباقة المجانية تشمل ${FREE_OCR_PAGES} صفحات.`,
   failed: "تعذّر تفعيل العرض. حاول مرة أخرى.",
+  /** Shown after `freeTrialLength(days).limits`; the same on both lengths. */
   features: [
-    "10 نقاط لكل جلسة (5 ساعات)",
-    `${FREE_TRIAL_OCR_PAGES} صفحة استخراج نص`,
     "تقارير الباحث ومسودات الكاتب كاملة مع مشاركتها وتصديرها",
     "الوصول الكامل للمكتبة القانونية",
   ],

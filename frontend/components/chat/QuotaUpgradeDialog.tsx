@@ -35,9 +35,9 @@ import { IntroOfferSummary } from "@/components/promo/IntroOfferSummary";
 import { FreeTrialCard } from "@/components/promo/FreeTrialCard";
 import {
   FREE_TRIAL_COPY,
-  FREE_TRIAL_OCR_PAGES,
   FREE_TRIAL_PLAN_ID,
   freeTrialLength,
+  freeTrialOcrPages,
 } from "@/components/promo/free-trial-content";
 import {
   INTRO_OFFER_COPY,
@@ -234,7 +234,7 @@ export function QuotaUpgradeDialog({
     onFreeTrialClaimed !== undefined &&
     freeTrialPlan !== undefined &&
     (!ladder || ladder.includes(FREE_TRIAL_PLAN_ID)) &&
-    ocrPagesNeeded <= FREE_TRIAL_OCR_PAGES;
+    ocrPagesNeeded <= freeTrialOcrPages(trialDays);
 
   const title = showFreeTrial
     ? freeTrialLength(trialDays).title
