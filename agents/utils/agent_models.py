@@ -436,7 +436,8 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # call over a full injected artifact emitting a batched surgical-edit tool
     # call. reasoning=medium gives the Arabic grammar-agreement reasoning the
     # edits need without max-effort latency. See .claude/plans/artifact_editor.md.
-    "artifact_editor":            _FLASH_MEDIUM,
+    # V4.1 on Wafer since 2026-11-19 (owner) — was _FLASH_MEDIUM (0731).
+    "artifact_editor":            _WAFER_V41_MEDIUM,
     # Tier_1 qwen-primary — the OFFLINE forms drafter (scripts/draft_forms.py,
     # SEO library Phase 3 نماذج wing). One capable-tier call per legal-form
     # template: it writes a formal, placeholder'd Saudi legal template plus its

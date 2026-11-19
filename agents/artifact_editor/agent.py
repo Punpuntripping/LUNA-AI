@@ -17,7 +17,8 @@ Layer 3 task agent: never talks to the user, no streaming of its own. The
 final output is an :class:`EditorResult` whose Arabic ``change_summary`` is
 what the router uses to brief the user.
 
-Model: slot ``"artifact_editor"`` (deepseek-v4-flash, reasoning=medium). The
+Model: slot ``"artifact_editor"`` (V4.1 Flash on Wafer → Baseten V4.1 → 0731,
+reasoning=medium). The
 deepseek-flash structured-output-as-text trap is covered by the shared
 ``make_json_salvager`` TextOutput member (``project_structured_output_salvage``).
 """
