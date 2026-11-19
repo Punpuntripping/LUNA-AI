@@ -11,7 +11,7 @@ will start it and decide who waits for it.
 
 Flow: load the row (+ page rows) → guards (attachment, flag, > 5,000 chars, no
 fresh map unless ``force``) → paragraphize → mask (وضع السرية, new fakes persisted
-BEFORE the model reads them) → one call, or two parts above 30,000 chars →
+BEFORE the model reads them) → one parallel call per started 150,000 chars →
 validate + repair (one re-attempt per call) → stitch → repeat detection →
 decode descriptions → slice every section's text from the REAL ``content_md`` →
 store.
@@ -76,10 +76,13 @@ from .repair import (
     InvalidMap,
     RepairStats,
     choose_cut,
+    choose_cuts,
     first_page_end,
+    parts_for,
     repair_map,
     stitch,
 )
+from .joins import join_page_breaks, merge_short_cores
 from .repeats import find_repeats
 
 logger = logging.getLogger(__name__)
@@ -88,6 +91,8 @@ logger = logging.getLogger(__name__)
 # segmenting and delivery (plan D9), defined with the delivery rules.
 from agents.utils.attachment_delivery import SEGMENT_MIN_CHARS  # noqa: E402
 #: One call's ceiling. Phase 0 (93 runs, v4.4 family): median 71 s, p90 157 s, max 197 s.
+#: One call per 150k with the output limit sent (2026-11-19, seg-v5.2, the densest prod
+#: files 47–145k): 87–132 s, one response each (22–35k output tokens), none cut.
 CALL_TIMEOUT_S = 240.0
 #: Attempts per call (whole document, or each part): the first + one re-attempt.
 MAX_ATTEMPTS = 2
@@ -347,18 +352,38 @@ def _segment_rows(item_id: str, smap: SegmentMap, paragraphs: Sequence[Paragraph
             "label": seg.label,
             "value": seg.value,
             "what": seg.what,
+            "owner_class": seg.owner_class,
+            "owner": seg.owner,
+            "brought_by": seg.brought_by,
             # the ORIGINAL text, cut by code — never model output
             "content_md": content_md[first.char_start:last.char_end],
         })
     return rows
 
 
+def _join_rows(rows: list[dict], smap: SegmentMap) -> tuple[list[dict], int, int]:
+    """``(rows, page_joins, short_merges)`` — FIRST core sections cut by a page
+    letterhead are joined back, THEN every core section under 100 chars merges
+    into a core neighbour (``joins.py``; this order is the owner's, 2026-11-18)."""
+    rows, page_joins = join_page_breaks(rows, [d.model_dump() for d in smap.documents_in_file])
+    rows, short_merges = merge_short_cores(rows)
+    return rows, page_joins, short_merges
+
+
 def _decode_map(codec: Any, smap: SegmentMap) -> SegmentMap:
     """Store-real: descriptions the model wrote can carry fakes."""
     return SegmentMap(
         documents_in_file=[d.model_copy(update={"name": _dec(codec, d.name)}) for d in smap.documents_in_file],
-        # label too: it is free text (other:<name>) and must be stored real
-        segments=[s.model_copy(update={"what": _dec(codec, s.what), "label": _dec(codec, s.label)}) for s in smap.segments],
+        # label and the owner texts too: free text that can carry a fake name
+        segments=[
+            s.model_copy(update={
+                "what": _dec(codec, s.what),
+                "label": _dec(codec, s.label),
+                "owner": _dec(codec, s.owner),
+                "brought_by": _dec(codec, s.brought_by),
+            })
+            for s in smap.segments
+        ],
         key_paragraphs=[k.model_copy(update={"why": _dec(codec, k.why)}) for k in smap.key_paragraphs],
     )
 
@@ -372,30 +397,44 @@ def _plans(
     summary: str,
     encode: Any,
     user_words: str = "",
+    parts: int | None = None,
 ) -> tuple[list[_CallPlan], dict[str, Any]]:
+    """The calls for one document. ``parts=None`` = the production rule: one parallel
+    call per started 150,000 characters (:func:`parts_for`). ``parts=N`` forces N
+    parallel parts (test tool; 1 = one call whatever the size)."""
     n = len(paragraphs)
-    if content_chars <= SPLIT_THRESHOLD_CHARS or n < 2:
+    if parts is None:
+        parts = parts_for(content_chars)
+    parts = max(1, min(int(parts), n))
+    if parts == 1:
         msg = build_user_message(
             paragraphs, doc_type=doc_type, title=title, summary=summary, chars=content_chars,
             user_words=user_words,
         )
         return [_CallPlan(None, 1, n, build_instructions(doc_type), encode(msg), 15)], {}
-    cut, how = choose_cut(paragraphs)
-    first_end = first_page_end(paragraphs, cut)
+    cuts, how = choose_cuts(paragraphs, parts)
+    first_end = first_page_end(paragraphs, cuts[0])
+    bounds = [1, *cuts, n + 1]
     plans = []
-    for part, a, b in ((1, 1, cut - 1), (2, cut, n)):
+    for part in range(1, parts + 1):
+        a, b = bounds[part - 1], bounds[part] - 1
         msg = build_part_message(
             paragraphs, part=part, a=a, b=b, first_end=first_end, overlap=OVERLAP_PARAGRAPHS,
             doc_type=doc_type, title=title, summary=summary, chars=content_chars,
-            user_words=user_words,
+            user_words=user_words, parts=parts,
         )
         plans.append(_CallPlan(
             part, a, b,
-            build_instructions(doc_type, part=part, a=a, b=b, first_end=first_end),
+            build_instructions(doc_type, part=part, a=a, b=b, first_end=first_end, parts=parts),
             encode(msg),
             MAX_KEY_PARAGRAPHS_PER_PART,
         ))
-    return plans, {"cut_at": cut, "cut_how": how, "first_page_end": first_end}
+    info: dict[str, Any] = {"parts": parts, "cut_how": how, "first_page_end": first_end}
+    if parts == 2:
+        info["cut_at"] = cuts[0]
+    else:
+        info["cuts"] = cuts
+    return plans, info
 
 
 # ---------------------------------------------------------------------------
@@ -422,8 +461,12 @@ async def run_attachment_segmenter(
     force: bool = False,
     preview: bool = False,
     min_chars: int | None = None,
+    parts: int | None = None,
 ) -> SegmenterResult:
     """Segment one attachment and store its map. Never raises (cancellation aside).
+
+    ``parts`` (test tool only, single files): force that many parallel parts
+    instead of the production rule (one call per started 150,000 chars).
 
     ``force`` re-runs even when a fresh (non-stale) map exists; it never bypasses
     the flag, the kind or the length guard.
@@ -438,7 +481,7 @@ async def run_attachment_segmenter(
     result = SegmenterResult(item_id=str(item_id), outcome="error")
     with track_stage("attachment_segmenter", agent_family="memory", item_id=str(item_id), force=force) as span:
         try:
-            await _run(supabase, str(item_id), force, result, span, preview=preview, min_chars=min_chars)
+            await _run(supabase, str(item_id), force, result, span, preview=preview, min_chars=min_chars, parts=parts)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -481,6 +524,7 @@ async def _run(
     *,
     preview: bool = False,
     min_chars: int | None = None,
+    parts: int | None = None,
 ) -> None:
     row = await asyncio.to_thread(_load_item, supabase, item_id)
     if not row or row.get("deleted_at"):
@@ -541,10 +585,12 @@ async def _run(
         summary=str(row.get("summary") or ""),
         encode=lambda text: _enc(codec, text),
         user_words=user_words,
+        parts=parts,
     )
     if not preview:  # a preview keeps its fakes in memory only
         _persist_fakes(supabase, user_id, codec)
     result.split = len(plans) > 1
+    result.parts = len(plans)
     if split_info:
         _set(span, **split_info)
 
@@ -591,11 +637,16 @@ async def _run(
         repairs = repairs.add(o.stats)
     result.repairs = {k: v for k, v in repairs.as_dict().items() if v}
 
-    if len(outcomes) == 1:
-        smap = outcomes[0].smap
-    else:
-        smap, seam = stitch(outcomes[0].smap, outcomes[1].smap, paragraphs)
-        _set(span, **{f"seam.{k}": v for k, v in seam.as_dict().items()})
+    # Parts are folded left to right: each seam is stitched like the 2-part seam.
+    smap = outcomes[0].smap
+    seams: dict[str, int] = {}
+    for o in outcomes[1:]:
+        smap, seam = stitch(smap, o.smap, paragraphs)
+        for k, v in seam.as_dict().items():
+            seams[k] = seams.get(k, 0) + v
+    if seams:
+        _set(span, **{f"seam.{k}": v for k, v in seams.items()})
+        result.seams = seams
 
     repeats = find_repeats(smap.segments, paragraphs)
     if repeats:
@@ -606,7 +657,9 @@ async def _run(
     result.repeats = len(repeats)
 
     smap = _decode_map(codec, smap)
-    seg_rows = _segment_rows(item_id, smap, paragraphs, content_md)
+    seg_rows, result.page_joins, result.short_merges = _join_rows(
+        _segment_rows(item_id, smap, paragraphs, content_md), smap)
+    _set(span, page_joins=result.page_joins, short_merges=result.short_merges)
     map_row = {
         "item_id": item_id,
         "user_id": user_id,
@@ -719,7 +772,7 @@ async def run_attachment_bundle(
     The members are taken as given (``bundle_for_item`` / ``plan_units`` decide who
     belongs) and put in upload order. Each file is paragraphized by ITS OWN
     doc_type rule, then numbered globally (P001…), with an un-numbered boundary line
-    before each file. One call, or two above ~30k combined. Repair and stitch run on
+    before each file. One call, or two above 150k combined. Repair and stitch run on
     the global numbering; segments that cross a file are split; repeats are found
     across the whole bundle; then each file's map is cut back, renumbered from 1 and
     sliced from THAT file's real ``content_md``. Stored maps carry ``bundle_id`` and
@@ -986,7 +1039,8 @@ async def _run_bundle(
         span_k: FileSpan = spans[k]
         item_id = member_ids[k]
         local_map = cut_back(smap, span_k)
-        seg_rows = _segment_rows(item_id, local_map, local[k], contents[k])
+        seg_rows, member_joins, member_short = _join_rows(
+            _segment_rows(item_id, local_map, local[k], contents[k]), local_map)
         map_row = {
             "item_id": item_id,
             "user_id": user_id,
@@ -1004,6 +1058,8 @@ async def _run_bundle(
         r = results[item_id]
         r.repairs = dict(repair_dict)
         r.segments = len(seg_rows)
+        r.page_joins = member_joins
+        r.short_merges = member_short
         r.repeats = sum(1 for row in seg_rows if row["value"] == "repeat")
         r.core_chars = sum(len(row["content_md"]) for row in seg_rows if row["value"] == "core")
     for k, s in enumerate(spans):

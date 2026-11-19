@@ -18,24 +18,30 @@ Bundles (owner, 2026-11-12): the small files of one message (each <= 5,000 chars
 from __future__ import annotations
 
 from .bundles import bundle_for_item, plan_units, segmenter_applies_to_item
-from .models import SegmenterResult, SegmentMap, StoredMap, StoredSegment
+from .joins import PAGE_JOIN_MAX_CHARS, SHORT_CORE_MIN_CHARS, join_page_breaks, merge_short_cores
+from .models import OWNER_CLASSES, SegmenterResult, SegmentMap, StoredMap, StoredSegment
 from .paragraphs import PARAGRAPH_RULE_VERSION, Paragraph, paragraphize
 from .prompts import PROMPT_VERSION
 from .runner import SEGMENT_MIN_CHARS, run_attachment_bundle, run_attachment_segmenter, segmenter_applies
 from .store import load_segment_map, load_segment_maps
 
 __all__ = [
+    "OWNER_CLASSES",
+    "PAGE_JOIN_MAX_CHARS",
     "PARAGRAPH_RULE_VERSION",
     "PROMPT_VERSION",
     "Paragraph",
     "SEGMENT_MIN_CHARS",
+    "SHORT_CORE_MIN_CHARS",
     "SegmentMap",
     "SegmenterResult",
     "StoredMap",
     "StoredSegment",
     "bundle_for_item",
+    "join_page_breaks",
     "load_segment_map",
     "load_segment_maps",
+    "merge_short_cores",
     "paragraphize",
     "plan_units",
     "run_attachment_bundle",

@@ -403,9 +403,10 @@ async def test_a_hung_call_times_out_and_is_retried(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_long_document_is_split_in_two_and_stitched(monkeypatch):
-    md = ["\n".join(_line() for _ in range(10)) for _ in range(20)]  # ~38k chars, 200 paragraphs
+    # one agent per started 150k (owner, 2026-11-19): 90 pages, ~152k chars → two parts
+    md = ["\n".join(_line() for _ in range(10)) for _ in range(90)]  # 900 paragraphs
     content, offsets = join_pages(md)
-    assert len(content) > 30_000
+    assert 150_000 < len(content) <= 300_000
     pages = [{"item_id": ITEM, "page_no": i + 1, "char_start": off, "content_md": m}
              for i, (off, m) in enumerate(zip(offsets, md))]
     db = _db(content, pages=pages)
@@ -427,7 +428,7 @@ async def test_long_document_is_split_in_two_and_stitched(monkeypatch):
     assert "ONE PART of a longer document (2 of 2)" in p2["instructions"]
     a2, _ = prompt_range(p2["prompt"])
     paras = paragraphize(content)
-    assert a2 == 101 and paras[a2 - 1].char_start == offsets[10]  # page 11 opens part 2
+    assert a2 == 451 and paras[a2 - 1].char_start == offsets[45]  # page 46 opens part 2
     rows = assert_sections_cover(db, content)
     assert [r["label"] for r in rows] == ["header", "grounds", "header", "grounds"]
     assert db.tables["attachment_segment_maps"][0]["split"] is True

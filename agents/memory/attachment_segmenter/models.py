@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 #: What the MODEL may rate a section. ``repeat`` is set by code only.
 ModelValue = Literal["metadata", "core", "supporting", "boilerplate"]
@@ -21,6 +21,29 @@ MODEL_VALUES: tuple[str, ...] = get_args(ModelValue)
 #: Everything a stored section can be (the CHECK in migration 215).
 StoredValue = Literal["metadata", "core", "supporting", "boilerplate", "repeat"]
 STORED_VALUES: tuple[str, ...] = get_args(StoredValue)
+
+#: Who a section belongs to — the person or body whose words, findings or decision it
+#: carries (seg-v5.2, owner 2026-11-18). Keys are fixed (code filters and joins on
+#: them); ``Segment.owner`` keeps the document's own role words.
+OWNER_CLASSES: tuple[str, ...] = (
+    # sides of the dispute, relative to the proceeding in THIS document
+    "claimant", "respondent", "prosecution", "victim", "intervenor", "both_parties",
+    # who decides or runs the process
+    "court", "court_officer", "arbitrator", "committee", "conciliator",
+    # fact-finders for the state
+    "investigator", "inspector",
+    # neutral / technical
+    "expert", "translator",
+    # statements
+    "witness",
+    # outside the case
+    "authority", "third_party",
+    # non-litigation documents
+    "contract_party",
+    # several owners in one section (``owner`` names them) / not said
+    "mixed", "unknown",
+)
+UNKNOWN_OWNER = "unknown"
 
 _INT_RE = re.compile(r"\d+")
 
@@ -64,10 +87,22 @@ class EmbeddedDoc(_Ranged):
     name: str
 
 
+def _all_required(schema: dict[str, Any]) -> None:
+    # The owner fields have defaults so code (bundles, tests, older stored maps) can
+    # build a Segment without them — but the MODEL must always fill them: the
+    # schema it sees lists every property as required.
+    schema["required"] = list(schema.get("properties", {}))
+
+
 class Segment(_Ranged):
+    model_config = ConfigDict(json_schema_extra=_all_required)
+
     from_p: int = Field(description="number of the first paragraph (P012 -> 12)")
     to_p: int = Field(description="number of the last paragraph, inclusive")
     label: str
+    owner_class: str = Field(default=UNKNOWN_OWNER, description="who this section belongs to: one key from the owner list")
+    owner: str = Field(default="", description="that owner in the document's own Arabic role words, with its number")
+    brought_by: str = Field(default="", description="the party that filed or relies on it, in the document's role words; empty when it is the owner or not said")
     what: str
     value: ModelValue
 
@@ -84,6 +119,20 @@ class Segment(_Ranged):
     @classmethod
     def _v_label(cls, v: Any) -> str:
         return str(v or "").strip() or "other"
+
+    @field_validator("owner_class", mode="before")
+    @classmethod
+    def _v_owner_class(cls, v: Any) -> str:
+        # Lenient like ``value``: an unknown key becomes ``unknown`` rather than
+        # failing the whole map.
+        s = str(v or "").strip().lower().replace("-", "_").replace(" ", "_")
+        return s if s in OWNER_CLASSES else UNKNOWN_OWNER
+
+    @field_validator("owner", "brought_by", mode="before")
+    @classmethod
+    def _v_owner_text(cls, v: Any) -> str:
+        s = " ".join(str(v or "").split())
+        return "" if s.lower() in {"none", "null", "n/a", "-", "—", "same"} else s
 
 
 class KeyParagraph(BaseModel):
@@ -118,7 +167,10 @@ class SegmentMap(BaseModel):
 
 class StoredSegment(BaseModel):
     """One ``attachment_segments`` row. ``content_md`` is the original text of
-    the section, ``workspace_items.content_md[char_start:char_end]``."""
+    the section, ``workspace_items.content_md[char_start:char_end]`` — except a
+    section joined across page letterheads (``joins.py``): its text is its core
+    parts joined by a newline, without the letterhead between them, while
+    ``char_start`` / ``char_end`` / ``from_p`` / ``to_p`` span the whole range."""
 
     seq: int
     from_p: int
@@ -131,6 +183,10 @@ class StoredSegment(BaseModel):
     value: StoredValue
     what: str = ""
     content_md: str = ""
+    #: seg-v5.2+ (migration 220); ``None`` / ``""`` on older maps.
+    owner_class: str | None = None
+    owner: str | None = None
+    brought_by: str | None = None
 
 
 class StoredMap(BaseModel):
@@ -179,9 +235,17 @@ class SegmenterResult(BaseModel):
     chars: int = 0
     paragraphs: int = 0
     split: bool = False
+    #: Parallel calls the document was cut into (1 = whole).
+    parts: int = 1
+    #: Seam stitching counts summed over every seam (split runs only).
+    seams: dict[str, int] = Field(default_factory=dict)
     attempts: int = 0
     segments: int = 0
     repeats: int = 0
+    #: Core sections joined back across page letterheads (``joins.py``).
+    page_joins: int = 0
+    #: Core sections under 100 chars merged into a core neighbour (``joins.py``).
+    short_merges: int = 0
     core_chars: int = 0
     repairs: dict[str, int] = Field(default_factory=dict)
     model_used: str = ""
@@ -215,6 +279,8 @@ __all__ = [
     "KeyParagraph",
     "MODEL_VALUES",
     "ModelValue",
+    "OWNER_CLASSES",
+    "UNKNOWN_OWNER",
     "Outcome",
     "STORED_VALUES",
     "Segment",

@@ -425,7 +425,22 @@ async def test_preview_returns_per_member_rows_and_writes_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_bundle_over_30k_is_split_in_two(monkeypatch):
+async def test_a_34k_bundle_is_one_call(monkeypatch):
+    """One agent per 150k (owner, 2026-11-19): a 34k bundle no longer splits."""
+    files = [(f"s{k}", text(4_900), "letter") for k in range(1, 8)]   # 7 × 4,900 = 34,300
+    db = make_db(files)
+    script = use(monkeypatch, per_file)
+    res = await run_attachment_bundle(db, [f for f, _, _ in files])
+    assert all(r.outcome == "ok" and not r.split for r in res.values()), res
+    assert len(script.calls) == 1 and "## You are mapping ONE PART" not in script.calls[0]["instructions"]
+    for f, _, _ in files:
+        covers(db, f, content_of(db, f))
+
+
+@pytest.mark.asyncio
+async def test_a_bundle_over_the_split_threshold_is_split_in_two(monkeypatch):
+    # the split mechanics at a lowered threshold (a real 150k bundle = 31+ small files)
+    monkeypatch.setattr(runner_mod, "SPLIT_THRESHOLD_CHARS", 30_000)
     files = [(f"s{k}", text(4_900), "letter") for k in range(1, 8)]   # 7 × 4,900 = 34,300
     db = make_db(files)
     script = use(monkeypatch, per_file)

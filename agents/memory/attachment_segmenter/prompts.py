@@ -22,8 +22,14 @@ from typing import Sequence
 from .paragraphs import Paragraph, pid, render_numbered
 
 #: Stored on ``attachment_segment_maps.prompt_version``; part of the helper's version
-#: (``agents/helpers/registry.py``), so a bump re-runs every item.
-PROMPT_VERSION = "seg-v5.1"
+#: (``agents/helpers/registry.py``). A bump does NOT redo stored maps: a map is used
+#: while the file's length is unchanged (``store.load_segment_maps``, and the runner's
+#: ``skipped_fresh``); the version only restarts the attempt count of failed runs.
+#: Old maps keep their old prompt (owner, 2026-11-19: no re-segmenting the past).
+#: v5.2 (owner, 2026-11-18): every section says who it belongs to — ``owner_class``
+#: (fixed keys, ``models.OWNER_CLASSES``), ``owner`` (the document's role words) and
+#: ``brought_by`` (the party that filed or relies on it).
+PROMPT_VERSION = "seg-v5.2"
 
 # ---------------------------------------------------------------------------------------------
 # Labels per doc_type — what each part of the document IS. The value comes from the rule in
@@ -155,11 +161,47 @@ Ask of every section: **is it worth investigating and searching on for this case
 - A span that mixes a `core` part and another part: split it at the paragraph where the part changes. If one paragraph holds both, rate that paragraph `core`.
 - Tables: a table's column-title rows, at their first occurrence, take the value of the rows under them (the rows cannot be read without them); the same column titles repeated on later pages are `boilerplate`.
 
+## Who owns each section — `owner_class`, `owner`, `brought_by`
+A section belongs to the person or body whose words, findings or decision it carries — not to whoever typed the document. A judgment is written by the court, yet the passage where it reports the plaintiff's claim belongs to the plaintiff.
+- Quoted or reported words keep their original speaker: when the court, a memo, a minutes record or a report states what another person said, submitted, admitted, testified or found, that passage is that person's. The short lead-in that introduces it («وبسؤال المدعى عليه أجاب…», «وقدّم وكيل المدعي مذكرة جاء فيها…») goes with the words it introduces.
+- A representative speaks for the party: a lawyer, an agent (وكيل), a legal representative, a guardian (ولي، وصي، قيّم) or a waqf administrator takes the class of the party represented; `owner` keeps the document's words («وكيل المدعي»).
+- Sides are relative to the proceeding in THIS document: whoever brought it (a claim, appeal, objection, cassation, enforcement request, complaint, petition) is `claimant`; whoever answers it is `respondent`. An appeal by the original defendant makes the appellant `claimant` («المستأنف (المدعى عليه ابتداءً)» when the document says so).
+- A message, letter or email belongs to its sender, under the sender's role: a message from the defendant is `respondent`, one from someone outside the case `third_party`. A record, certificate or statement belongs to whoever issued it — the party's class when the issuer is a party.
+- The owner never decides where a section starts or ends: cut sections exactly as you would without it (by label and value), then give each section its owner. A section whose text comes from two or more owners (an objection followed by the expert's reply, questions and answers) is `mixed`, with the owners named in order; a short question or lead-in that introduces another person's words does not count.
+- `metadata`, `boilerplate` and signatures take the owner of the document they belong to (the court for a judgment's header, the sender for a letter's).
+- Never guess: when the document does not show who wrote or said a passage, `unknown`.
+
+Owner keys (`owner_class`):
+- `claimant` — المدعي / المدعية / المدعون، المستأنف، المعترض، الطاعن، طالب التنفيذ، المدعي بالحق الخاص، الشاكي، مقدّم الطلب
+- `respondent` — المدعى عليه / عليها / عليهم، المستأنف ضده، المعترض ضده، المطعون ضده، المنفذ ضده، المتهم، الجهة الإدارية المدعى عليها
+- `prosecution` — النيابة العامة / المدعي العام
+- `victim` — المجني عليه، المتضرر، ورثة المجني عليه — when they are not the claimant
+- `intervenor` — المتدخل (انضمامياً أو اختصامياً)، الخصم المُدخل، الكفيل أو المؤمِّن المُدخل
+- `both_parties` — the parties together: a settlement (صلح), joint minutes, agreed facts, a contract clause both parties signed
+- `court` — المحكمة، الدائرة، القاضي، ناظر القضية، محكمة الاستئناف، المحكمة العليا، ديوان المظالم; a dissenting member (العضو المخالف) too
+- `court_officer` — أمين السر / كاتب الضبط، المُحضِر، مأمور التنفيذ، الحارس القضائي، المصفي، أمين الإفلاس
+- `arbitrator` — هيئة التحكيم، المحكَّم، المحكَّم المرجِّح
+- `committee` — a quasi-judicial or specialised committee: banking and finance, securities, tax and zakat, customs or insurance disputes; اللجنة الطبية الشرعية؛ a disciplinary committee
+- `conciliator` — المصلح، الموفق، الوسيط (مركز المصالحة، التسوية الودية في مكتب العمل)
+- `investigator` — المحقق، مأمور الضبط الجنائي / الشرطة / الجهة الأمنية، هيئة الرقابة ومكافحة الفساد، محقق الحوادث — what they did and recorded (a suspect's answers inside belong to the suspect)
+- `inspector` — مفتش العمل، مفتش البلدية أو الأمانة، مفتش التجارة، الدفاع المدني، هيئة الغذاء والدواء — an inspection and its findings
+- `expert` — الخبير المنتدب، هيئة الخبراء، المقيّم المعتمد، المحاسب القانوني، الطبيب الشرعي، الأدلة الجنائية، المختبر; also a party's own consultant (then `brought_by` names that party)
+- `translator` — المترجم المعتمد: only the translator's own certificate or note (a translated text keeps its author)
+- `witness` — الشاهد، المزكّي، المعرِّف، المبلِّغ: anyone outside the parties who testifies, states or admits something (a party who takes the oath (اليمين) stays that party)
+- `authority` — a public body that issues a record, letter or rule without being a party: كتابة العدل، السجل التجاري، الأحوال المدنية، الجوازات، التأمينات الاجتماعية، هيئة الزكاة والضريبة والجمارك، البنك المركزي، نجم / المرور، البلدية; the legislator of a law or regulation
+- `third_party` — anyone else outside the case: the bank behind a statement, an insurer, a supplier, a supervising consultant, a partner who is not sued, a neighbour, the sender of a message who is not a party
+- `contract_party` — one party of a contract or another non-litigation document acting alone: الطرف الأول / الثاني، المؤجر، المستأجر، البائع، المشتري، المقاول، المالك، الموكِّل، الكفيل، المقرض، المقترض، الشريك
+- `mixed` — several owners in one section that cannot be split
+- `unknown` — the document does not show who
+
 ## Output fields
 - `documents_in_file` — every distinct document inside the upload, in order: `from_p`, `to_p` (paragraph NUMBERS as integers: P012 → 12) and an Arabic `name`.
 - `segments` — contiguous paragraph ranges, in document order, covering EVERY paragraph from 1 to the last one exactly once: no gaps, no overlaps. Every paragraph counts — image placeholders (`![img…]`), page numbers and one-character lines too. Check before answering: the first segment starts at 1, every next `from_p` = the previous `to_p` + 1, and the last `to_p` = the paragraph count in the first line of the input. A label may recur. Split as finely as the label or value changes — never bury a passage of the case inside a long boilerplate span; one paragraph can be its own segment.
   - `from_p`, `to_p` — integers, first and last paragraph of the segment (inclusive; equal for a one-paragraph segment).
   - `label` — one label from the list for this document type (below), or `page_letterhead` (repeated letterheads, footers, page numbers), or `attachment` (an embedded document outside the list), or `other:<short_english_name>`.
+  - `owner_class` — one key from the owner keys above.
+  - `owner` — Arabic, at most 6 words: the owner's ROLE as the document names it, with the document's own number when there are several («المدعي», «المدعى عليها الثانية», «الخبير», «الشاهد الأول», «وكيلة المستأنفة»). Never a person's, firm's or body's name — the expert is «الخبير» or «جهة الخبرة», not the firm — unless two owners of the same role would otherwise read the same. Write the same owner with exactly the same words everywhere in the document. For `mixed`, the owners in order, separated by «، ». For `unknown`, empty.
+  - `brought_by` — the role words of the PARTY that filed, called or relies on this section, only when that party is not the owner and the document shows it («المدعي» for the plaintiff's witness or for a message the plaintiff filed; «المدعى عليه» for the defendant's consultant's report). Only a side of the case (`claimant`, `respondent`, `prosecution`, `victim`, `intervenor`) — never the expert, the court or whoever merely attached a document. Otherwise empty.
   - `what` — Arabic, at most 15 words: what this span IS (a label, not a summary of its content).
   - `value` — `metadata` · `core` · `supporting` · `boilerplate`, by the rule above.
 - `key_paragraphs` — the 5–15 single paragraphs carrying the most decisive content (the operative ruling, the decisive ground, the expert's final figures, the price / penalty / termination / jurisdiction clause, the decision a record certifies, a passage the user pointed to…): `p` (integer) and a short Arabic `why` (at most 12 words).
@@ -193,6 +235,7 @@ _EXPERT_NOTES = """
 - An attached document is `core` when it carries case content (the contract examined, a letter with a demand, minutes of a meeting with the parties) and `supporting` when it is appendix-like data with nothing to investigate (a standard certificate, a routine schedule, a page of photos without findings).
 - Photo placeholders are `boilerplate`; a caption that states a finding is `core`.
 - `metadata` = the cover / first header (court, case and appointment numbers, expert, dates, parties). Later page headers, a restated mandate and signature blocks are `boilerplate`.
+- Owners: the mandate the court set (`assignment`) is `court`; what a party told or submitted to the expert is that party's (a passage holding both parties' positions is `mixed`); the expert's own method, findings, calculations and conclusion are `expert`; every attached document keeps its own author (a party's letter, the contract's parties, an authority's record).
 """
 
 _MEMO_NOTES = """
@@ -201,6 +244,7 @@ _MEMO_NOTES = """
 - `supporting` = appendix-like data: an exhibit list, or an attached exhibit that holds nothing to investigate. An attached exhibit that carries case content (a contract clause, a letter, a prior ruling) is `core`.
 - `metadata` = the first header: court, case number, the judgment or decision concerned, the parties and their capacities, the subject, the date. Repeated headers and the closing formula / signature are `boilerplate`.
 - Headings such as «أولاً: من حيث الشكل» belong to the passage they open.
+- Owners: the party who files the memo owns its body; the other side's words that it quotes or reports before answering them («دفع المدعى عليه بأن…») belong to the other side, and the reply after them to the author again; a ruling or an expert's finding it quotes keeps the court or the expert as owner.
 """
 
 _CONTRACT_NOTES = """
@@ -294,8 +338,8 @@ _PART_COVERAGE: tuple[tuple[str, str], ...] = (
 
 CHUNK_NOTE = """
 
-## You are mapping ONE PART of a longer document ({part} of 2)
-Another agent maps the rest in parallel; code joins the parts afterwards.
+## You are mapping ONE PART of a longer document ({part} of {parts})
+{others} the rest in parallel; code joins the parts afterwards.
 - Map ONLY paragraphs {a}–{b} (the section "YOUR PART"). Your segments must cover every one of them exactly once, starting at {a} and ending at {b}. Never output a segment outside that range.
 - Everything else in the message — the summary of the document, what the user said, the first page, and the context paragraphs before or after your part — is for reading only, so you know what the document is and what you are continuing.
 - {first_page_rule}
@@ -309,7 +353,7 @@ _FIRST_PART_RULE = (
 )
 _SECOND_PART_RULE = (
     "The document's first page (paragraphs 1–{first_end}) is shown above and has ALREADY "
-    "been mapped by the other agent: any repeat of that letterhead, header or party block "
+    "been mapped by {by_agent}: any repeat of that letterhead, header or party block "
     "inside your part is `boilerplate`, not `metadata`. Use `metadata` only for identifying "
     "information that appears for the first time in your part (e.g. the header of an "
     "embedded document)."
@@ -366,8 +410,10 @@ def build_instructions(
     first_end: int | None = None,
     bundle_files: int | None = None,
     bundle_types: Sequence[str | None] | None = None,
+    parts: int = 2,
 ) -> str:
-    """System prompt for a whole document (``part=None``) or for one of two parts.
+    """System prompt for a whole document (``part=None``) or for one of ``parts``
+    parts (2 = the production split; the text for 2 is unchanged).
 
     ``bundle_files`` (2+): the input is a bundle of that many files sent together —
     ``BUNDLE_NOTE`` goes after the type notes (and before ``CHUNK_NOTE`` in split
@@ -402,9 +448,12 @@ def build_instructions(
             _FIRST_PART_RULE
             if part == 1
             else _SECOND_PART_RULE.replace("{first_end}", str(first_end or 1))
+            .replace("{by_agent}", "the other agent" if parts == 2 else "another agent")
         )
         text += (
             CHUNK_NOTE.replace("{part}", str(part))
+            .replace("{parts}", str(parts))
+            .replace("{others}", "Another agent maps" if parts == 2 else "Other agents map")
             .replace("{a}", str(a))
             .replace("{b}", str(b))
             .replace("{first_page_rule}", rule)
@@ -472,22 +521,24 @@ def build_part_message(
     summary: str,
     chars: int,
     user_words: str | None = None,
+    parts: int = 2,
 ) -> str:
     """One part of a split document (``experiments/run_split.py`` layout).
 
     Part 1: summary, user's words, YOUR PART, ``overlap`` read-only paragraphs after it.
-    Part 2: summary, user's words, the shared first page, ``overlap`` read-only
-    paragraphs before it (never repeating first-page paragraphs), YOUR PART.
+    Later parts: summary, user's words, the shared first page, ``overlap`` read-only
+    paragraphs before it (never repeating first-page paragraphs), YOUR PART — and,
+    for a middle part (``parts`` > 2), ``overlap`` read-only paragraphs after it too.
     """
     n = len(paragraphs)
     lines = [
-        f"{_head(doc_type, title, chars, n)} | part {part} of 2 — you map {pid(a)}–{pid(b)}",
+        f"{_head(doc_type, title, chars, n)} | part {part} of {parts} — you map {pid(a)}–{pid(b)}",
         "",
         SUMMARY_HEADING,
         _summary(summary),
         *_user_words(user_words),
     ]
-    if part == 2:
+    if part >= 2:
         lines += [
             "",
             "## First page of the document (context only — already mapped)",
@@ -501,7 +552,7 @@ def build_part_message(
                 render_numbered(paragraphs, ctx_from, a - 1),
             ]
     lines += ["", f"## YOUR PART — map every paragraph {pid(a)}–{pid(b)}", render_numbered(paragraphs, a, b)]
-    if part == 1 and b < n:
+    if part < parts and b < n:
         lines += [
             "",
             "## Context after your part (read only — do not map)",

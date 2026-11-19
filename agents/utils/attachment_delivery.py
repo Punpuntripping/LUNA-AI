@@ -56,6 +56,19 @@ class Section:
     what: str
     text: str
     label: str = ""
+    #: seg-v5.2+: who the section belongs to (the document's role words) and the
+    #: party that filed or relies on it — shown in the section's tag. Empty on
+    #: older maps.
+    owner: str = ""
+    brought_by: str = ""
+
+    def tag(self) -> str:
+        """``what — owner، قدّمه brought_by`` (each part only when present)."""
+        what = " ".join(str(self.what or "").split())
+        owner = " ".join(str(self.owner or "").split())
+        by = " ".join(str(self.brought_by or "").split())
+        who = f"{owner}، قدّمه {by}" if owner and by else owner or (f"قدّمه {by}" if by else "")
+        return f"{what} — {who}" if what and who else what or who
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +203,8 @@ def render_sections(
             if len(body) < len(text):
                 trimmed = True
                 body = f"{body}\n{TRIM_NOTE}" if body else TRIM_NOTE
-            parts.append(f"〔{what}〕\n{body}" if what else body)
+            tag = section.tag()
+            parts.append(f"〔{tag}〕\n{body}" if tag else body)
         elif section.value not in SILENT_VALUES and what and what not in left_out:
             left_out.append(what)
     # A trailing run names what follows the last kept section too.
@@ -271,6 +285,8 @@ def sections_from_rows(rows: Iterable[Mapping[str, Any] | Any]) -> list[Section]
                 what=str(get("what", "") or ""),
                 text=str(text or ""),
                 label=str(get("label", "") or ""),
+                owner=str(get("owner", "") or ""),
+                brought_by=str(get("brought_by", "") or ""),
             )
         )
     return sorted(out, key=lambda s: s.seq)

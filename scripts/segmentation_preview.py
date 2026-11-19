@@ -130,6 +130,9 @@ def _run_info(res: Any) -> dict:
     return {
         "outcome": res.outcome, "paragraphs": res.paragraphs, "split": res.split,
         "attempts": res.attempts, "segments": res.segments, "repeats": res.repeats,
+        "page_joins": getattr(res, "page_joins", 0),
+        "short_merges": getattr(res, "short_merges", 0),
+        "parts": getattr(res, "parts", 1), "seams": getattr(res, "seams", {}),
         "core_chars": res.core_chars, "repairs": res.repairs, "model": model,
         "tokens_in": res.tokens_in, "tokens_out": res.tokens_out,
         "tokens_reasoning": res.tokens_reasoning, "tokens_cached": res.tokens_cached,

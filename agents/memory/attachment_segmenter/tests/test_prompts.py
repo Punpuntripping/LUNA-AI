@@ -10,29 +10,28 @@ from agents.memory.attachment_segmenter import prompts as P
 from agents.memory.attachment_segmenter.models import SegmentMap
 from agents.memory.attachment_segmenter.paragraphs import paragraphize
 
-#: sha256 of ``experiments/run_flash_segmenter.py::instructions_for(t)`` (v4.4),
-#: computed from the experiment file on 2026-11-11. ``build_instructions(t)`` must
-#: produce exactly these bytes — the per-type text is what Phase 0 tested.
+#: sha256 of ``build_instructions(t)`` for seg-v5.2 (owner fields, 2026-11-18) —
+#: re-pinned after the 5-document preview. A wording change must be deliberate.
 TESTED_INSTRUCTIONS_SHA256 = {
-    "claim": "d4cfa70a6ee3c38818eab5c1643da28293addde4efc4bcacf3ba7a727c61d2a9",
-    "contract": "94e9eec0c2b5e03ddcc86dfbb65329dac2f8dd15b86b09989e1a4f7cad86748e",
-    "expert_report": "cc26c7015bf28aa95cf691eff7876c68660dc8ec3b82a5607c56b4064c217938",
-    "financial": "99b0b1fdeaca151f1e759dcaf23ab88f622eb1edff934694ab71a96b374af6b5",
-    "generic": "8bd4a4851090696bdcb047663303959688579303b9380a85c79562a0d1d39b37",
-    "hearing_minutes": "053cd4d686b209be2bc0a51ea28ccf8dea32d74a8ea2b293ac69cae3590f5e5a",
-    "judgment": "7ea250caa88421a7baebd9b710b2f978cb4db192ef36a1d43f3291dc4eda673e",
-    "letter": "556bbe3b508b6b10b5be175b03d150530fd9cddbfa7d0a211003ed5c3a886530",
-    "memo": "8c163cfd5be8c83b38f0a5cfcbc5e2c3f50425cf33285fdd5ea0f12fb23e053a",
-    "official_record": "0a9f23b7f0b08875df4a97135b2423a048bf7353f7db2aea2f9ba4ccd37ce395",
-    "reference": "5558caf5831c00ddc07cb16e6bacba374f1a7823241bc81fdb3d7472750247a3",
-    "": "d794aa3602a54b7947bf300dac6d3afbb876a88954bb65e64ef8f5a42560e052",
-    "chat": "b95d8ab7cfb562699980509084622523c8b16755438e3060209611f1c27d507a",
-    "statement": "7b4dea56a6e6bc840e13781965a2d0e6eef3d3cd8844cc778aeaf5d3fc9ae430",
-    "user_notes": "7e5203bc7d124eb215b1b252a537e10d717d1cc993f7194d8ff62537d9ecb4b0",
-    "other": "c601a115d9b7a73ce2afa2423d639372c9d87231024fe192b453da81c2d7d86d",
+    "claim": "72dda3dbe7c0e41755e32c849153110f686f5f06b3a1a8a9bf70354e858e6c52",
+    "contract": "113ce835b5d2539191a7b0308b22ff366850c0be78cbd1b06496b0e24ce286ae",
+    "expert_report": "30b70b4ec657b55d1ce7b0290b9412ce0bcb1ef16518a86bcb5f4ed0bf3f81ce",
+    "financial": "1a41230cf4e7fb1fc9a719e7906243f45b8a3888c8e097b35879f18d49387c2b",
+    "generic": "b8f499699f9104cee72b5cc74524025ded50f6246f4cfe1f1b9ccbec6d8d7398",
+    "hearing_minutes": "0552209bfb03b8d97a8094f59bb0fa9dfa05d75ba01447371699c91a9c0a996d",
+    "judgment": "5304cda3c2b95257f8d3a81629289c18d6462f8e184cba47707cf3876acfe3b4",
+    "letter": "3c120115ac1bd94fdec4d888c67cd936ed192fd44afd4da8d64ac121c5ad6ea8",
+    "memo": "f6ea59f4fd421f204986e4314d1b17e4d4f362a5a1847dd9b5c71db2206bbc98",
+    "official_record": "0a8402a64c96b83ef08b389592a99906a32485385a37bd4f6f9ecac96bddb75e",
+    "reference": "93bb8059d9c76494c065357605a70b406008372d8aa00aec097bb545dd875fc3",
+    "": "c7c197dcc68ff70e3255235c89330a5360324271205d1de1b4767d607595a4c0",
+    "chat": "b1b76910afd9678159ef02fa94740da15d2f1dc7fc3cc24032f836afb656c50a",
+    "statement": "66e30ac800a78143c109a4ed7b03c097802c219daaca46721ebc0d8e3ec7ff44",
+    "user_notes": "d5ab52b487c15a86a69fcca6999badb67fe7fa38d417376163856116ac49a344",
+    "other": "6794e69be5034e6a2af4752e31aa4bfb4bead28c70d0d302e75b77c86ba4dc8a",
 }
-#: sha256 of the experiment's ``SegmentMap.model_json_schema()`` (json, sort_keys).
-TESTED_SCHEMA_SHA256 = "480afcc0c93f033b53199509f14a864f391ae8caef35826df082fe98c56284c8"
+#: sha256 of ``SegmentMap.model_json_schema()`` (json, sort_keys) for seg-v5.2.
+TESTED_SCHEMA_SHA256 = "86a3ff349cbdb0963abd9578651203ab37d975ba95e368ea9cd31b6da5ff17d8"
 
 
 def _sha(text: str) -> str:
@@ -40,7 +39,7 @@ def _sha(text: str) -> str:
 
 
 def test_prompt_version():
-    assert P.PROMPT_VERSION == "seg-v5.1"
+    assert P.PROMPT_VERSION == "seg-v5.2"
 
 
 @pytest.mark.parametrize("doc_type", sorted(TESTED_INSTRUCTIONS_SHA256))
@@ -96,7 +95,11 @@ def test_output_schema_is_the_tested_one():
     schema = SegmentMap.model_json_schema()
     assert _sha(json.dumps(schema, sort_keys=True)) == TESTED_SCHEMA_SHA256
     seg = schema["$defs"]["Segment"]
-    assert list(seg["properties"]) == ["from_p", "to_p", "label", "what", "value"]  # what BEFORE value
+    assert list(seg["properties"]) == [
+        "from_p", "to_p", "label", "owner_class", "owner", "brought_by", "what", "value",
+    ]  # owner after label, what BEFORE value
+    # the owner fields have code defaults, yet the model must always fill them
+    assert seg["required"] == list(seg["properties"])
     assert schema["required"] == ["documents_in_file", "segments", "key_paragraphs"]
     assert list(schema["$defs"]["EmbeddedDoc"]["properties"]) == ["from_p", "to_p", "name"]
 
@@ -220,3 +223,20 @@ def test_part_messages_carry_the_user_words_too():
             title="مذكرة", summary="ملخص", chars=400, user_words="### With the file\nسؤال",
         )
         assert P.USER_WORDS_HEADING in msg and "سؤال" in msg
+
+
+# ---------------------------------------------------------------------------
+# v5.2 — who owns each section (owner, 2026-11-18)
+# ---------------------------------------------------------------------------
+
+
+def test_every_owner_key_is_explained_once_in_every_prompt():
+    from agents.memory.attachment_segmenter.models import OWNER_CLASSES
+
+    for t in P.LABELS:
+        text = P.build_instructions(t)
+        assert "## Who owns each section" in text
+        for key in OWNER_CLASSES:
+            assert text.count(f"- `{key}` — ") == 1, (t, key)
+        assert "Quoted or reported words keep their original speaker" in text
+        assert "The owner never decides where a section starts or ends" in text

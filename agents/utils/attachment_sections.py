@@ -43,6 +43,9 @@ def _encode_sections(sections: list[Section]) -> list[Section]:
             what=encode_active(s.what),
             text=encode_active(s.text),
             label=s.label,
+            # free text that can carry a name — encoded like ``what``
+            owner=encode_active(s.owner) if s.owner else "",
+            brought_by=encode_active(s.brought_by) if s.brought_by else "",
         )
         for s in sections
     ]

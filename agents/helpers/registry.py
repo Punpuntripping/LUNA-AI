@@ -149,7 +149,8 @@ MEMORY = HelperSpec(
 #: Critical consumers wait up to 5 minutes (owner, 2026-11-11).
 SEGMENTER_CEILING_S = 300.0
 #: Owner (2026-11-12): every run of a message starts in parallel — each long file
-#: alone (split ones as two calls), the small files of the message as one bundle.
+#: alone (one parallel call per started 150k chars — owner, 2026-11-19), the small
+#: files of the message as one bundle.
 #: Each member of a bundle holds a slot while it waits on the shared run, so the
 #: limit is set above the unit count of a busy message.
 SEGMENTER_CONCURRENCY = 8

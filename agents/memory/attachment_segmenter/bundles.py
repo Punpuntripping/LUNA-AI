@@ -4,10 +4,10 @@ Owner rules (2026-11-12), applied per user message (``message_attachments``, the
 files the user sent together):
 
 1. every attachment over ``SEGMENT_MIN_CHARS`` (5,000) gets its OWN run — one call,
-   or split in two above ~30k;
+   or one parallel call per started 150k (owner, 2026-11-19; was two above ~30k);
 2. the message's remaining attachments (each ≤ 5,000): when there are 2+ of them and
    their total is over 5,000 → ONE bundle run (one call, or split in two when the
-   bundle's combined size is above ~30k). Otherwise they are not segmented (they
+   bundle's combined size is above 150k). Otherwise they are not segmented (they
    travel whole).
 
 An attachment with no message link only follows rule 1. Example: 40k, 20k, 4k, 2k,

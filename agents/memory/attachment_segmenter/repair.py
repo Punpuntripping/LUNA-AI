@@ -28,8 +28,12 @@ from typing import Sequence
 from .models import EmbeddedDoc, KeyParagraph, Segment, SegmentMap
 from .paragraphs import Paragraph
 
-#: Above this many characters of ``content_md`` → two calls (P7).
-SPLIT_THRESHOLD_CHARS = 30_000
+#: One agent (one parallel call) per this many characters of ``content_md`` (owner,
+#: 2026-11-19, was a 30k split into two): up to 150k one call, above 150k two, above
+#: 300k three, and so on — see :func:`parts_for`.
+CHARS_PER_AGENT = 150_000
+#: Above this a file — or a bundle of small files (always at most two parts) — is split.
+SPLIT_THRESHOLD_CHARS = CHARS_PER_AGENT
 #: Read-only context paragraphs given to each part from its neighbour.
 OVERLAP_PARAGRAPHS = 12
 #: Shared first page shown (read-only) to part 2, at most this many chars.
@@ -178,6 +182,12 @@ def page_starts(paragraphs: Sequence[Paragraph]) -> list[int]:
     ]
 
 
+def parts_for(chars: int) -> int:
+    """Parallel calls for a file of ``chars`` characters: one per started
+    :data:`CHARS_PER_AGENT` (150,000 → 1, 150,001 → 2, 300,001 → 3). No upper bound."""
+    return max(1, -(-int(chars) // CHARS_PER_AGENT))
+
+
 def choose_cut(paragraphs: Sequence[Paragraph]) -> tuple[int, str]:
     """The first paragraph of part 2, and how it was chosen.
 
@@ -196,6 +206,38 @@ def choose_cut(paragraphs: Sequence[Paragraph]) -> tuple[int, str]:
     if starts:
         return min(starts, key=lambda s: abs(paragraphs[s - 1].char_start - mid)), "page_start"
     return min(range(2, n + 1), key=lambda s: abs(paragraphs[s - 1].char_start - mid)), "paragraph"
+
+
+def choose_cuts(paragraphs: Sequence[Paragraph], parts: int) -> tuple[list[int], str]:
+    """The first paragraph of parts 2..``parts`` (strictly increasing), and how they
+    were chosen. ``parts == 2`` is exactly :func:`choose_cut`. Otherwise cut ``k``
+    aims at ``k/parts`` of the text: the nearest page start within ``±1/(2·parts)``
+    of it (page rows make this exact), else the nearest paragraph boundary."""
+    n = len(paragraphs)
+    if parts < 2 or n < parts:
+        raise ValueError(f"cannot split {n} paragraphs into {parts} parts")
+    if parts == 2:
+        cut, how = choose_cut(paragraphs)
+        return [cut], how
+    begin, end = paragraphs[0].char_start, paragraphs[-1].char_end
+    span = max(end - begin, 1)
+    starts = page_starts(paragraphs)
+    cuts: list[int] = []
+    hows: list[str] = []
+    for k in range(1, parts):
+        target = begin + span * k / parts
+        lo, hi = target - span / (2 * parts), target + span / (2 * parts)
+        prev = cuts[-1] if cuts else 1
+        last_allowed = n - (parts - k) + 1  # leave at least one paragraph per later part
+        pool = [s for s in starts if lo <= paragraphs[s - 1].char_start <= hi and prev < s <= last_allowed]
+        if pool:
+            cut, how = min(pool, key=lambda s: abs(paragraphs[s - 1].char_start - target)), "page_start"
+        else:
+            cut = min(range(prev + 1, last_allowed + 1), key=lambda s: abs(paragraphs[s - 1].char_start - target))
+            how = "paragraph"
+        cuts.append(cut)
+        hows.append(how)
+    return cuts, ",".join(hows)
 
 
 def first_page_end(paragraphs: Sequence[Paragraph], cut: int) -> int:
@@ -249,7 +291,8 @@ def stitch(
     second = list(part2.segments)
     if first and second:
         last, head = first[-1], second[0]
-        if last.label == head.label and last.value == head.value and last.to_p + 1 == head.from_p:
+        same_owner = (last.owner_class, _norm(last.owner)) == (head.owner_class, _norm(head.owner))
+        if last.label == head.label and last.value == head.value and same_owner and last.to_p + 1 == head.from_p:
             first[-1] = last.model_copy(update={"to_p": head.to_p})
             second = second[1:]
             seam.merged_at_seam += 1
@@ -286,6 +329,7 @@ def stitch(
 
 
 __all__ = [
+    "CHARS_PER_AGENT",
     "CUT_BAND",
     "FIRST_PAGE_CAP_CHARS",
     "InvalidMap",
@@ -295,8 +339,10 @@ __all__ = [
     "SPLIT_THRESHOLD_CHARS",
     "SeamStats",
     "choose_cut",
+    "choose_cuts",
     "first_page_end",
     "page_starts",
+    "parts_for",
     "repair_map",
     "repair_segments",
     "stitch",
