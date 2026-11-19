@@ -114,6 +114,7 @@ from agents.utils.prior_coverage import analyzer_enabled
 from agents.utils.reading_corrections import with_corrections
 from agents.utils.reply_guard import ReplyGuard, scrub_reply
 from agents.utils.usage_sink import bind_run_id, collect_llm_calls, record_call
+from shared.files import store as files_store
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -323,12 +324,18 @@ def _load_attached_items(
     """
     if not item_ids:
         return []
-    snapshots: list[WorkspaceItemSnapshot] = []
+    # Files in their own table (my_files_phase2.md §C4): rows first, one
+    # user_files overlay for all of them, then the snapshots — same order.
+    columns = files_store.with_file_id(
+        "item_id, wi_seq, kind, title, content_md, summary, metadata",
+        user_id=user_id, supabase=supabase,
+    )
+    loaded: list[tuple[str, dict]] = []
     for item_id in item_ids:
         try:
             row = (
                 supabase.table("workspace_items")
-                .select("item_id, wi_seq, kind, title, content_md, summary, metadata")
+                .select(columns)
                 .eq("item_id", item_id)
                 .eq("user_id", user_id)
                 .eq("conversation_id", conversation_id)
@@ -337,26 +344,34 @@ def _load_attached_items(
                 .execute()
             )
             if row and getattr(row, "data", None):
-                d = row.data
-                snapshots.append(
-                    WorkspaceItemSnapshot(
-                        item_id=d.get("item_id", item_id),
-                        wi_seq=d.get("wi_seq"),
-                        kind=d.get("kind") or "unknown",
-                        title=d.get("title") or "",
-                        # A report carries its saved reading corrections, so the
-                        # planner and the writer read the note with the text.
-                        content_md=with_corrections(
-                            d.get("content_md") or "", d.get("metadata"),
-                        ),
-                        # The artifact_summarizer's summary — what a forwarded
-                        # case document carries to the deep_search expanders
-                        # (case_documents_forwarding.md §3.6). May be empty
-                        # (not written yet).
-                        summary=d.get("summary") or "",
-                        metadata=d.get("metadata") or {},
-                    )
+                loaded.append((item_id, row.data))
+        except Exception as e:
+            logger.warning("_load_attached_items: could not load %s: %s", item_id, e)
+    overlaid = files_store.overlay_files(
+        supabase, [d for _iid, d in loaded], user_id=user_id,
+    )
+    snapshots: list[WorkspaceItemSnapshot] = []
+    for (item_id, _raw), d in zip(loaded, overlaid):
+        try:
+            snapshots.append(
+                WorkspaceItemSnapshot(
+                    item_id=d.get("item_id", item_id),
+                    wi_seq=d.get("wi_seq"),
+                    kind=d.get("kind") or "unknown",
+                    title=d.get("title") or "",
+                    # A report carries its saved reading corrections, so the
+                    # planner and the writer read the note with the text.
+                    content_md=with_corrections(
+                        d.get("content_md") or "", d.get("metadata"),
+                    ),
+                    # The artifact_summarizer's summary — what a forwarded
+                    # case document carries to the deep_search expanders
+                    # (case_documents_forwarding.md §3.6). May be empty
+                    # (not written yet).
+                    summary=d.get("summary") or "",
+                    metadata=d.get("metadata") or {},
                 )
+            )
         except Exception as e:
             logger.warning("_load_attached_items: could not load %s: %s", item_id, e)
     return snapshots

@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterable, Mapping
 
+from shared.files import store as files_store
+
 from .models import StoredMap, StoredSegment
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,16 @@ def write_segment_map(supabase: Any, map_row: Mapping[str, Any], segment_rows: l
 
 
 def _content_lengths(supabase: Any, ids: list[str], user_id: str | None) -> dict[str, int]:
+    lengths: dict[str, int] = {}
+    if files_store.files_read_enabled(user_id, supabase=supabase):
+        # Files in their own table (my_files_phase2.md §C4): the file's
+        # content_chars, without reading the text. The live-file filter stands in
+        # for the item's deleted_at (equal while the 221 mirror runs); the item's
+        # own deleted_at is kept too. An item without a file is read as before.
+        lengths = files_store.content_chars_for_items(supabase, ids, user_id=user_id)
+        ids = [i for i in ids if i not in lengths]
+        if not ids:
+            return lengths
     q = (
         supabase.table("workspace_items")
         .select("item_id, content_md")
@@ -118,7 +130,7 @@ def _content_lengths(supabase: Any, ids: list[str], user_id: str | None) -> dict
     )
     if user_id:
         q = q.eq("user_id", user_id)
-    return {str(r["item_id"]): len(r.get("content_md") or "") for r in _data(q.execute())}
+    return {**{str(r["item_id"]): len(r.get("content_md") or "") for r in _data(q.execute())}, **lengths}
 
 
 def _segment_rows(supabase: Any, ids: list[str]) -> list[dict]:

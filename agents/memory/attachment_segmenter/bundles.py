@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 from agents.utils.attachment_delivery import SEGMENT_MIN_CHARS
+from shared.files import store as files_store
 
 from .models import EmbeddedDoc, Segment, SegmentMap
 from .paragraphs import Paragraph
@@ -170,10 +171,14 @@ def message_members(supabase: Any, message_id: str, user_id: str | None = None) 
         return []
     primary = primary_messages(supabase, doc_ids)
     doc_ids = [d for d in doc_ids if primary.get(d) == message_id]
-    q = supabase.table("workspace_items").select(_MEMBER_COLUMNS).in_("item_id", doc_ids)
+    # Files in their own table (my_files_phase2.md §C4): the text length comes
+    # from user_files when the read switch is on.
+    columns = files_store.with_file_id(_MEMBER_COLUMNS, user_id=user_id, supabase=supabase)
+    q = supabase.table("workspace_items").select(columns).in_("item_id", doc_ids)
     if user_id:
         q = q.eq("user_id", user_id)
-    rows = [r for r in _data(q.execute()) if _live_attachment(r)]
+    rows = files_store.overlay_files(supabase, _data(q.execute()), user_id=user_id)
+    rows = [r for r in rows if _live_attachment(r)]
     rows.sort(key=upload_order)
     return [
         {
@@ -187,13 +192,16 @@ def message_members(supabase: Any, message_id: str, user_id: str | None = None) 
 
 
 def _item_row(supabase: Any, item_id: str) -> dict | None:
+    # Files in their own table (my_files_phase2.md §C4). No user before the
+    # read: with a *_USERS allow-list set this stays on the conversation item.
     rows = _data(
         supabase.table("workspace_items")
-        .select(_MEMBER_COLUMNS)
+        .select(files_store.with_file_id(_MEMBER_COLUMNS, supabase=supabase))
         .eq("item_id", item_id)
         .limit(1)
         .execute()
     )
+    rows = files_store.overlay_files(supabase, rows)
     return rows[0] if rows else None
 
 

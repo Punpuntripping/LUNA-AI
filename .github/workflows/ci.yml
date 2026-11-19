@@ -70,6 +70,7 @@ jobs:
           python -m pytest -q \
             shared/library/tests/ \
             shared/privacy/tests/ \
+            shared/files/tests/ \
             backend/tests/test_library_gating.py \
             backend/tests/test_library_enforcement.py \
             backend/tests/test_reference_source.py \

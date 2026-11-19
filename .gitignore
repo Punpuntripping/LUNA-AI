@@ -383,3 +383,6 @@ agents/simple_search/tests/*
 # «الملفات» (.claude/plans/my_files.md): the library list / detail / match rules are durable —
 # ownership, the never-return-text rule of the list, hidden and folded files.
 !backend/tests/test_files_service.py
+# files-in-their-own-table (.claude/plans/my_files_phase2.md): the loader / writer and the
+# both-switch reader tests are durable; backend/tests/test_files_service.py imports their fake.
+!shared/files/tests/

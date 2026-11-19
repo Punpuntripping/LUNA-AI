@@ -27,6 +27,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from shared.files import store as files_store
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,14 +97,17 @@ async def load_writer_planner_context(
         List of ``ArtifactSummaryView`` (newest first). Empty on DB error
         or empty conversation — never raises.
     """
+    # Files in their own table (my_files_phase2.md §C4).
+    columns = files_store.with_file_id(
+        "item_id, kind, title, summary, word_count, created_at, wi_seq, "
+        "doc_type:metadata->>doc_type",
+        user_id=user_id, supabase=supabase,
+    )
     try:
         result = (
             supabase
             .table("workspace_items")
-            .select(
-                "item_id, kind, title, summary, word_count, created_at, wi_seq, "
-                "doc_type:metadata->>doc_type"
-            )
+            .select(columns)
             .eq("conversation_id", conversation_id)
             .is_("deleted_at", None)
             .order("created_at", desc=True)
@@ -117,6 +122,7 @@ async def load_writer_planner_context(
         return []
 
     rows = getattr(result, "data", None) or []
+    rows = files_store.overlay_files(supabase, rows, user_id=user_id)
     views: list[ArtifactSummaryView] = []
     for row in rows:
         if not isinstance(row, dict):

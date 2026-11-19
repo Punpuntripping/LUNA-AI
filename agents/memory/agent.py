@@ -47,6 +47,7 @@ from agents.memory.summarize import (
     _summarize_codec,
     summarize_workspace_item,
 )
+from shared.files import store as files_store
 from shared.identity import resolve_call_name
 from shared.observability import get_logfire
 
@@ -237,13 +238,16 @@ def _load_compaction_context(
     silent ``("", [])`` here would look exactly like "first compaction, no
     items", which is precisely the orphaning bug this input exists to prevent.
     """
+    # Files in their own table (my_files_phase2.md §C4).
+    columns = files_store.with_file_id(
+        "wi_seq, kind, title, summary, content_md, created_at, "
+        "doc_type:metadata->>doc_type",
+        user_id=user_id, supabase=supabase,
+    )
     try:
         resp = (
             supabase.table("workspace_items")
-            .select(
-                "wi_seq, kind, title, summary, content_md, created_at, "
-                "doc_type:metadata->>doc_type"
-            )
+            .select(columns)
             .eq("conversation_id", conversation_id)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -251,6 +255,7 @@ def _load_compaction_context(
             .execute()
         )
         rows = (getattr(resp, "data", None) or []) if resp else []
+        rows = files_store.overlay_files(supabase, rows, user_id=user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "compact_conversation: workspace_items load failed for %s: %s",
@@ -337,16 +342,23 @@ async def resummarize_dirty_items(
     up front on the same threshold the summarizer enforces — the gate the
     daily sweep already uses (``summary_sweeper.py:93``).
     """
+    # Files in their own table (my_files_phase2.md §C4). No user here: with a
+    # *_USERS allow-list set this read stays on the conversation items.
+    columns = files_store.with_file_id(
+        "item_id, content_md, summary, summary_source_length, kind, metadata",
+        supabase=supabase,
+    )
     try:
         result = (
             supabase.table("workspace_items")
-            .select("item_id, content_md, summary, summary_source_length, kind, metadata")
+            .select(columns)
             .eq("conversation_id", conversation_id)
             .neq("kind", "convo_context")
             .is_("deleted_at", "null")
             .execute()
         )
         items: list[dict[str, Any]] = (getattr(result, "data", None) or []) if result else []
+        items = files_store.overlay_files(supabase, items)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "resummarize_dirty_items: item load failed for %s: %s",

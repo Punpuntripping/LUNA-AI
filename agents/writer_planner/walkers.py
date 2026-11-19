@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents.writer.models import AnalyzedItem
 from backend.app.services.references_service import fetch_item_references
+from shared.files import store as files_store
 
 from .models import PlannerRole
 
@@ -52,14 +53,17 @@ def _fetch_workspace_items_sync(
     """
     if not item_ids:
         return {}
+    # Files in their own table (my_files_phase2.md §C4).
+    columns = files_store.with_file_id(
+        "item_id, wi_seq, kind, title, content_md, word_count, summary, "
+        "conversation_id, user_id, doc_type:metadata->>doc_type",
+        user_id=user_id, supabase=supabase,
+    )
     try:
         result = (
             supabase
             .table("workspace_items")
-            .select(
-                "item_id, wi_seq, kind, title, content_md, word_count, summary, "
-                "conversation_id, user_id, doc_type:metadata->>doc_type"
-            )
+            .select(columns)
             .in_("item_id", item_ids)
             .eq("conversation_id", conversation_id)
             .is_("deleted_at", None)
@@ -72,6 +76,7 @@ def _fetch_workspace_items_sync(
         )
         return {}
     rows = getattr(result, "data", None) or []
+    rows = files_store.overlay_files(supabase, rows, user_id=user_id)
     out: dict[str, dict] = {}
     for row in rows:
         if not isinstance(row, dict):

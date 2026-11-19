@@ -31,6 +31,7 @@ from agents.orchestrator import handle_message
 from shared import quota
 from shared.config import get_settings
 from shared.db.run import run_db, run_db_retry
+from shared.files import store as files_store
 from shared.observability import get_logfire
 from shared.privacy import StreamDecoder
 
@@ -544,7 +545,9 @@ def _insert_attachment_links(
     supabase.table("message_attachments").insert(rows).execute()
 
 
-def _attachment_page_counts(supabase: SupabaseClient, attachment_ids: list) -> list[int]:
+def _attachment_page_counts(
+    supabase: SupabaseClient, attachment_ids: list, user_id: Optional[str] = None,
+) -> list[int]:
     """One entry per attachment this send will OCR: its page count (the
     upload-time client estimate, ``metadata.page_count``), or a 1-page floor
     when unknown. Feeds the quota gate's ``ocr_page_counts``.
@@ -556,13 +559,19 @@ def _attachment_page_counts(supabase: SupabaseClient, attachment_ids: list) -> l
         file once (``ocr_extractor.runner``), so a re-sent file costs nothing.
 
     A failed lookup counts one page per id — the gate must still run.
+
+    Files in their own table (my_files_phase2.md §C4): with the read switch on
+    for ``user_id`` the "attempt once" marker and the page count are read from
+    ``user_files``.
     """
     if not attachment_ids:
         return []
     try:
         result = (
             supabase.table("workspace_items")
-            .select("item_id, kind, metadata")
+            .select(files_store.with_file_id(
+                "item_id, kind, metadata", user_id=user_id, supabase=supabase,
+            ))
             .in_("item_id", list(attachment_ids))
             .execute()
         )
@@ -572,7 +581,9 @@ def _attachment_page_counts(supabase: SupabaseClient, attachment_ids: list) -> l
 
     rows_by_id = {
         r.get("item_id"): r
-        for r in (getattr(result, "data", None) or [])
+        for r in files_store.overlay_files(
+            supabase, getattr(result, "data", None) or [], user_id=user_id,
+        )
     }
     counts: list[int] = []
     for aid in attachment_ids:
@@ -779,7 +790,7 @@ async def send_message_stream(
     if attachment_ids:
         try:
             ocr_page_counts = await run_db(
-                _attachment_page_counts, supabase, attachment_ids
+                _attachment_page_counts, supabase, attachment_ids, user_id=user_id
             )
         except Exception:  # noqa: BLE001
             ocr_page_counts = [1] * len(attachment_ids)

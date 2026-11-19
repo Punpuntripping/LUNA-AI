@@ -10,6 +10,14 @@ Sync functions taking the service-role client and a ``users.user_id`` (the
 route resolves it), like ``workspace_service``. The client bypasses RLS, so
 every read here is filtered by ``user_id``.
 
+Phase 2 (``.claude/plans/my_files_phase2.md`` §D, last bullet): with the files
+read switch on (``shared/files/flags.py``) the same functions read
+``user_files`` instead — one row per file, the conversation items (pointers)
+embedded for the WI number and the home conversation. The response is the
+same §11 contract plus ``file_id``. «حذف من الملفات» becomes one atomic
+statement (``user_files_hide``) with the write switch on. Switches off: the
+functions below run exactly as in Phase 1.
+
 Never logs document text, summaries or filenames — ids and counts only.
 """
 from __future__ import annotations
@@ -25,10 +33,13 @@ from supabase import Client as SupabaseClient
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.models.responses import FileDocType
 from shared.config import get_settings
+from shared.files import flags as files_flags
+from shared.files import store as files_store
 
 logger = logging.getLogger(__name__)
 
 ITEMS_TABLE = "workspace_items"
+FILES_TABLE = files_store.FILES_TABLE
 MAPS_TABLE = "attachment_segment_maps"
 SEGMENTS_TABLE = "attachment_segments"
 
@@ -36,6 +47,13 @@ SEGMENTS_TABLE = "attachment_segments"
 #: table carries more than one relation PostgREST could embed).
 CONVERSATION_FK = "artifacts_conversation_id_fkey"
 _CONVERSATION_EMBED = f"conversations!{CONVERSATION_FK}(deleted_at)"
+#: ``workspace_items(file_id, user_id)`` → ``user_files(file_id, user_id)``
+#: (migration 221): from a file, its conversation items (pointers).
+FILE_OWNER_FK = "workspace_items_file_owner_fkey"
+_POINTER_EMBED = (
+    f"{ITEMS_TABLE}!{FILE_OWNER_FK}(item_id, conversation_id, wi_seq, deleted_at, created_at, "
+    f"{_CONVERSATION_EMBED})"
+)
 
 #: The list is one response, newest first (§5); the largest library is ~170.
 LIBRARY_CAP = 500
@@ -86,6 +104,21 @@ _KEY_COLUMNS = f"item_id, conversation_id, wi_seq, title, metadata, created_at, 
 _DETAIL_COLUMNS = (
     "item_id, conversation_id, wi_seq, title, summary, content_md, metadata, "
     "storage_path, document_id, created_at"
+)
+
+# The file path (Phase 2). ``content_chars`` / ``library_hidden_at`` are
+# ``user_files`` columns; the file name is never selected as a column (it is
+# read from ``metadata`` like above, and compared in Python).
+_FILE_LIST_COLUMNS = (
+    "file_id, title, summary, metadata, storage_path, document_id, created_at, "
+    f"content_chars, library_hidden_at, {_POINTER_EMBED}"
+)
+_FILE_KEY_COLUMNS = (
+    f"file_id, title, metadata, created_at, content_chars, library_hidden_at, {_POINTER_EMBED}"
+)
+_FILE_DETAIL_COLUMNS = (
+    "file_id, title, summary, content_md, metadata, storage_path, document_id, created_at, "
+    f"library_hidden_at, {_POINTER_EMBED}"
 )
 
 
@@ -254,6 +287,8 @@ def _conversation_deleted(row: dict) -> bool:
 
 
 def _hidden(row: dict) -> bool:
+    if "library_hidden_at" in row:   # a file row (Phase 2): the column is the truth
+        return row.get("library_hidden_at") is not None
     return bool(_meta(row).get(HIDDEN_KEY))
 
 
@@ -402,6 +437,304 @@ def _fold(rows: list[dict]) -> list[tuple[dict, int]]:
 
 
 # ============================================
+# The file path (Phase 2 — user_files)
+# ============================================
+
+#: A conversation item that links no file (not expected once 221 is in): the
+#: caller answers it from the item, exactly as with the switch off.
+_UNLINKED = object()
+
+
+def _load_files(
+    supabase: SupabaseClient,
+    user_id: str,
+    columns: str,
+    *,
+    with_text: bool,
+    size: Optional[int] = None,
+) -> list[dict]:
+    """``_load_attachments`` on ``user_files``: the caller's live files, newest
+    first. ``with_text`` filters on ``content_chars > 0`` in SQL (the text is
+    never selected); ``size`` on the ``file_size_bytes`` column. The file NAME
+    is still compared by the caller in Python (see ``_load_attachments``)."""
+
+    def build() -> Any:
+        q = (
+            supabase.table(FILES_TABLE)
+            .select(columns)
+            .eq("user_id", user_id)
+            .is_("deleted_at", "null")
+        )
+        if with_text:
+            q = q.gt("content_chars", 0)
+        if size is not None:
+            q = q.eq("file_size_bytes", size)
+        return q.order("created_at", desc=True).order("file_id", desc=True)
+
+    return _fetch_all(build)
+
+
+def _live_pointers(frow: dict) -> list[dict]:
+    """The file's live conversation items (embedded), oldest first."""
+    raw = frow.get(ITEMS_TABLE)
+    if isinstance(raw, dict):
+        raw = [raw]
+    live = [
+        p for p in (raw or [])
+        if isinstance(p, dict) and p.get("item_id") and p.get("deleted_at") is None
+    ]
+    return sorted(live, key=lambda p: (_ts(p), str(p.get("item_id") or "")))
+
+
+def _file_row(frow: dict, pointer: Optional[dict] = None) -> dict:
+    """A ``user_files`` row in the shape the row helpers above read. The
+    conversation facts (``item_id``, WI number, home conversation) come from
+    ``pointer`` when given, else from the home pointer — the oldest live one. A
+    file with no live pointer answers with its own id."""
+    live = _live_pointers(frow)
+    home = pointer or (live[0] if live else None) or {}
+    file_id = str(frow.get("file_id") or "")
+    return {
+        "item_id": str(home.get("item_id") or file_id),
+        "file_id": file_id,
+        "conversation_id": home.get("conversation_id"),
+        "wi_seq": home.get("wi_seq"),
+        "conversations": home.get("conversations"),
+        "title": frow.get("title"),
+        "summary": frow.get("summary"),
+        "metadata": frow.get("metadata"),
+        "storage_path": frow.get("storage_path"),
+        "document_id": frow.get("document_id"),
+        "created_at": frow.get("created_at"),
+        "content_chars": frow.get("content_chars"),
+        "library_hidden_at": frow.get("library_hidden_at"),
+        "_pointers": live,
+    }
+
+
+def _resolve_pointer(
+    supabase: SupabaseClient, user_id: str, item_id: str, columns: str
+) -> Optional[dict]:
+    """The caller's live attachment item ``item_id`` (raises on a failed read)."""
+    return _first(
+        supabase.table(ITEMS_TABLE)
+        .select(columns)
+        .eq("item_id", item_id)
+        .eq("user_id", user_id)
+        .eq("kind", "attachment")
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+
+
+def _load_one_file(supabase: SupabaseClient, user_id: str, file_id: str, columns: str) -> Optional[dict]:
+    """The caller's live file ``file_id`` (raises on a failed read)."""
+    return _first(
+        supabase.table(FILES_TABLE)
+        .select(columns)
+        .eq("file_id", file_id)
+        .eq("user_id", user_id)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+
+
+def _list_from_files(supabase: SupabaseClient, user_id: str) -> dict:
+    """``list_library_files`` on ``user_files``. ``chars`` is the file's
+    ``content_chars``; maps are looked up by the file's id."""
+    try:
+        rows = [_file_row(f) for f in _load_files(supabase, user_id, _FILE_LIST_COLUMNS, with_text=True)]
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("files: library read failed (%s)", type(exc).__name__)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب الملفات",
+        )
+
+    folded = _fold([r for r in rows if _listable(r)])
+    shown = folded[:LIBRARY_CAP]
+
+    expected: dict[str, int] = {}
+    for row, _n in shown:
+        chars = _int_or_none(row.get("content_chars"))
+        if chars is not None and chars > 0:
+            expected[row["file_id"]] = chars
+    fresh = _fresh_map_ids(supabase, user_id, expected)
+
+    type_counts: dict[str, int] = {}
+    for row, _n in folded:
+        key = _doc_type(_meta(row)) or UNTYPED
+        type_counts[key] = type_counts.get(key, 0) + 1
+
+    files = []
+    for row, copies in shown:
+        fid = row["file_id"]
+        entry = _file_dict(row, chars=expected.get(fid, 0), has_sections=fid in fresh, copies=copies)
+        entry["file_id"] = fid
+        files.append(entry)
+    return {"files": files, "total": len(folded), "type_counts": type_counts}
+
+
+def _copies_from_files(supabase: SupabaseClient, user_id: str, row: dict) -> int:
+    """``_copies`` on ``user_files``: group membership by file id."""
+    key = _identity(row)
+    if key is None:
+        return 1
+    try:
+        rows = [
+            _file_row(f)
+            for f in _load_files(supabase, user_id, _FILE_KEY_COLUMNS, with_text=True, size=key[1])
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("files: copies read failed for %s (%s)", row.get("item_id"), type(exc).__name__)
+        return 1
+    group = [r for r in rows if _listable(r) and _identity(r) == key]
+    if not any(r["file_id"] == row["file_id"] for r in group):
+        return 1
+    return len(group)
+
+
+def _get_from_files(supabase: SupabaseClient, user_id: str, item_id: str) -> Any:
+    """``get_library_file`` on ``user_files``. ``item_id`` is resolved as one of
+    the caller's live attachment items first (the pane and the page pass that),
+    then as a file id. ``_UNLINKED`` when the item links no file."""
+    try:
+        pointer = _resolve_pointer(
+            supabase, user_id, item_id, "item_id, file_id, conversation_id, wi_seq, created_at",
+        )
+        if pointer is not None and not pointer.get("file_id"):
+            return _UNLINKED
+        file_id = str(pointer["file_id"]) if pointer is not None else item_id
+        frow = _load_one_file(supabase, user_id, file_id, _FILE_DETAIL_COLUMNS)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("files: file read failed for %s (%s)", item_id, type(exc).__name__)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب الملف",
+        )
+    if frow is None:
+        return None
+
+    row = _file_row(frow, pointer)
+    content = frow.get("content_md") or ""
+    chars = len(content)
+    sections, documents = _sections(supabase, user_id, row["file_id"], chars) if chars else (None, [])
+    detail = _file_dict(
+        row,
+        chars=chars,
+        has_sections=sections is not None,
+        copies=_copies_from_files(supabase, user_id, row),
+    )
+    summary = frow.get("summary")
+    detail.update({
+        "file_id": row["file_id"],
+        "summary": summary if isinstance(summary, str) else None,
+        "content_md": content,
+        "documents": documents,
+        "sections": sections,
+    })
+    return detail
+
+
+def _hide_with_files(supabase: SupabaseClient, user_id: str, item_id: str) -> Any:
+    """``hide_library_file`` as ONE statement (``user_files_hide``): the file
+    and every identical copy, first stamp kept, no read-merge-write of
+    ``metadata``. ``_UNLINKED`` when the item links no file."""
+    try:
+        pointer = _resolve_pointer(supabase, user_id, item_id, "item_id, file_id")
+        if pointer is not None and not pointer.get("file_id"):
+            return _UNLINKED
+        file_id = str(pointer["file_id"]) if pointer is not None else item_id
+        frow = _load_one_file(supabase, user_id, file_id, "file_id, metadata")
+        if frow is None:
+            return False
+        targets = [file_id]
+        key = _identity(frow)
+        if key is not None:
+            siblings = _load_files(supabase, user_id, "file_id, metadata", with_text=False, size=key[1])
+            targets += [
+                str(r.get("file_id")) for r in siblings
+                if str(r.get("file_id")) != file_id and _identity(r) == key
+            ]
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("files: hide read failed for %s (%s)", item_id, type(exc).__name__)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء حذف الملف من ملفاتي",
+        )
+    try:
+        files_store.hide_files(supabase, user_id, targets)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("files: hide write failed for %s (%s)", item_id, type(exc).__name__)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء حذف الملف من ملفاتي",
+        )
+    logger.info("files: hid %s (%d row(s) in its group)", item_id, len(targets))
+    return True
+
+
+def _match_from_files(
+    supabase: SupabaseClient,
+    user_id: str,
+    key: tuple[str, int, Optional[str]],
+    conversation_id: Optional[str],
+) -> Optional[dict]:
+    """``match_library_file`` on ``user_files``. A same-conversation match
+    answers with THAT conversation's item (its ``item_id`` / WI number)."""
+    try:
+        rows = [
+            _file_row(f)
+            for f in _load_files(supabase, user_id, _FILE_KEY_COLUMNS, with_text=True, size=key[1])
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("files: match read failed (%s) — no proposal", type(exc).__name__)
+        return None
+
+    candidates = _newest_first([
+        r for r in rows
+        if _identity(r) == key
+        and _listable(r)
+        and _upload_finished(_meta(r))
+        and _extraction_complete(_meta(r))
+    ])
+    target_conv = (conversation_id or "").strip().lower()
+    same: list[tuple[dict, dict]] = []
+    if target_conv:
+        for r in candidates:
+            p = next(
+                (p for p in r["_pointers"]
+                 if str(p.get("conversation_id") or "").strip().lower() == target_conv),
+                None,
+            )
+            if p is not None:
+                same.append((r, p))
+    if same:
+        pick, pointer = same[0]
+        item_id, wi_seq, same_conversation = pointer.get("item_id"), pointer.get("wi_seq"), True
+    elif CROSS_CONVERSATION_MATCH and candidates:  # Phase 3 — see the flag
+        pick = candidates[0]
+        item_id, wi_seq, same_conversation = pick.get("item_id"), pick.get("wi_seq"), False
+    else:
+        return None
+
+    meta = _meta(pick)
+    return {
+        "item_id": str(item_id or ""),
+        "title": str(pick.get("title") or _str_or_none(meta.get("filename")) or ""),
+        "created_at": str(pick.get("created_at") or ""),
+        "same_conversation": same_conversation,
+        "wi_seq": _int_or_none(wi_seq),
+    }
+
+
+# ============================================
 # GET /files
 # ============================================
 
@@ -441,7 +774,11 @@ def list_library_files(supabase: SupabaseClient, user_id: str) -> dict:
 
     ``total`` and ``type_counts`` describe the whole folded library; ``files``
     is its first ``LIBRARY_CAP`` rows.
+
+    Files read switch on: the same list from ``user_files`` (``_list_from_files``).
     """
+    if files_flags.files_read_enabled(user_id, supabase=supabase):
+        return _list_from_files(supabase, user_id)
     try:
         rows = _load_attachments(supabase, user_id, _LIST_COLUMNS, with_text=True)
     except Exception as exc:  # noqa: BLE001
@@ -590,7 +927,14 @@ def get_library_file(supabase: SupabaseClient, user_id: str, item_id: str) -> Op
     (hidden, a folded copy, no text yet, a deleted conversation's file): the
     conversation pane opens its files through this same endpoint. Staleness
     is judged on the real ``len(content_md)`` here.
+
+    Files read switch on: read from ``user_files`` (``_get_from_files``) —
+    ``item_id`` may then also be a file id.
     """
+    if files_flags.files_read_enabled(user_id, supabase=supabase):
+        out = _get_from_files(supabase, user_id, item_id)
+        if out is not _UNLINKED:
+            return out
     try:
         row = _first(
             supabase.table(ITEMS_TABLE)
@@ -651,7 +995,15 @@ def hide_library_file(supabase: SupabaseClient, user_id: str, item_id: str) -> b
     other metadata writer on this table). A writer that read the row before
     this stamp and writes after it — OCR or the summarizer finishing on a copy
     uploaded seconds ago — can drop the stamp on that copy.
+
+    Files WRITE switch on: one atomic ``user_files_hide`` statement instead
+    (``_hide_with_files``) — the ``library_hidden_at`` column cannot be dropped
+    by another writer's stale metadata (plan §12 item 7).
     """
+    if files_flags.files_write_enabled(user_id, supabase=supabase):
+        out = _hide_with_files(supabase, user_id, item_id)
+        if out is not _UNLINKED:
+            return out
     try:
         row = _first(
             supabase.table(ITEMS_TABLE)
@@ -741,11 +1093,16 @@ def match_library_file(
     conversations are offered only when ``CROSS_CONVERSATION_MATCH`` is on
     (Phase 3). Never raises: a failed read is "no match" — the upload then
     goes ahead exactly as today.
+
+    Files read switch on: matched on ``user_files`` (``_match_from_files``); a
+    same-conversation match answers with that conversation's item.
     """
     size = _int_or_none(size_bytes)
     if not filename or size is None:
         return None
     key = (filename, size, mime_type or None)
+    if files_flags.files_read_enabled(user_id, supabase=supabase):
+        return _match_from_files(supabase, user_id, key, conversation_id)
     try:
         rows = _load_attachments(supabase, user_id, _KEY_COLUMNS, with_text=True, size=size)
     except Exception as exc:  # noqa: BLE001

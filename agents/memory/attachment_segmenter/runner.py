@@ -42,6 +42,7 @@ from pydantic_ai.usage import RunUsage
 from agents.utils.segmenter_flags import segmenter_enabled
 from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import collect_llm_calls, in_scope
+from shared.files import store as files_store
 
 from . import store
 from .agent import MODEL_SLOT, SEGMENTER_LIMITS, create_attachment_segmenter
@@ -443,14 +444,17 @@ def _plans(
 
 
 def _load_item(supabase: Any, item_id: str) -> dict | None:
+    # Files in their own table (my_files_phase2.md §C4). No user before the
+    # read: with a *_USERS allow-list set this stays on the conversation item.
     resp = (
         supabase.table("workspace_items")
-        .select(_ITEM_COLUMNS)
+        .select(files_store.with_file_id(_ITEM_COLUMNS, supabase=supabase))
         .eq("item_id", item_id)
         .limit(1)
         .execute()
     )
     rows = getattr(resp, "data", None) or []
+    rows = files_store.overlay_files(supabase, rows)
     return rows[0] if rows else None
 
 
@@ -712,13 +716,15 @@ _BUNDLE_TASKS: dict[tuple[str, ...], asyncio.Task] = {}
 
 
 def _load_items(supabase: Any, item_ids: Sequence[str]) -> dict[str, dict]:
+    # Files in their own table (my_files_phase2.md §C4) — see ``_load_item``.
     resp = (
         supabase.table("workspace_items")
-        .select(_BUNDLE_COLUMNS)
+        .select(files_store.with_file_id(_BUNDLE_COLUMNS, supabase=supabase))
         .in_("item_id", list(item_ids))
         .execute()
     )
-    return {str(r["item_id"]): r for r in (getattr(resp, "data", None) or [])}
+    rows = files_store.overlay_files(supabase, getattr(resp, "data", None) or [])
+    return {str(r["item_id"]): r for r in rows}
 
 
 def _doc_type_of(row: Mapping[str, Any]) -> str:

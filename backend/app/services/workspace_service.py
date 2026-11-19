@@ -30,6 +30,7 @@ from backend.app.services import upload_session_service, wi_preview_service
 from backend.app.services.case_service import get_user_id
 from backend.app.services.demo_service import is_demo_conversation, is_demo_item
 from shared.config import get_settings
+from shared.files import store as files_store
 from shared.storage.client import build_storage_path, upload_file
 from shared.workspace.preview_lock import LockPolicy
 
@@ -263,7 +264,11 @@ def list_workspace_items_by_conversation(
             detail="حدث خطأ أثناء جلب عناصر مساحة العمل",
         )
 
-    return result.data or [], result.count or 0
+    # Files in their own table (my_files_phase2.md §C4): ``*`` carries file_id;
+    # an attachment's text, summary and metadata come from user_files when the
+    # read switch is on. The demo conversation holds no attachment.
+    items = files_store.overlay_files(supabase, result.data or [], user_id=user_id)
+    return items, result.count or 0
 
 
 def list_workspace_items_by_case(
@@ -302,7 +307,9 @@ def list_workspace_items_by_case(
             detail="حدث خطأ أثناء جلب عناصر مساحة العمل",
         )
 
-    return result.data or [], result.count or 0
+    # Files in their own table (my_files_phase2.md §C4) — as above.
+    items = files_store.overlay_files(supabase, result.data or [], user_id=user_id)
+    return items, result.count or 0
 
 
 def get_workspace_item(
@@ -361,7 +368,10 @@ def get_workspace_item(
             detail="العنصر غير موجود",
         )
 
-    return result.data
+    # Files in their own table (my_files_phase2.md §C4) — as in the lists. The
+    # demo item is not an attachment.
+    [item] = files_store.overlay_files(supabase, [result.data], user_id=user_id)
+    return item
 
 
 def update_workspace_item(
@@ -740,12 +750,18 @@ def upload_attachment_bytes(
     new_meta["upload_finalized_at"] = datetime.now(timezone.utc).isoformat()
 
     try:
-        update = (
-            supabase.table("workspace_items")
-            .update({"metadata": new_meta, "updated_at": new_meta["upload_finalized_at"]})
-            .eq("item_id", item_id)
-            .eq("user_id", user_id)
-            .execute()
+        # Files in their own table (my_files_phase2.md §C5): switch on = only
+        # the two keys, merged into user_files (its trigger sets updated_at).
+        update = files_store.write_attachment(
+            supabase, item_id,
+            metadata_patch={
+                "upload_status": "ready",
+                "upload_finalized_at": new_meta["upload_finalized_at"],
+            },
+            legacy_update={"metadata": new_meta, "updated_at": new_meta["upload_finalized_at"]},
+            owner_id=user_id,
+            filters={"user_id": user_id},
+            returning=True,
         )
     except Exception as e:
         logger.warning(
@@ -905,12 +921,14 @@ def finalize_attachment_upload(
     metadata["upload_finalized_at"] = now_iso
 
     try:
-        result = (
-            supabase.table("workspace_items")
-            .update({"metadata": metadata, "updated_at": now_iso})
-            .eq("item_id", item_id)
-            .eq("user_id", user_id)
-            .execute()
+        # Files in their own table (my_files_phase2.md §C5) — as the legacy promote.
+        result = files_store.write_attachment(
+            supabase, item_id,
+            metadata_patch={"upload_status": "ready", "upload_finalized_at": now_iso},
+            legacy_update={"metadata": metadata, "updated_at": now_iso},
+            owner_id=user_id,
+            filters={"user_id": user_id},
+            returning=True,
         )
     except Exception as e:
         logger.exception("Error finalizing attachment upload: %s", e)
@@ -976,13 +994,22 @@ def cancel_attachment_upload(
     metadata["upload_cancelled_at"] = now_iso
 
     try:
-        supabase.table("workspace_items").update(
-            {
+        # Files in their own table (my_files_phase2.md §C5): switch on = the
+        # file's deleted_at + the two keys merged into user_files, then the
+        # item's own deleted_at (the file->item sync never copies it).
+        files_store.write_attachment(
+            supabase, item_id,
+            fields={"deleted_at": now_iso},
+            metadata_patch={"upload_status": "cancelled", "upload_cancelled_at": now_iso},
+            legacy_update={
                 "deleted_at": now_iso,
                 "updated_at": now_iso,
                 "metadata": metadata,
-            }
-        ).eq("item_id", item_id).eq("user_id", user_id).execute()
+            },
+            pointer_update={"deleted_at": now_iso, "updated_at": now_iso},
+            owner_id=user_id,
+            filters={"user_id": user_id},
+        )
     except Exception as e:
         logger.exception("Error soft-deleting cancelled attachment: %s", e)
         raise LunaHTTPException(

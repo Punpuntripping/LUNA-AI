@@ -764,3 +764,23 @@ switch-off path issues today's exact statements (pinned by tests).
 220; capture agent digests; dry run then apply 221 in a quiet window; probes + one manual upload +
 digests again; deploy code with flags off; read flag (test account → everyone); write flag (same);
 then 222. Rollback: flags off, redeploy, rollbacks 222 → 221 → 220.
+
+### Production and git log — 2026-11-19 (owner go on each)
+
+- **Type backfill APPLIED on prod.** `scripts/my_files_type_backfill.py --apply --yes --from-json` wrote
+  exactly the labels of the reviewed dry run (no new model call): 244 of 244 rows got the planned
+  `metadata.doc_type`; titles, summaries, text and every other metadata key unchanged (hash check before
+  and after); live attachments with text and no type: 244 → 0; typed: 397 → 641 of 836. Each write moved
+  that row's `updated_at`.
+- **Migration 220 APPLIED on prod** after a clean dry run (self-check `220 OK`, 0.15 s): `user_files`
+  exists, 0 rows, RLS on, no client grants, 8 generated columns, RPCs service-only, served by the
+  database API. Nothing reads or writes it; `workspace_items.file_id` does not exist yet, so the
+  `USER_FILES_*` flags still read as off whatever their value.
+- **Local commits on `feat/my-files` (not pushed):** `0eeac93` Phase 1; `e24e22f` the dev-only preview
+  page with the `AuthGuard` development exemption, kept separate so it can be dropped before merge.
+  Phase 2 is committed after the account-deletion fix lands in 221.
+- **Owner approved** fixing the `purge_user_data` / `task_state` order inside 221 (done by a second
+  agent pass, re-tested locally).
+
+**Next gates:** 221 on prod (quiet window; dry run first; capture agent digests before and after), then
+code deploy with flags off, then the read flag, the write flag, and 222.

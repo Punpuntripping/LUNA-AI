@@ -1,17 +1,16 @@
 """«ملفاتي» — files_service + /api/v1/files routes (.claude/plans/my_files.md §11).
 
-No live DB: ``FakeSupabase`` is a small in-memory PostgREST stand-in that
-supports exactly the query shapes the service uses (select with a projection
-and the conversations embed, eq / neq / is_, ``metadata->>key`` paths, order,
-range / limit, update). It records every select so a test can prove the
-library list never reads ``content_md``.
+No live DB: ``FakeSupabase`` is an in-memory PostgREST stand-in that supports
+the query shapes the service uses (select with a projection and the embeds,
+eq / neq / gt / is_, ``metadata->>key`` paths, order, range / limit, update,
+the user_files RPCs). It records every select so a test can prove the library
+list never reads ``content_md``. Every library test runs on the Phase-1 path
+AND the Phase-2 ``user_files`` paths (see ``data_path``).
 
 All document text below is invented sample text.
 """
 from __future__ import annotations
 
-import copy
-import re
 import uuid
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -20,6 +19,8 @@ import pytest
 
 from backend.app.errors import LunaHTTPException
 from backend.app.services import files_service as fs
+from shared.files import flags as files_flags
+from shared.files.tests.user_files_fake import FakeSupabase as _UserFilesFake
 
 # ---------------------------------------------------------------------------
 # ids
@@ -49,161 +50,54 @@ SAMPLE_SUMMARY = (
 
 
 # ---------------------------------------------------------------------------
-# The fake
+# The fake, and the three data paths
 # ---------------------------------------------------------------------------
+#
+# ``FakeSupabase`` is the shared in-memory PostgREST stand-in
+# (shared/files/tests/user_files_fake.py) — the same query shapes as before plus
+# ``user_files``, its generated columns, the pointer embed and the 221 sync
+# triggers. Every test that reads or writes the library runs on each path
+# (my_files_phase2.md §F):
+#
+#   items             switches off, no user_files yet  — Phase 1, unchanged
+#   items-after-221   switches off, files backfilled   — the off path after the migration
+#   files-read        read switch on: the library is read from user_files
+#   files-read-write  both on: «حذف من الملفات» is one user_files_hide statement
+
+_MODES = ("items", "items-after-221", "files-read", "files-read-write")
+_PATH = {"mode": "items"}
+_PATH_AWARE = (
+    "test_list_", "test_detail_", "test_hide_", "test_match_", "test_routes_", "test_no_query_",
+)
 
 
-class _Result:
-    def __init__(self, data: Any, count: Optional[int] = None) -> None:
-        self.data = data
-        self.count = count
-
-
-def _split_columns(cols: str) -> list[str]:
-    out, depth, cur = [], 0, ""
-    for ch in cols:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        if ch == "," and depth == 0:
-            out.append(cur.strip())
-            cur = ""
-        else:
-            cur += ch
-    if cur.strip():
-        out.append(cur.strip())
-    return out
-
-
-def _get(row: dict, col: str) -> Any:
-    if "->>" in col:
-        base, key = col.split("->>", 1)
-        container = row.get(base)
-        if not isinstance(container, dict) or container.get(key) is None:
-            return None
-        return str(container[key])
-    return row.get(col)
-
-
-class _Query:
-    def __init__(self, sb: "FakeSupabase", name: str) -> None:
-        self.sb = sb
-        self.name = name
-        self.cols: Optional[str] = None
-        self.filters: list = []
-        self.orders: list[tuple[str, bool]] = []
-        self.lo = 0
-        self.hi: Optional[int] = None
-        self.payload: Optional[dict] = None
-
-    # building -------------------------------------------------------------
-    def select(self, cols: str = "*", count: Optional[str] = None) -> "_Query":
-        self.cols = cols
-        self.sb.selects.append((self.name, cols))
-        return self
-
-    def update(self, payload: dict) -> "_Query":
-        self.payload = payload
-        return self
-
-    def eq(self, col: str, val: Any) -> "_Query":
-        self.filters.append(("eq", col, val))
-        self.sb.filter_values.append(str(val))
-        return self
-
-    def neq(self, col: str, val: Any) -> "_Query":
-        self.filters.append(("neq", col, val))
-        self.sb.filter_values.append(str(val))
-        return self
-
-    def is_(self, col: str, val: str) -> "_Query":
-        assert val == "null"
-        self.filters.append(("is", col, None))
-        return self
-
-    def order(self, col: str, desc: bool = False) -> "_Query":
-        self.orders.append((col, desc))
-        return self
-
-    def range(self, lo: int, hi: int) -> "_Query":
-        self.lo, self.hi = lo, hi
-        return self
-
-    def limit(self, n: int) -> "_Query":
-        self.hi = self.lo + n - 1
-        return self
-
-    # running --------------------------------------------------------------
-    def _match(self, row: dict) -> bool:
-        for op, col, val in self.filters:
-            actual = _get(row, col)
-            if op == "eq" and (actual is None or str(actual) != str(val)):
-                return False
-            if op == "neq" and (actual is None or str(actual) == str(val)):  # SQL NULL semantics
-                return False
-            if op == "is" and actual is not None:
-                return False
-        return True
-
-    def _project(self, row: dict) -> dict:
-        if self.cols is None or self.cols.strip() == "*":
-            return copy.deepcopy(row)
-        out: dict = {}
-        for col in _split_columns(self.cols):
-            m = re.fullmatch(r"(\w+)(?:!(\w+))?\(([^)]*)\)", col)
-            if m:
-                table, hint, inner = m.groups()
-                assert table == "conversations", col
-                assert hint == "artifacts_conversation_id_fkey", col
-                conv = next(
-                    (c for c in self.sb.tables.get("conversations", [])
-                     if c["conversation_id"] == row.get("conversation_id")),
-                    None,
-                )
-                out[table] = (
-                    None if conv is None
-                    else {c.strip(): conv.get(c.strip()) for c in inner.split(",")}
-                )
-            else:
-                out[col] = copy.deepcopy(row.get(col))
-        return out
-
-    def execute(self) -> _Result:
-        if self.name in self.sb.fail_tables:
-            raise RuntimeError(f"{self.name} unavailable")
-        rows = [r for r in self.sb.tables.get(self.name, []) if self._match(r)]
-        if self.payload is not None:
-            for r in rows:
-                if r.get("item_id") in self.sb.fail_update_ids:
-                    raise RuntimeError("update failed")
-                r.update(copy.deepcopy(self.payload))
-                self.sb.updates.append((self.name, r.get("item_id"), copy.deepcopy(self.payload)))
-            return _Result([copy.deepcopy(r) for r in rows])
-        for col, desc in reversed(self.orders):
-            rows.sort(key=lambda r: str(r.get(col) or ""), reverse=desc)
-        total = len(rows)
-        hi = len(rows) - 1 if self.hi is None else self.hi
-        rows = rows[self.lo: hi + 1]
-        return _Result([self._project(r) for r in rows], total)
-
-
-class FakeSupabase:
+class FakeSupabase(_UserFilesFake):
     def __init__(self, **tables: list[dict]) -> None:
-        self.tables = {k: [copy.deepcopy(r) for r in v] for k, v in tables.items()}
-        for name in ("workspace_items", "conversations", "attachment_segment_maps", "attachment_segments"):
-            self.tables.setdefault(name, [])
-        self.selects: list[tuple[str, str]] = []
-        self.filter_values: list[str] = []   # every eq / neq value — they travel in URLs
-        self.updates: list[tuple[str, Any, dict]] = []
-        self.fail_tables: set[str] = set()
-        self.fail_update_ids: set[str] = set()
+        super().__init__(backfill=_PATH["mode"] != "items", **tables)
 
-    def table(self, name: str) -> _Query:
-        return _Query(self, name)
 
-    def row(self, item_id: str) -> dict:
-        return next(r for r in self.tables["workspace_items"] if r["item_id"] == item_id)
+def pytest_generate_tests(metafunc):
+    if "data_path" not in metafunc.fixturenames:
+        return
+    if any(m.args and "data_path" in str(m.args[0]) for m in metafunc.definition.iter_markers("parametrize")):
+        return   # the test names its own paths
+    modes = _MODES if metafunc.function.__name__.startswith(_PATH_AWARE) else ("items",)
+    metafunc.parametrize("data_path", modes, indirect=True)
+
+
+@pytest.fixture(autouse=True)
+def data_path(request):
+    mode = getattr(request, "param", "items")
+    _PATH["mode"] = mode
+    files_flags.reset_probe()
+    with files_flags.override(read=mode.startswith("files"), write=mode == "files-read-write"):
+        yield mode
+    files_flags.reset_probe()
+    _PATH["mode"] = "items"
+
+
+def _on_files(mode: str) -> bool:
+    return mode.startswith("files")
 
 
 # ---------------------------------------------------------------------------
@@ -331,12 +225,13 @@ def _list(sb: FakeSupabase) -> dict:
     return fs.list_library_files(sb, USER)
 
 
-def test_list_never_selects_content_md_nor_returns_text_or_full_summary():
+def test_list_never_selects_content_md_nor_returns_text_or_full_summary(data_path):
     a = att()
     sb = FakeSupabase(workspace_items=[a], conversations=conversations())
     out = _list(sb)
-    item_selects = [cols for table, cols in sb.selects if table == "workspace_items"]
-    assert item_selects, "the list must read workspace_items"
+    table = "user_files" if _on_files(data_path) else "workspace_items"
+    item_selects = [cols for t, cols in sb.selects if t == table and cols != "file_id"]
+    assert item_selects, f"the list must read {table}"
     for cols in item_selects:
         assert "content_md" not in cols
         assert cols.strip() != "*"
@@ -348,7 +243,11 @@ def test_list_never_selects_content_md_nor_returns_text_or_full_summary():
         "item_id", "title", "filename", "mime_type", "doc_type", "summary_preview", "page_count",
         "chars", "has_sections", "original_available", "conversation_id", "wi_seq", "copies",
         "created_at",
-    }
+    } | ({"file_id"} if _on_files(data_path) else set())
+    if _on_files(data_path):
+        assert f["file_id"] == a["item_id"] and f["item_id"] == a["item_id"]
+    else:
+        assert [t for t, _c in sb.selects if t == "user_files"] == []
 
 
 def test_list_excludes_hidden_deleted_conversation_no_text_and_foreign_rows():
@@ -453,7 +352,7 @@ def test_list_original_available_and_page_count():
 
 def test_list_read_failure_is_a_500():
     sb = FakeSupabase(workspace_items=[att()], conversations=conversations())
-    sb.fail_tables.add("workspace_items")
+    sb.fail_tables.update({"workspace_items", "user_files"})
     with pytest.raises(LunaHTTPException) as exc:
         _list(sb)
     assert exc.value.status_code == 500
@@ -746,7 +645,7 @@ def test_match_skips_a_deleted_conversation_and_survives_a_read_failure(monkeypa
     sb = FakeSupabase(workspace_items=[att(conv=CONV_DELETED)], conversations=conversations())
     assert _match(sb) is None
     sb = FakeSupabase(workspace_items=[att(conv=CONV_A)], conversations=conversations())
-    sb.fail_tables.add("workspace_items")
+    sb.fail_tables.update({"workspace_items", "user_files"})
     assert _match(sb) is None
 
 
@@ -919,3 +818,111 @@ def test_doc_types_match_the_summarizer():
     from agents.memory.artifact_summarizer.models import DOC_TYPES
 
     assert tuple(fs.DOC_TYPES) == tuple(DOC_TYPES)
+
+
+# ===========================================================================
+# 10. Phase 2 — the user_files path only (my_files_phase2.md §D)
+# ===========================================================================
+
+FILE_ID = "ffffffff-0000-0000-0000-0000000000f1"
+
+
+def _split_pointer_world() -> FakeSupabase:
+    """One file whose conversation item has a DIFFERENT id (never rely on equality)."""
+    a = att(conv=CONV_A, wi_seq=7)
+    sb = FakeSupabase(workspace_items=[a], conversations=conversations())
+    pointer = sb.row(a["item_id"])
+    f = next(f for f in sb.tables["user_files"] if f["file_id"] == a["item_id"])
+    f["file_id"] = FILE_ID
+    pointer["file_id"] = FILE_ID
+    return sb
+
+
+@pytest.mark.parametrize("data_path", ["files-read", "files-read-write"], indirect=True)
+def test_files_path_pointer_id_differs_from_file_id(data_path):
+    sb = _split_pointer_world()
+    item_id = sb.tables["workspace_items"][0]["item_id"]
+    [f] = fs.list_library_files(sb, USER)["files"]
+    assert (f["item_id"], f["file_id"], f["wi_seq"], f["conversation_id"]) == (item_id, FILE_ID, 7, CONV_A)
+    by_item = fs.get_library_file(sb, USER, item_id)
+    by_file = fs.get_library_file(sb, USER, FILE_ID)
+    for d in (by_item, by_file):
+        assert d["item_id"] == item_id and d["file_id"] == FILE_ID and d["content_md"] == SAMPLE_TEXT
+    m = _match(sb)
+    assert (m["item_id"], m["wi_seq"], m["same_conversation"]) == (item_id, 7, True)
+    assert fs.hide_library_file(sb, USER, item_id) is True
+    if data_path == "files-read-write":
+        assert sb.rpcs[-1] == ("user_files_hide", {"p_user_id": USER, "p_file_ids": [FILE_ID]})
+        assert fs.list_library_files(sb, USER)["files"] == []
+    else:
+        # Write switch off: the stamp lands on the item only, and the 221 mirror
+        # copies an item to its file only while file_id = item_id — a split
+        # pointer is a Phase-3 shape, which needs the write switch on (§E).
+        assert fs.HIDDEN_KEY in sb.row(item_id)["metadata"]
+        assert len(fs.list_library_files(sb, USER)["files"]) == 1
+
+
+@pytest.mark.parametrize("data_path", ["files-read", "files-read-write"], indirect=True)
+def test_files_path_hidden_is_the_column(data_path):
+    a = att()
+    sb = FakeSupabase(workspace_items=[a], conversations=conversations())
+    assert len(fs.list_library_files(sb, USER)["files"]) == 1
+    sb.file(a["item_id"])["library_hidden_at"] = "2026-11-18T00:00:00+00:00"   # column only
+    assert fs.list_library_files(sb, USER)["files"] == []
+    assert fs.get_library_file(sb, USER, a["item_id"]) is not None           # the pane still opens it
+
+
+@pytest.mark.parametrize("data_path", ["files-read-write"], indirect=True)
+def test_hide_is_one_statement_and_survives_a_stale_metadata_write(data_path):
+    """Plan §12 item 7: a writer finishing with metadata read before the stamp
+    can no longer bring the file back into the library."""
+    a = att()
+    copy_b = att(conv=CONV_B, created="2026-11-01T10:00:00+00:00")
+    sb = FakeSupabase(workspace_items=[a, copy_b], conversations=conversations())
+    stale = dict(sb.row(a["item_id"])["metadata"])
+    assert fs.hide_library_file(sb, USER, a["item_id"]) is True
+    assert [name for name, _p in sb.rpcs] == ["user_files_hide"]
+    assert sorted(sb.rpcs[0][1]["p_file_ids"]) == sorted([a["item_id"], copy_b["item_id"]])
+    assert not [s for s in sb.statements if s[1] == "workspace_items"]       # no read-merge-write
+    # OCR / the summarizer writing back an old snapshot on the item (legacy write path)
+    sb.table("workspace_items").update({"metadata": stale}).eq("item_id", a["item_id"]).execute()
+    assert fs.HIDDEN_KEY not in sb.row(a["item_id"])["metadata"]
+    assert fs.list_library_files(sb, USER)["files"] == []                    # the column held
+
+
+@pytest.mark.parametrize("data_path", ["files-read"], indirect=True)
+def test_files_path_unlinked_item_falls_back_to_the_item(data_path):
+    a = att()
+    sb = FakeSupabase(workspace_items=[a], conversations=conversations())
+    sb.row(a["item_id"])["file_id"] = None
+    sb.tables["user_files"] = []
+    d = fs.get_library_file(sb, USER, a["item_id"])
+    assert d is not None and d["content_md"] == SAMPLE_TEXT and "file_id" not in d
+
+
+def test_file_id_is_absent_from_the_json_unless_set():
+    from backend.app.models.responses import LibraryFile, LibraryFileDetail, LibraryFileListResponse
+
+    base = {"item_id": "i", "title": "t", "created_at": "2026-11-10T10:00:00+00:00"}
+    assert "file_id" not in LibraryFile.model_validate(base).model_dump(mode="json")
+    assert LibraryFile.model_validate({**base, "file_id": "f"}).model_dump(mode="json")["file_id"] == "f"
+    detail = LibraryFileDetail.model_validate(base).model_dump(mode="json")
+    assert "file_id" not in detail and detail["sections"] is None
+    listed = LibraryFileListResponse.model_validate(
+        {"files": [base, {**base, "file_id": "f"}], "total": 2, "type_counts": {}}
+    ).model_dump(mode="json")
+    assert "file_id" not in listed["files"][0] and listed["files"][1]["file_id"] == "f"
+
+
+@pytest.mark.parametrize("data_path", ["items", "files-read"], indirect=True)
+def test_routes_carry_file_id_only_on_the_files_path(client_for, data_path):
+    a = att()
+    sb = FakeSupabase(workspace_items=[a], conversations=conversations())
+    c = client_for(sb)
+    listed = c.get("/api/v1/files").json()["files"][0]
+    detail = c.get(f"/api/v1/files/{a['item_id']}").json()
+    for body in (listed, detail):
+        if _on_files(data_path):
+            assert body["file_id"] == a["item_id"]
+        else:
+            assert "file_id" not in body

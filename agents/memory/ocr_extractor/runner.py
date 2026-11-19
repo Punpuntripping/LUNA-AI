@@ -29,6 +29,7 @@ from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import record_call
 from shared import quota
 from shared.config import get_settings
+from shared.files import store as files_store
 from shared.observability import get_logfire
 from shared.quota.ocr_budget import FilePlan, OcrBudget, format_ranges, page_ranges, plan_files
 from shared.storage.client import get_signed_url
@@ -72,23 +73,28 @@ def _mark_status(
     metadata: dict,
     status: str,
     extra: dict | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Merge OCR result keys into the attachment row's ``metadata`` and persist.
 
     ``metadata.ocr_status`` is the idempotency marker — any non-null value means
     "never attempt this file again". Best-effort: a write failure is logged, not
     raised (the file would simply be retried on a later turn).
+
+    Files in their own table (my_files_phase2.md §C5): with the write switch on
+    for ``user_id`` only the status keys are merged into ``user_files`` (no
+    write-back of the run-start snapshot); off, the statement is today's.
     """
     merged = dict(metadata or {})
     merged["ocr_status"] = status
     if extra:
         merged.update(extra)
     try:
-        (
-            supabase.table("workspace_items")
-            .update({"metadata": merged})
-            .eq("item_id", item_id)
-            .execute()
+        files_store.write_attachment(
+            supabase, item_id,
+            metadata=merged,
+            metadata_patch={"ocr_status": status, **(extra or {})},
+            owner_id=user_id,
         )
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -291,10 +297,13 @@ def has_unread_attachments(supabase: SupabaseClient, conversation_id: str) -> bo
     ``_run_inner`` would pick. Drives «ريحان يستخرج المستندات» in the client
     while OCR runs. Best-effort: False on any failure (the indicator is cosmetic).
     """
+    # Files in their own table (my_files_phase2.md §C4): the "attempt once"
+    # marker is read from user_files when the read switch is on. No user here:
+    # with a *_USERS allow-list set this stays on the conversation items.
     try:
         rows = (
             supabase.table("workspace_items")
-            .select("storage_path, metadata")
+            .select(files_store.with_file_id("storage_path, metadata", supabase=supabase))
             .eq("conversation_id", conversation_id)
             .eq("kind", "attachment")
             .is_("deleted_at", "null")
@@ -302,7 +311,7 @@ def has_unread_attachments(supabase: SupabaseClient, conversation_id: str) -> bo
         )
     except Exception:  # noqa: BLE001
         return False
-    for r in getattr(rows, "data", None) or []:
+    for r in files_store.overlay_files(supabase, getattr(rows, "data", None) or []):
         meta = r.get("metadata") or {}
         if "ocr_status" in meta or not r.get("storage_path"):
             continue
@@ -399,10 +408,14 @@ async def _run_inner(
     settings,
 ) -> list[str]:
     """Core loop — separated so ``run_ocr_extraction`` can wrap it defensively."""
-    # 1. Load attachment rows for the conversation.
+    # 1. Load attachment rows for the conversation. Files in their own table
+    #    (my_files_phase2.md §C4): metadata, storage_path and title from
+    #    user_files when the read switch is on.
     rows = (
         supabase.table("workspace_items")
-        .select("item_id, title, storage_path, metadata")
+        .select(files_store.with_file_id(
+            "item_id, title, storage_path, metadata", user_id=user_id, supabase=supabase,
+        ))
         .eq("conversation_id", conversation_id)
         .eq("kind", "attachment")
         .is_("deleted_at", "null")
@@ -424,7 +437,9 @@ async def _run_inner(
 
     candidates = [
         r
-        for r in (getattr(rows, "data", None) or [])
+        for r in files_store.overlay_files(
+            supabase, getattr(rows, "data", None) or [], user_id=user_id,
+        )
         if _is_uploadable(r.get("metadata") or {})
     ]
     stats.candidates = len(candidates)
@@ -443,20 +458,20 @@ async def _run_inner(
         # --- Unsupported mime --------------------------------------------
         if mime_type not in _SUPPORTED_MIME_TYPES:
             stats.skipped_unsupported += 1
-            _mark_status(supabase, item_id, metadata, "skipped_unsupported")
+            _mark_status(supabase, item_id, metadata, "skipped_unsupported", user_id=user_id)
             continue
 
         # --- Size --------------------------------------------------------
         if _file_size(metadata) > OCR_MAX_FILE_BYTES:
             stats.skipped_too_large += 1
-            _mark_status(supabase, item_id, metadata, "skipped_too_large")
+            _mark_status(supabase, item_id, metadata, "skipped_too_large", user_id=user_id)
             continue
 
         # --- Missing storage path (linked-from-case attachments have only a
         #     document_id; those are out of scope for this step) -----------
         if not row.get("storage_path"):
             stats.skipped_unsupported += 1
-            _mark_status(supabase, item_id, metadata, "skipped_unsupported")
+            _mark_status(supabase, item_id, metadata, "skipped_unsupported", user_id=user_id)
             continue
 
         readable.append(row)
@@ -499,6 +514,7 @@ async def _run_inner(
             logger.warning("OCR: signed URL failed for item %s", item_id, exc_info=True)
             _mark_status(
                 supabase, item_id, metadata, "failed", {"ocr_error": str(exc)},
+                user_id=user_id,
             )
             continue
 
@@ -510,12 +526,13 @@ async def _run_inner(
             logger.warning("OCR: Mistral call failed for item %s", item_id, exc_info=True)
             _mark_status(
                 supabase, item_id, metadata, "failed", {"ocr_error": str(exc)},
+                user_id=user_id,
             )
             continue
 
         if not (ocr_result.text or "").strip():
             stats.empty += 1
-            _mark_status(supabase, item_id, metadata, "empty")
+            _mark_status(supabase, item_id, metadata, "empty", user_id=user_id)
             continue
 
         # --- Mark skipped / text-layer / lost pages in the text -----------
@@ -567,11 +584,12 @@ async def _run_inner(
         if lost_pages:
             merged["ocr_lost_ranges"] = [list(r) for r in page_ranges(lost_pages)]
         try:
-            (
-                supabase.table("workspace_items")
-                .update({"content_md": text, "metadata": merged})
-                .eq("item_id", item_id)
-                .execute()
+            files_store.write_attachment(
+                supabase, item_id,
+                fields={"content_md": text},
+                metadata=merged,
+                metadata_patch={k: v for k, v in merged.items() if k.startswith("ocr_")},
+                owner_id=user_id,
             )
         except Exception:  # noqa: BLE001
             stats.failed += 1
@@ -581,6 +599,7 @@ async def _run_inner(
             _mark_status(
                 supabase, item_id, metadata, "failed",
                 {"ocr_error": "persist content_md failed"},
+                user_id=user_id,
             )
             continue
 

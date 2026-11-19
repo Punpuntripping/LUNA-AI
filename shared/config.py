@@ -532,6 +532,20 @@ class Settings(BaseSettings):
     MY_FILES_ENABLED: bool = False
     MY_FILES_USERS: Optional[str] = None
 
+    # ── Files in their own table — .claude/plans/my_files.md §4 (Phase 2) ────
+    # Spec: .claude/plans/my_files_phase2.md §C. Migrations 220 + 221 first.
+    # Until PostgREST serves user_files and workspace_items.file_id both
+    # switches read as OFF (shared/files/flags.py).
+    # READ : attachment text, summary, title and type are loaded from user_files.
+    # WRITE: OCR, the summarizer, upload finalize / cancel, the retention sweep and
+    #        the upload reconciler write user_files; the conversation items follow
+    #        by trigger. *_USERS: comma-separated users.user_id; empty = everyone.
+    # Env var name == field name (no validation_alias).
+    USER_FILES_READ_ENABLED: bool = False
+    USER_FILES_READ_USERS: Optional[str] = None
+    USER_FILES_WRITE_ENABLED: bool = False
+    USER_FILES_WRITE_USERS: Optional[str] = None
+
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
     # OpenRouter Decisions API per sub-query, falling back down the

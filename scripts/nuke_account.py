@@ -123,6 +123,10 @@ def is_allowed(email: str) -> bool:
 CASCADING_TABLES: list[tuple[str, str]] = [
     ("retrieval_artifacts", "user_id"),        # must precede workspace_items (NO ACTION FK)
     ("workspace_items", "user_id"),
+    # Phase-2 files (migrations 220/221): after their conversation items (the
+    # composite FK points item -> file). A DB without the table reports it
+    # absent (count/delete return None), like task_state.
+    ("user_files", "user_id"),
     ("conversation_memory_entries", "user_id"),  # before conversations, for a real count
     ("conversations", "user_id"),
     ("lawyer_cases", "lawyer_user_id"),

@@ -39,6 +39,7 @@ from agents.utils.conversation_memory import (
 from agents.utils.history import messages_to_history, provenance_item_ids
 from agents.utils.reading_corrections import KEY as CORRECTIONS_KEY, with_corrections
 from pydantic_ai.messages import ModelMessage
+from shared.files import store as files_store
 from shared.identity import resolve_call_name
 from shared.workspace.preview_lock import LockPolicy, is_locked, preview_cut
 
@@ -354,6 +355,9 @@ def _load_workspace_item_summaries(
     if wi_lock_policy is not None:
         # What the lock decides on; selected only when it can bite.
         columns += ", created_by, created_while_paid, metadata"
+    # Files in their own table (my_files_phase2.md §C4): an attachment's title,
+    # summary, text and type come from user_files when the read switch is on.
+    columns = files_store.with_file_id(columns, user_id=user_id, supabase=supabase)
     try:
         resp = (
             supabase.table("workspace_items")
@@ -365,6 +369,7 @@ def _load_workspace_item_summaries(
             .execute()
         )
         rows = (resp.data if resp and getattr(resp, "data", None) else []) or []
+        rows = files_store.overlay_files(supabase, rows, user_id=user_id)
     except Exception as e:
         logger.warning(
             "load_router_context: workspace_items load failed for %s: %s",

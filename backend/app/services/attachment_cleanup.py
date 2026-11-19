@@ -52,6 +52,7 @@ from datetime import datetime, timedelta, timezone
 from supabase import Client as SupabaseClient
 
 from shared.config import get_settings
+from shared.files import store as files_store
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,7 @@ def cleanup_old_pdf_attachments(supabase: SupabaseClient) -> dict[str, int]:
     try:
         result = (
             supabase.table("workspace_items")
-            .select("item_id, storage_path, metadata, created_at")
+            .select("item_id, user_id, storage_path, metadata, created_at")
             .eq("kind", "attachment")
             .lt("created_at", cutoff)
             .is_("deleted_at", "null")
@@ -178,11 +179,18 @@ def cleanup_old_pdf_attachments(supabase: SupabaseClient) -> dict[str, int]:
         merged["original_purged_at"] = now_iso
         merged["original_purge_reason"] = "retention_sweep"
         try:
-            (
-                supabase.table("workspace_items")
-                .update({"storage_path": None, "metadata": merged})
-                .eq("item_id", item_id)
-                .execute()
+            # Files in their own table (my_files_phase2.md §C5): switch on =
+            # the file's storage_path + the two keys merged into user_files;
+            # the item follows by trigger in the same statement.
+            files_store.write_attachment(
+                supabase, item_id,
+                fields={"storage_path": None},
+                metadata=merged,
+                metadata_patch={
+                    "original_purged_at": now_iso,
+                    "original_purge_reason": "retention_sweep",
+                },
+                owner_id=row.get("user_id"),
             )
         except Exception as exc:  # noqa: BLE001
             # Nothing deleted yet — the file survives and tomorrow retries.

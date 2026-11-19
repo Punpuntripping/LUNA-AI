@@ -34,6 +34,7 @@ from agents.memory.artifact_summarizer import (
 )
 from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import collect_llm_calls, in_scope
+from shared.files import store as files_store
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,9 @@ def _mark_attempt(
     supabase: SupabaseClient,
     item_id: str,
     existing_metadata: dict,
+    *,
+    attachment: bool = False,
+    owner_id: str | None = None,
 ) -> dict:
     """Stamp ``metadata.summary_attempt.at`` BEFORE the LLM fires, so a retry
     that arrives while we're in flight (or right after a failed persist) is
@@ -155,16 +159,28 @@ def _mark_attempt(
     Best-effort: a failed marker write proceeds anyway. Returns the updated
     metadata dict so the success-path persist writes it back (and does not
     clobber the marker by writing the stale pre-marker metadata).
+
+    ``attachment``: the row is a file's conversation item — with the files
+    write switch on the marker is merged into ``user_files`` instead
+    (my_files_phase2.md §C5); off, the statement is today's.
     """
     md = dict(existing_metadata or {})
     md["summary_attempt"] = {"at": datetime.now(timezone.utc).isoformat()}
     try:
-        (
-            supabase.table("workspace_items")
-            .update({"metadata": md})
-            .eq("item_id", item_id)
-            .execute()
-        )
+        if attachment:
+            files_store.write_attachment(
+                supabase, item_id,
+                metadata=md,
+                metadata_patch={"summary_attempt": md["summary_attempt"]},
+                owner_id=owner_id,
+            )
+        else:
+            (
+                supabase.table("workspace_items")
+                .update({"metadata": md})
+                .eq("item_id", item_id)
+                .execute()
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "summarize: attempt-marker write failed item_id=%s: %s",
@@ -303,6 +319,8 @@ def _persist_attachment_summary(
     summary: AttachmentSummaryOutput,
     source_length: int,
     existing_metadata: dict,
+    *,
+    owner_id: str | None = None,
 ) -> None:
     """UPDATE workspace_items with the attachment title + summary + telemetry.
 
@@ -335,12 +353,19 @@ def _persist_attachment_summary(
     new_title = (summary.title or "").strip()
     if new_title:
         update["title"] = new_title
+    # Files in their own table (my_files_phase2.md §C5): switch off = the
+    # statement above; on = the same columns + only this flow's metadata keys,
+    # merged into user_files.
+    metadata_patch = {"artifact_summary": metadata["artifact_summary"]}
+    if summary.doc_type:
+        metadata_patch["doc_type"] = metadata["doc_type"]
     try:
-        (
-            supabase.table("workspace_items")
-            .update(update)
-            .eq("item_id", item_id)
-            .execute()
+        files_store.write_attachment(
+            supabase, item_id,
+            fields={k: v for k, v in update.items() if k != "metadata"},
+            metadata_patch=metadata_patch,
+            legacy_update=update,
+            owner_id=owner_id,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -440,6 +465,12 @@ async def summarize_workspace_item(
                 except Exception:
                     pass
                 return False
+            # Files in their own table (my_files_phase2.md §C4): ``*`` already
+            # carries ``file_id``; an attachment's text, summary and metadata
+            # then come from user_files when the read switch is on.
+            [row] = files_store.overlay_files(
+                supabase, [row], user_id=str(row.get("user_id") or "") or None,
+            )
 
             # Tag the span with the row's identity now so even early-exit
             # paths surface conversation_id. PII note: user_id deliberately
@@ -551,7 +582,8 @@ async def summarize_workspace_item(
                 # retry is skipped instead of re-billing. Returned md carries
                 # the marker forward into the persist write.
                 marked_md = _mark_attempt(
-                    supabase, item_id, row.get("metadata") or {}
+                    supabase, item_id, row.get("metadata") or {},
+                    attachment=True, owner_id=_user_id or None,
                 )
 
                 with _maybe_scope(supabase, row):
@@ -575,6 +607,7 @@ async def summarize_workspace_item(
                     att_summary,
                     source_length=_source_length,
                     existing_metadata=marked_md,
+                    owner_id=_user_id or None,
                 )
                 # Cost is captured per-call by the tracking hook (run_attachment_summary
                 # → run_tracked → llm_calls); no agent_runs row needed.

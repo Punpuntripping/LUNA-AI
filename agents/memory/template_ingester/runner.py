@@ -35,6 +35,7 @@ from agents.tool_repository.add_user_template import (
     USER_COL,
 )
 from agents.utils.tracking import track_stage
+from shared.files import store as files_store
 from agents.utils.usage_sink import record_call
 
 from .agent import INGESTER_LIMITS, create_template_ingester
@@ -258,10 +259,12 @@ def _load_content_md(
     ``.eq("user_id", user_id)`` filter is load-bearing scope enforcement (same
     discipline as ``item_analyzer._load_workspace_items``).
     """
+    # Files in their own table (my_files_phase2.md §C4).
+    columns = files_store.with_file_id("title, content_md", user_id=user_id, supabase=supabase)
     try:
         resp = (
             supabase.table("workspace_items")
-            .select("title, content_md")
+            .select(columns)
             .eq("item_id", item_id)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -280,6 +283,7 @@ def _load_content_md(
     data = getattr(resp, "data", None)
     if not data:
         return None
+    [data] = files_store.overlay_files(supabase, [data], user_id=user_id)
 
     content_md = (data.get("content_md") or "").strip()
     if not content_md:

@@ -26,6 +26,7 @@ from supabase import Client as SupabaseClient
 
 from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import record_call
+from shared.files import store as files_store
 from shared.observability import get_logfire
 
 from .agent import (
@@ -516,10 +517,15 @@ async def _load_workspace_items(
     if not item_ids:
         return []
 
+    # Files in their own table (my_files_phase2.md §C4).
+    columns = files_store.with_file_id(
+        "item_id, kind, title, content_md, word_count, wi_seq",
+        user_id=user_id, supabase=supabase,
+    )
     try:
         resp = (
             supabase.table("workspace_items")
-            .select("item_id, kind, title, content_md, word_count, wi_seq")
+            .select(columns)
             .in_("item_id", item_ids)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -533,6 +539,7 @@ async def _load_workspace_items(
         return []
 
     rows = getattr(resp, "data", None) or []
+    rows = files_store.overlay_files(supabase, rows, user_id=user_id)
     out: list[WorkspaceItemRow] = []
     for row in rows:
         # Defensive: drop rows that lack the columns we depend on rather than

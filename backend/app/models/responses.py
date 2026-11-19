@@ -414,6 +414,17 @@ class LibraryFile(BaseModel):
     wi_seq: Optional[int] = None
     copies: int = 1                          # identical files folded into this row
     created_at: str
+    # Phase 2 (my_files_phase2.md §D): the user_files row behind this item. Set
+    # only while the files read switch is on; absent from the JSON otherwise,
+    # so the response is byte-identical to Phase 1 with the switch off.
+    file_id: Optional[str] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_file_id(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("file_id") is None:
+            data.pop("file_id", None)
+        return data
 
 
 class LibraryFileListResponse(BaseModel):

@@ -37,6 +37,7 @@ from backend.app.services import (
     workspace_service,
 )
 from shared.config import get_settings
+from shared.files import store as files_store
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -132,9 +133,17 @@ def _direct_soft_delete_document(
 
 
 def _direct_soft_delete_attachment(
-    supabase: SupabaseClient, item_id: str, storage_path: Optional[str]
+    supabase: SupabaseClient,
+    item_id: str,
+    storage_path: Optional[str],
+    user_id: Optional[str] = None,
 ) -> None:
-    """Mirror of ``_direct_soft_delete_document`` for workspace_items."""
+    """Mirror of ``_direct_soft_delete_document`` for workspace_items.
+
+    Files in their own table (my_files_phase2.md §C5): with the write switch
+    on for ``user_id`` (the row's owner) the file takes ``deleted_at`` and the
+    three keys, merged; the item then takes its own ``deleted_at``.
+    """
     now_iso = datetime.now(timezone.utc).isoformat()
     try:
         row = (
@@ -152,17 +161,21 @@ def _direct_soft_delete_attachment(
     meta["upload_cancelled_at"] = now_iso
     meta["cancelled_by"] = "reconciler"
     try:
-        (
-            supabase.table("workspace_items")
-            .update(
-                {
-                    "deleted_at": now_iso,
-                    "updated_at": now_iso,
-                    "metadata": meta,
-                }
-            )
-            .eq("item_id", item_id)
-            .execute()
+        files_store.write_attachment(
+            supabase, item_id,
+            fields={"deleted_at": now_iso},
+            metadata_patch={
+                "upload_status": "cancelled",
+                "upload_cancelled_at": now_iso,
+                "cancelled_by": "reconciler",
+            },
+            legacy_update={
+                "deleted_at": now_iso,
+                "updated_at": now_iso,
+                "metadata": meta,
+            },
+            pointer_update={"deleted_at": now_iso, "updated_at": now_iso},
+            owner_id=user_id,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -329,7 +342,7 @@ def _reconcile_attachment(
                     item_id,
                     exc2,
                 )
-        _direct_soft_delete_attachment(supabase, item_id, storage_path)
+        _direct_soft_delete_attachment(supabase, item_id, storage_path, user_id)
         stats["deleted"] += 1
         return
     except Exception as exc:  # noqa: BLE001
@@ -338,7 +351,7 @@ def _reconcile_attachment(
             item_id,
             exc,
         )
-        _direct_soft_delete_attachment(supabase, item_id, storage_path)
+        _direct_soft_delete_attachment(supabase, item_id, storage_path, user_id)
         stats["deleted"] += 1
         return
 
@@ -350,11 +363,16 @@ def _reconcile_attachment(
         meta["upload_finalized_at"] = now_iso
         meta["finalized_by"] = "reconciler"
         try:
-            (
-                supabase.table("workspace_items")
-                .update({"metadata": meta, "updated_at": now_iso})
-                .eq("item_id", item_id)
-                .execute()
+            # Files in their own table (my_files_phase2.md §C5).
+            files_store.write_attachment(
+                supabase, item_id,
+                metadata_patch={
+                    "upload_status": "ready",
+                    "upload_finalized_at": now_iso,
+                    "finalized_by": "reconciler",
+                },
+                legacy_update={"metadata": meta, "updated_at": now_iso},
+                owner_id=user_id,
             )
             stats["recovered"] += 1
         except Exception as exc:  # noqa: BLE001
@@ -377,7 +395,7 @@ def _reconcile_attachment(
             item_id,
             exc,
         )
-        _direct_soft_delete_attachment(supabase, item_id, storage_path)
+        _direct_soft_delete_attachment(supabase, item_id, storage_path, user_id)
         stats["deleted"] += 1
 
 

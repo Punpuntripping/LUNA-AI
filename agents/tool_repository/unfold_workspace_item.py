@@ -100,6 +100,7 @@ from agents.deep_search_v4.ura.principles import (
 )
 from agents.deep_search_v4.ura.schema import CaseURAResult
 from agents.utils.reading_corrections import KEY as CORRECTIONS_KEY, with_corrections
+from shared.files import store as files_store
 from shared.seo.judgment_naming import judgment_subject
 # The WI preview lock — the SAME decision and cut the backend applies to the
 # web / app (shared/, so agents/ never imports backend/ for it).
@@ -335,10 +336,13 @@ def _fetch_item(
         # Only the saved reading corrections, not the whole metadata.
         else f"title, content_md, {CORRECTIONS_KEY}:metadata->{CORRECTIONS_KEY}"
     )
+    # Files in their own table (my_files_phase2.md §C4): an attachment's title
+    # and text come from user_files when the read switch is on.
+    with_file = files_store.with_file_id(columns, user_id=user_id, supabase=supabase)
     try:
         resp = (
             supabase.table(_ITEMS_TABLE)
-            .select(columns)
+            .select(with_file)
             .eq("item_id", item_id)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -349,7 +353,12 @@ def _fetch_item(
         logger.warning("unfold: item fetch failed for %s: %s", item_id, exc)
         return None
     if resp and getattr(resp, "data", None):
-        return resp.data
+        if with_file == columns:
+            return resp.data
+        [row] = files_store.overlay_files(supabase, [resp.data], user_id=user_id)
+        row = dict(row)
+        row.pop("file_id", None)   # the caller sees exactly today's keys
+        return row
     return None
 
 
