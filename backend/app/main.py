@@ -718,6 +718,17 @@ def create_app() -> FastAPI:
         tags=["workspace"],
     )
 
+    # «ملفاتي» — the user's files (.claude/plans/my_files.md). Reads today's
+    # workspace_items attachment rows; every route 404s while MY_FILES_ENABLED
+    # is off for the caller.
+    from backend.app.api.files import router as files_router
+
+    application.include_router(
+        files_router,
+        prefix="/api/v1",
+        tags=["files"],
+    )
+
     # Public blog wing (مدونة ريحان — .claude/plans/blog_subjects.md). The
     # versioned `public_blogs` table + its subject taxonomy. Every route here is
     # ANONYMOUS by design (no auth dependency), same posture as

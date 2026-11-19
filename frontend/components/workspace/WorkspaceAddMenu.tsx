@@ -9,6 +9,7 @@ import {
   BookOpen,
   Loader2,
   FileText,
+  FolderOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,7 +34,16 @@ import {
 import { useDocuments } from "@/hooks/use-documents";
 import { useChatStore } from "@/stores/chat-store";
 import { DEMO_DISABLED_HINT } from "@/hooks/use-demo-conversation";
+import { FILES_COPY } from "@/components/files/copy";
+import { SoonTag } from "@/components/files/FileCard";
 import type { Document } from "@/types";
+
+/**
+ * Which options the menu offers. ``all`` is the menu as it has always been.
+ * With «الملفات» on, the pane's two tabs each get their half (my_files.md §3.1):
+ * ``items`` → note / reference, ``files`` → upload / link from case documents.
+ */
+export type WorkspaceAddMenuSection = "all" | "items" | "files";
 
 interface WorkspaceAddMenuProps {
   conversationId: string;
@@ -46,6 +56,13 @@ interface WorkspaceAddMenuProps {
    * regardless; this makes the refusal visible instead of an error).
    */
   isDemo?: boolean;
+  /** Which half of the menu to offer. Default ``all`` (unchanged menu). */
+  section?: WorkspaceAddMenuSection;
+  /**
+   * Phase 3 «من الملفات» in the ``files`` half, shown inactive («قريبًا»).
+   * Default hidden — attaching from the library is not live yet.
+   */
+  showLibraryPick?: boolean;
 }
 
 /**
@@ -63,6 +80,8 @@ export function WorkspaceAddMenu({
   conversationId,
   caseId,
   isDemo = false,
+  section = "all",
+  showLibraryPick = false,
 }: WorkspaceAddMenuProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
@@ -95,6 +114,10 @@ export function WorkspaceAddMenu({
     fileInputRef.current?.click();
   }
 
+  const showItemOptions = section !== "files";
+  const showFileOptions = section !== "items";
+  const triggerLabel = section === "files" ? FILES_COPY.addFile : FILES_COPY.addItem;
+
   function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -126,7 +149,7 @@ export function WorkspaceAddMenu({
               // step would frame.
               data-tour="workspace-add"
               className="w-full justify-center gap-2 h-9 rounded-full"
-              aria-label="إضافة عنصر"
+              aria-label={triggerLabel}
               disabled={isPending || isDemo}
             >
               {isPending ? (
@@ -134,29 +157,49 @@ export function WorkspaceAddMenu({
               ) : (
                 <Plus className="h-4 w-4" />
               )}
-              <span>إضافة عنصر</span>
+              <span>{triggerLabel}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="center" side="top" sideOffset={6}>
-            <DropdownMenuItem onClick={handleCreateNote}>
-              <NotebookPen className="me-2 h-4 w-4" />
-              ملاحظة
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleUploadClick}>
-              <Upload className="me-2 h-4 w-4" />
-              رفع ملف
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => setLinkPickerOpen(true)}
-              disabled={!caseId}
-            >
-              <Link2 className="me-2 h-4 w-4" />
-              ربط من مستندات القضية
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleCreateReference}>
-              <BookOpen className="me-2 h-4 w-4" />
-              مراجع (قيد التطوير)
-            </DropdownMenuItem>
+            {showItemOptions && (
+              <DropdownMenuItem onClick={handleCreateNote}>
+                <NotebookPen className="me-2 h-4 w-4" />
+                ملاحظة
+              </DropdownMenuItem>
+            )}
+            {showFileOptions && (
+              <DropdownMenuItem onClick={handleUploadClick}>
+                <Upload className="me-2 h-4 w-4" />
+                رفع ملف
+              </DropdownMenuItem>
+            )}
+            {showFileOptions && section === "files" && showLibraryPick && (
+              <DropdownMenuItem
+                aria-disabled="true"
+                title={FILES_COPY.soon}
+                onSelect={(e) => e.preventDefault()}
+                className="cursor-default text-muted-foreground opacity-60 focus:bg-transparent focus:text-muted-foreground"
+              >
+                <FolderOpen className="me-2 h-4 w-4" />
+                {FILES_COPY.fromLibrary}
+                <SoonTag className="ms-3" />
+              </DropdownMenuItem>
+            )}
+            {showFileOptions && (
+              <DropdownMenuItem
+                onClick={() => setLinkPickerOpen(true)}
+                disabled={!caseId}
+              >
+                <Link2 className="me-2 h-4 w-4" />
+                ربط من مستندات القضية
+              </DropdownMenuItem>
+            )}
+            {showItemOptions && (
+              <DropdownMenuItem onClick={handleCreateReference}>
+                <BookOpen className="me-2 h-4 w-4" />
+                مراجع (قيد التطوير)
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
 

@@ -17,3 +17,17 @@
  * with no other code change.
  */
 export const CASES_ENABLED = false;
+
+/**
+ * «الملفات» (.claude/plans/my_files.md, Phase 1; the plan's «ملفاتي») — the
+ * sidebar rows «المحادثات» / «الملفات» (and the relabelled «القوالب» ·
+ * «المدونات» · «المكتبة»), the /files library and /files/[itemId] viewer, and
+ * the pane's «العناصر» / «الملفات» tabs with the sectioned file viewer.
+ *
+ * Read from `NEXT_PUBLIC_MY_FILES_ENABLED` and inlined at BUILD time (like
+ * every `NEXT_PUBLIC_` value — flipping it on Railway needs a rebuild). Only the
+ * exact string `"true"` turns it on; anything else leaves the app exactly as it
+ * was before the feature existed. A UI switch only: the backend gates its own
+ * `/files` endpoints.
+ */
+export const MY_FILES_ENABLED = process.env.NEXT_PUBLIC_MY_FILES_ENABLED === "true";

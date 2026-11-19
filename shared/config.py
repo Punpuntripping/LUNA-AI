@@ -526,6 +526,12 @@ class Settings(BaseSettings):
     ATTACHMENT_SEGMENT_DELIVERY_ENABLED: bool = False
     ATTACHMENT_SEGMENT_DELIVERY_USERS: Optional[str] = None
 
+    # ── «ملفاتي» — .claude/plans/my_files.md §7 ─────────────────────────────
+    # Off: every /api/v1/files route answers 404. *_USERS: comma-separated
+    # users.user_id; empty = everyone. Env var name == field name.
+    MY_FILES_ENABLED: bool = False
+    MY_FILES_USERS: Optional[str] = None
+
     # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
     # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
     # OpenRouter Decisions API per sub-query, falling back down the

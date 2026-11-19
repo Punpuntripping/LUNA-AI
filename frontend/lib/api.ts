@@ -61,6 +61,10 @@ import type {
 } from "@/types";
 import type {
   AnnouncementsResponse,
+  FileMatchRequest,
+  FileMatchResponse,
+  LibraryFileDetail,
+  LibraryFileListResponse,
   OtpRequestResponse,
   PasswordForgotResponse,
   PasswordResetRequest,
@@ -974,6 +978,30 @@ export const workspaceApi = {
       `/workspace/${encodeURIComponent(itemId)}/references/${n}/source`,
       { requireToken: true },
     ),
+};
+
+// -----------------------------------------------
+// Files API — «الملفات» (.claude/plans/my_files.md §11)
+// -----------------------------------------------
+
+export const filesApi = {
+  /** The library: light rows only (never `content_md`), newest first, ≤ 500. */
+  list: () => api.get<LibraryFileListResponse>("/files"),
+
+  /** One file with its full summary, full text and `sections` (or null). */
+  get: (itemId: string) =>
+    api.get<LibraryFileDetail>(`/files/${encodeURIComponent(itemId)}`),
+
+  /**
+   * «حذف من الملفات» — Phase 1 stamps `metadata.library_hidden_at`; the
+   * conversation's item is untouched. 204.
+   */
+  hide: (itemId: string) =>
+    api.delete<Record<string, never>>(`/files/${encodeURIComponent(itemId)}`),
+
+  /** Phase 1b: does this user already have this file (name + size + type)? */
+  match: (body: FileMatchRequest) =>
+    api.post<FileMatchResponse>("/files/match", body),
 };
 
 /**

@@ -380,3 +380,6 @@ agents/tool_repository/tests/*
 !agents/simple_search/tests/
 agents/simple_search/tests/*
 !agents/simple_search/tests/test_searcher_versions.py
+# «الملفات» (.claude/plans/my_files.md): the library list / detail / match rules are durable —
+# ownership, the never-return-text rule of the list, hidden and folded files.
+!backend/tests/test_files_service.py

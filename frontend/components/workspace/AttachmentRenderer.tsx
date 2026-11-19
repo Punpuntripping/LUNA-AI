@@ -7,7 +7,7 @@ import { ArtifactPreview } from "./ArtifactPreview";
 import { useWorkspaceItemFileUrl } from "@/hooks/use-workspace";
 import type { WorkspaceItem } from "@/types";
 
-interface AttachmentMetadata {
+export interface AttachmentMetadata {
   filename?: string;
   mime_type?: string;
   file_size_bytes?: number;
@@ -71,9 +71,7 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
   if (ocrText && (purged || !showOriginal)) {
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col">
-      {(meta.ocr_partial || meta.ocr_text_layer_ranges || meta.ocr_lost_ranges) && (
-        <PartialReadNote meta={meta} />
-      )}
+      {hasPartialReadNote(meta) && <PartialReadNote meta={meta} />}
       <ArtifactPreview
         content={ocrText}
         copyLabel="نسخ النص المستخرج"
@@ -134,17 +132,29 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
       ) : (
         <OcrStatusNote status={meta.ocr_status} />
       )}
-      <OriginalFileView item={item} />
+      <OriginalFileView
+        itemId={item.item_id}
+        mimeType={meta.mime_type}
+        filename={meta.filename ?? item.title}
+      />
     </div>
   );
+}
+
+/** Whether ``PartialReadNote`` has anything to say for this item. */
+export function hasPartialReadNote(meta: AttachmentMetadata): boolean {
+  return Boolean(meta.ocr_partial || meta.ocr_text_layer_ranges || meta.ocr_lost_ranges);
 }
 
 /**
  * The lasting record of a partial read (plan ocr_page_budget.md D8): which
  * pages the reading allowance covered. The extracted text itself carries the
  * same notice and a marker at every skipped run, for the agents.
+ *
+ * Exported for the «الملفات» ``FileViewer`` in the pane (same banner, same
+ * place: above the text).
  */
-function PartialReadNote({ meta }: { meta: AttachmentMetadata }) {
+export function PartialReadNote({ meta }: { meta: AttachmentMetadata }) {
   const fmt = (runs?: [number, number][]) =>
     (runs ?? []).map(([a, b]) => (a === b ? `${a}` : `${a}–${b}`)).join("، ");
   const read = meta.ocr_pages ?? 0;
@@ -199,12 +209,23 @@ function OcrStatusNote({ status }: { status?: string }) {
  * - ``image/*``        → ``<img>``
  * - ``application/pdf`` → ``<iframe>``
  * - anything else       → download fallback
+ *
+ * Exported for the «الملفات» ``FileViewer`` («الملف الأصلي»), which has the
+ * item id, MIME type and file name from ``GET /files/{id}`` but no
+ * ``WorkspaceItem`` — hence the plain props.
  */
-function OriginalFileView({ item }: { item: WorkspaceItem }) {
-  const { data, isLoading, error } = useWorkspaceItemFileUrl(item.item_id);
-  const meta = (item.metadata as AttachmentMetadata) || {};
-  const mimeType = meta.mime_type ?? "application/octet-stream";
-  const filename = meta.filename ?? item.title;
+export function OriginalFileView({
+  itemId,
+  mimeType: mimeTypeProp,
+  filename: filenameProp,
+}: {
+  itemId: string;
+  mimeType?: string | null;
+  filename?: string | null;
+}) {
+  const { data, isLoading, error } = useWorkspaceItemFileUrl(itemId);
+  const mimeType = mimeTypeProp ?? "application/octet-stream";
+  const filename = filenameProp ?? "";
 
   if (isLoading) {
     return (

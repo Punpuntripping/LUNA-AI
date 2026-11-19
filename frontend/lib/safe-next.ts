@@ -19,6 +19,8 @@
  * it is imported by both a client component and a route handler.
  */
 
+import { MY_FILES_ENABLED } from "@/lib/features";
+
 /** Fallback target. Also the pre-existing destination, so a rejected `next`
  *  degrades to the behaviour that shipped before this feature. */
 export const DEFAULT_NEXT = "/chat";
@@ -90,6 +92,13 @@ const ALLOWED_PREFIXES = [
 ] as const;
 
 /**
+ * «الملفات» (`/files`) — a session-expiry return target like `/chats`, but only
+ * while the feature is on (with it off the route is not-found, so there is
+ * nothing to return to).
+ */
+const FEATURE_PREFIXES: readonly string[] = MY_FILES_ENABLED ? ["/files"] : [];
+
+/**
  * True when the string contains a C0 control character or DEL. Written with
  * char codes rather than a regex literal so no raw control byte ever lands in
  * this file. See the call site in `safeNext` — this check is not cosmetic.
@@ -158,7 +167,9 @@ export function safeNext(raw: string | null | undefined): string {
   const pathname = cut === undefined ? path : path.slice(0, cut);
 
   if (
-    !ALLOWED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`))
+    ![...ALLOWED_PREFIXES, ...FEATURE_PREFIXES].some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`),
+    )
   ) {
     return DEFAULT_NEXT;
   }

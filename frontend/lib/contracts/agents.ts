@@ -86,6 +86,13 @@ export interface WorkspaceItem {
    * `wiPreviewVisibleContent()` (./wi-preview), never raw.
    */
   preview?: WorkspaceItemPreview | null;
+  /**
+   * «الملفات» (.claude/plans/my_files.md §11) — ADDED, optional. The first
+   * lines of an attachment's stored summary as plain text (≤ 280 chars, cut on
+   * a word with «…»), for the pane's file card. Attachments only; null /
+   * absent for every other kind and on a backend older than the field.
+   */
+  summary_preview?: string | null;
 }
 
 /** `WorkspaceItem.preview` — mirror of backend `WorkspaceItemPreview`. */

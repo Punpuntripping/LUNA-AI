@@ -3,8 +3,10 @@
 import { usePathname, useRouter } from "next/navigation";
 import {
   BookMarked,
+  FolderOpen,
   LayoutTemplate,
   Menu,
+  MessagesSquare,
   Newspaper,
   Scale,
   SquarePen,
@@ -21,7 +23,8 @@ import { CaseList } from "@/components/sidebar/CaseList";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { CASES_ENABLED } from "@/lib/features";
+import { CASES_ENABLED, MY_FILES_ENABLED } from "@/lib/features";
+import { useAppNavOverride } from "@/components/shell/app-nav-override";
 
 interface NavItemProps {
   icon: LucideIcon;
@@ -59,7 +62,13 @@ function NavItem({ icon: Icon, label, active, onClick, testId }: NavItemProps) {
 
 export function Sidebar() {
   const router = useRouter();
-  const pathname = usePathname();
+  // `null` in the app; only the dev preview provides it (see app-nav-override).
+  const navOverride = useAppNavOverride();
+  const routePathname = usePathname();
+  const pathname = navOverride?.pathname ?? routePathname;
+  // «الملفات» (my_files.md, owner 2026-11-19): two rows above the collections
+  // and the collections relabelled. Off → the nav exactly as before.
+  const filesNav = navOverride?.filesNav ?? MY_FILES_ENABLED;
   const { isOpen, activeTab, setActiveTab, setOpen, setSelectedConversation } =
     useSidebarStore();
   // Two readings of the same breakpoint, deliberately:
@@ -75,7 +84,8 @@ export function Sidebar() {
   // navigates away, otherwise it keeps covering the destination.
   const navigate = (href: string) => {
     if (isMobile) setOpen(false);
-    router.push(href);
+    if (navOverride?.navigate) navOverride.navigate(href);
+    else router.push(href);
   };
 
   const handleNewConversation = () => {
@@ -129,23 +139,44 @@ export function Sidebar() {
             testId="sidebar-nav-cases"
           />
         )}
+        {filesNav && (
+          <NavItem
+            icon={MessagesSquare}
+            label="المحادثات"
+            active={pathname === "/chats"}
+            onClick={() => navigate("/chats")}
+            testId="sidebar-nav-chats"
+          />
+        )}
+        {filesNav && (
+          <NavItem
+            icon={FolderOpen}
+            label="الملفات"
+            active={pathname === "/files" || !!pathname?.startsWith("/files/")}
+            onClick={() => navigate("/files")}
+            testId="sidebar-nav-files"
+          />
+        )}
+        {/* With «الملفات» on, the three collections drop the «ـي» — relabel
+            only: same destinations, test ids and behaviour. The pages and
+            every other surface keep «قوالبي / مدوناتي / مكتبتي». */}
         <NavItem
           icon={LayoutTemplate}
-          label="قوالبي"
+          label={filesNav ? "القوالب" : "قوالبي"}
           active={pathname?.startsWith("/templates")}
           onClick={() => navigate("/templates/mine")}
           testId="sidebar-nav-templates"
         />
         <NavItem
           icon={Newspaper}
-          label="مدوناتي"
+          label={filesNav ? "المدونات" : "مدوناتي"}
           active={pathname?.startsWith("/blogs")}
           onClick={() => navigate("/blogs/mine")}
           testId="sidebar-nav-blogs"
         />
         <NavItem
           icon={BookMarked}
-          label="مكتبتي"
+          label={filesNav ? "المكتبة" : "مكتبتي"}
           active={pathname?.startsWith("/library/mine")}
           onClick={() => navigate("/library/mine")}
           testId="sidebar-nav-library"

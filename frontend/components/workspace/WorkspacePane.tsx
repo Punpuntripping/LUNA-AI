@@ -1,15 +1,28 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { X, Loader2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useChatStore } from "@/stores/chat-store";
 import {
   useWorkspaceItem,
   useConversationWorkspace,
 } from "@/hooks/use-workspace";
 import { useConversationDetail } from "@/hooks/use-conversations";
+import { useLibraryFile } from "@/hooks/use-files";
 import { isDemoConversation } from "@/hooks/use-demo-conversation";
-import { AttachmentRenderer } from "./AttachmentRenderer";
+import { MY_FILES_ENABLED } from "@/lib/features";
+import { FileViewer } from "@/components/files/FileViewer";
+import { PaneFileList } from "@/components/files/PaneFileList";
+import { useFilesUi } from "@/components/files/files-ui";
+import { FILES_COPY } from "@/components/files/copy";
+import {
+  AttachmentRenderer,
+  PartialReadNote,
+  hasPartialReadNote,
+  type AttachmentMetadata,
+} from "./AttachmentRenderer";
 import { NoteEditor } from "./NoteEditor";
 import { AgentSearchViewer } from "./AgentSearchViewer";
 import { ConvoContextViewer } from "./ConvoContextViewer";
@@ -43,6 +56,16 @@ interface WorkspacePaneProps {
  * | agent_search    | AgentSearchViewer     |
  * | convo_context   | ConvoContextViewer    |
  * | references      | ReferencesRenderer    |
+ *
+ * «الملفات» (``MY_FILES_ENABLED``, my_files.md §3.1): the pane is titled
+ * «المخرجات» and list mode gets two tabs with counts — «العناصر» (every
+ * non-attachment kind, grouped by ``WorkspaceList`` as before) and «الملفات»
+ * (attachments as file cards, newest first). The tab follows the item the app
+ * focuses: opening or highlighting an attachment shows «الملفات», any other
+ * kind «العناصر». An attachment with extracted text opens in ``FileViewer``
+ * (``GET /files/{id}``: summary + sections); without text — or if that request
+ * fails — it falls back to ``AttachmentRenderer`` exactly as before. Flag off:
+ * none of this renders.
  */
 export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const openItemId = useChatStore(
@@ -70,6 +93,63 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const isDemo = isDemoConversation(convData?.conversation);
 
   const inDetailMode = openItemId !== null;
+  const filesOn = MY_FILES_ENABLED;
+  const { showUpcoming } = useFilesUi();
+
+  // --- «العناصر» / «الملفات» (flag on) -------------------------------------
+  const highlightedItemId = useChatStore(
+    (s) => s.workspaceByConversation[conversationId]?.highlightedItemId ?? null,
+  );
+  const { otherItems, fileItems } = useMemo(() => {
+    const all = listData?.items;
+    if (!all) return { otherItems: undefined, fileItems: undefined };
+    return {
+      otherItems: all.filter((i) => i.kind !== "attachment"),
+      fileItems: all.filter((i) => i.kind === "attachment"),
+    };
+  }, [listData]);
+
+  // The tab is per conversation (this pane is reused across conversations).
+  const [tabState, setTabState] = useState<{ conversationId: string; tab: PaneTab }>(
+    { conversationId, tab: "items" },
+  );
+  const tab: PaneTab = tabState.conversationId === conversationId ? tabState.tab : "items";
+  const setTab = (next: PaneTab) => setTabState({ conversationId, tab: next });
+
+  // Follow the item the app focuses (a chat chip opening or highlighting it):
+  // an attachment → «الملفات», anything else → «العناصر». Applied when the
+  // opened item or the highlight CHANGES to a new item (an open wins over a
+  // highlight in the same update) — never when one clears, so coming back from
+  // an opened file keeps «الملفات», and the user's own tab clicks are left
+  // alone until the next focus. Done during render so the list never paints a
+  // frame on the wrong tab.
+  const kindOf = (id: string | null) =>
+    id
+      ? (listData?.items.find((i) => i.item_id === id)?.kind ??
+        (item?.item_id === id ? item.kind : undefined))
+      : undefined;
+  const openKind = kindOf(openItemId);
+  const highlightKind = kindOf(highlightedItemId);
+  const openKey = openItemId && openKind ? `${conversationId}:${openItemId}` : null;
+  const highlightKey =
+    highlightedItemId && highlightKind ? `${conversationId}:${highlightedItemId}` : null;
+  const [applied, setApplied] = useState<{ open: string | null; highlight: string | null }>({
+    open: null,
+    highlight: null,
+  });
+  if (filesOn && (openKey !== applied.open || highlightKey !== applied.highlight)) {
+    const kind =
+      openKey && openKey !== applied.open
+        ? openKind
+        : highlightKey && highlightKey !== applied.highlight
+          ? highlightKind
+          : undefined;
+    setApplied({ open: openKey, highlight: highlightKey });
+    if (kind) {
+      const wanted: PaneTab = kind === "attachment" ? "files" : "items";
+      if (wanted !== tab) setTabState({ conversationId, tab: wanted });
+    }
+  }
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -78,41 +158,97 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
         inDetailMode={inDetailMode}
         onBack={() => closeWorkspaceItem(conversationId)}
         onClose={() => closeWorkspace(conversationId)}
+        title={filesOn ? FILES_COPY.paneTitle : "العناصر"}
+        closeLabel={filesOn ? "إغلاق لوحة المخرجات" : "إغلاق لوحة العناصر"}
       />
 
-      <div className="flex flex-1 flex-col min-h-0 overflow-y-auto">
-        {!inDetailMode ? (
-          <WorkspaceList
-            items={listData?.items}
-            isLoading={listLoading}
-            onItemClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
-          />
-        ) : itemLoading ? (
-          <LoadingState />
-        ) : itemError || !item ? (
-          <ErrorState />
-        ) : (
-          <KindRouter
-            item={item}
-            focusedReferenceN={focusedReferenceN}
-            onFlashDone={() => clearFocusedReference(conversationId)}
+      {filesOn && !inDetailMode ? (
+        <Tabs
+          value={tab}
+          onValueChange={(next) => setTab(next === "files" ? "files" : "items")}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <div className="shrink-0 border-b px-2 py-1.5">
+            <TabsList className="grid h-9 w-full grid-cols-2">
+              <TabsTrigger value="items" className="h-7 gap-1.5">
+                {FILES_COPY.paneItemsTab}
+                <TabCount n={otherItems?.length} />
+              </TabsTrigger>
+              <TabsTrigger value="files" className="h-7 gap-1.5">
+                {FILES_COPY.paneFilesTab}
+                <TabCount n={fileItems?.length} />
+              </TabsTrigger>
+            </TabsList>
+          </div>
+          <div className="flex flex-1 flex-col min-h-0 overflow-y-auto">
+            <TabsContent value="items" className="mt-0 data-[state=inactive]:hidden">
+              <WorkspaceList
+                items={otherItems}
+                isLoading={listLoading}
+                onItemClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
+              />
+            </TabsContent>
+            <TabsContent value="files" className="mt-0 data-[state=inactive]:hidden">
+              <PaneFileList
+                conversationId={conversationId}
+                items={fileItems}
+                isLoading={listLoading}
+              />
+            </TabsContent>
+          </div>
+          <WorkspaceAddMenu
+            conversationId={conversationId}
+            caseId={caseId}
             isDemo={isDemo}
+            section={tab}
+            showLibraryPick={showUpcoming}
           />
-        )}
-      </div>
+        </Tabs>
+      ) : (
+        <>
+          <div className="flex flex-1 flex-col min-h-0 overflow-y-auto">
+            {!inDetailMode ? (
+              <WorkspaceList
+                items={listData?.items}
+                isLoading={listLoading}
+                onItemClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
+              />
+            ) : itemLoading ? (
+              <LoadingState />
+            ) : itemError || !item ? (
+              <ErrorState />
+            ) : (
+              <KindRouter
+                item={item}
+                focusedReferenceN={focusedReferenceN}
+                onFlashDone={() => clearFocusedReference(conversationId)}
+                isDemo={isDemo}
+                filesOn={filesOn}
+              />
+            )}
+          </div>
 
-      {/* Add-item menu lives at the bottom of the pane in list mode only.
-          Detail mode has its own kind-specific viewer footer (e.g. autosave
-          status) and shouldn't show the create-new dropdown. */}
-      {!inDetailMode && (
-        <WorkspaceAddMenu
-          conversationId={conversationId}
-          caseId={caseId}
-          isDemo={isDemo}
-        />
+          {/* Add-item menu lives at the bottom of the pane in list mode only.
+              Detail mode has its own kind-specific viewer footer (e.g. autosave
+              status) and shouldn't show the create-new dropdown. */}
+          {!inDetailMode && (
+            <WorkspaceAddMenu
+              conversationId={conversationId}
+              caseId={caseId}
+              isDemo={isDemo}
+            />
+          )}
+        </>
       )}
     </div>
   );
+}
+
+type PaneTab = "items" | "files";
+
+function TabCount({ n }: { n: number | undefined }) {
+  if (n === undefined) return null;
+  return <span className="text-xs font-normal tabular-nums text-muted-foreground">{n}</span>;
 }
 
 function PaneHeader({
@@ -120,11 +256,16 @@ function PaneHeader({
   inDetailMode,
   onBack,
   onClose,
+  title,
+  closeLabel,
 }: {
   item: WorkspaceItem | null;
   inDetailMode: boolean;
   onBack: () => void;
   onClose: () => void;
+  /** List-mode title: «العناصر», or «المخرجات» with ``MY_FILES_ENABLED``. */
+  title: string;
+  closeLabel: string;
 }) {
   return (
     <div className="flex items-center gap-1 border-b px-2 py-2.5">
@@ -145,7 +286,7 @@ function PaneHeader({
         </Button>
       )}
       <h2 className="flex-1 truncate px-1 text-sm font-semibold text-foreground">
-        {inDetailMode ? item?.title ?? "..." : "العناصر"}
+        {inDetailMode ? item?.title ?? "..." : title}
       </h2>
       {/* Detail mode only: the alias the agents cite in chat, beside the title
           of the item the user just opened. Its dedicated tour step is RETIRED —
@@ -160,7 +301,7 @@ function PaneHeader({
         data-tour="pane-close"
         className="h-8 w-8 shrink-0"
         onClick={onClose}
-        aria-label="إغلاق لوحة العناصر"
+        aria-label={closeLabel}
       >
         <X className="h-4 w-4" />
       </Button>
@@ -189,16 +330,23 @@ function KindRouter({
   focusedReferenceN,
   onFlashDone,
   isDemo,
+  filesOn,
 }: {
   item: WorkspaceItem;
   focusedReferenceN: number | null;
   onFlashDone: () => void;
   /** Read-only shared demo conversation — see AgentSearchViewer.isDemo. */
   isDemo: boolean;
+  /** «الملفات» on: attachments with text open in ``FileViewer``. */
+  filesOn: boolean;
 }) {
   switch (item.kind) {
     case "attachment":
-      return <AttachmentRenderer item={item} />;
+      return filesOn ? (
+        <AttachmentFileDetail key={item.item_id} item={item} />
+      ) : (
+        <AttachmentRenderer item={item} />
+      );
     case "note":
     case "agent_writing":
       // Keyed by item: switching straight from one cached note/draft to another
@@ -227,4 +375,28 @@ function KindRouter({
         </div>
       );
   }
+}
+
+/**
+ * An attachment opened in the pane with «الملفات» on. A file whose text has
+ * been extracted is shown by ``FileViewer`` from ``GET /files/{id}`` (summary,
+ * sections). A file with no text yet (not sent, OCR empty or failed) has
+ * nothing for that view to show and keeps ``AttachmentRenderer`` — its
+ * original-file fallback and OCR status line — as does any file the endpoint
+ * fails on, so the pane never loses an item it could show before.
+ */
+function AttachmentFileDetail({ item }: { item: WorkspaceItem }) {
+  const hasText = (item.content_md ?? "").trim().length > 0;
+  const { data, isLoading, isError } = useLibraryFile(hasText ? item.item_id : undefined);
+  const meta = (item.metadata as AttachmentMetadata) || {};
+
+  if (!hasText || isError) return <AttachmentRenderer item={item} />;
+  if (isLoading || !data) return <LoadingState />;
+  return (
+    <FileViewer
+      file={data}
+      variant="pane"
+      notice={hasPartialReadNote(meta) ? <PartialReadNote meta={meta} /> : undefined}
+    />
+  );
 }

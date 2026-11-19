@@ -244,7 +244,12 @@ export const SEARCH_SURFACE_COPY = {
  * pages, so their boxes take NO `gate` prop and `SearchBar` never subscribes to
  * the auth store on their behalf.
  */
-export type PrivateSearchSurface = "blogs" | "templates" | "myLibrary" | "chats";
+export type PrivateSearchSurface =
+  | "blogs"
+  | "templates"
+  | "myLibrary"
+  | "chats"
+  | "files";
 
 export const SEARCH_PRIVATE_COPY = {
   blogs: {
@@ -262,6 +267,12 @@ export const SEARCH_PRIVATE_COPY = {
   chats: {
     placeholder: "ابحث في المحادثات…",
     ariaLabel: "ابحث في محادثاتك وفي محتوى الرسائل",
+  },
+  // «الملفات» (/files, my_files.md §3.4) — filtered on the client over the one
+  // list response: title, summary preview and file name, no minimum length.
+  files: {
+    placeholder: "ابحث في الملفات…",
+    ariaLabel: "ابحث في عناوين الملفات وملخصاتها",
   },
 } satisfies Record<PrivateSearchSurface, SurfaceCopy>;
 

@@ -356,6 +356,10 @@ class WorkspaceItemResponse(BaseModel):
     updated_at: str
     # WI preview lock — set only on a locked item. See WorkspaceItemPreview.
     preview: Optional[WorkspaceItemPreview] = None
+    # «ملفاتي» (my_files.md §11): the file card's two summary lines — plain
+    # text, ≤ 280 chars, "" when the summary is not written yet. Set on
+    # ``kind='attachment'`` only; every other kind leaves it None (absent).
+    summary_preview: Optional[str] = None
 
     @model_serializer(mode="wrap")
     def _omit_absent_preview(self, handler: SerializerFunctionWrapHandler):
@@ -364,9 +368,13 @@ class WorkspaceItemResponse(BaseModel):
         # An open item serializes WITHOUT the key, so every response is
         # byte-identical to before the lock existed (always, while
         # WI_PREVIEW_LOCK_ENABLED is off). Clients read a missing key as open.
+        # ``summary_preview`` follows the same rule: a non-attachment item
+        # serializes exactly as before the field existed.
         data = handler(self)
-        if isinstance(data, dict) and data.get("preview") is None:
-            data.pop("preview", None)
+        if isinstance(data, dict):
+            for key in ("preview", "summary_preview"):
+                if data.get(key) is None:
+                    data.pop(key, None)
         return data
 
 
@@ -374,6 +382,83 @@ class WorkspaceItemListResponse(BaseModel):
     """GET /api/v1/conversations/{id}/workspace or cases/{id}/workspace"""
     items: list[WorkspaceItemResponse]
     total: int
+
+
+# ── «ملفاتي» — the user's files (.claude/plans/my_files.md §11) ──────────
+# Field names are the contract the web client is built against: additive
+# changes only.
+
+#: ``agents/memory/artifact_summarizer/models.py`` ``DocType`` — the summarizer's
+#: ``metadata.doc_type``. A drift test in backend/tests/test_files_service.py
+#: keeps the two lists equal.
+FileDocType = Literal[
+    "judgment", "hearing_minutes", "claim", "memo", "contract", "chat", "letter",
+    "financial", "official_record", "expert_report", "statement", "user_notes",
+    "reference", "other",
+]
+
+
+class LibraryFile(BaseModel):
+    """One row of GET /api/v1/files — light: no text, no full summary."""
+    item_id: str
+    title: str
+    filename: Optional[str] = None           # metadata.filename (the upload's own name)
+    mime_type: Optional[str] = None
+    doc_type: Optional[FileDocType] = None   # None = no type yet
+    summary_preview: str = ""                # plain text, ≤ 280 chars
+    page_count: Optional[int] = None
+    chars: int = 0                           # length of the extracted text
+    has_sections: bool = False               # a map exists and is not stale
+    original_available: bool = False         # the original file can still be opened
+    conversation_id: Optional[str] = None
+    wi_seq: Optional[int] = None
+    copies: int = 1                          # identical files folded into this row
+    created_at: str
+
+
+class LibraryFileListResponse(BaseModel):
+    """GET /api/v1/files — newest first, at most 500."""
+    files: list[LibraryFile]
+    total: int
+    type_counts: dict[str, int]              # keys: a FileDocType, or "untyped"
+
+
+class FileSection(BaseModel):
+    """One shown section of an opened file (boilerplate / repeats left out)."""
+    seq: int
+    what: str
+    is_metadata: bool
+    page_from: Optional[int] = None
+    page_to: Optional[int] = None
+    document_index: Optional[int] = None     # index into ``documents``; None = one document
+    content_md: str
+
+
+class FileDocument(BaseModel):
+    """One document inside a file that holds several."""
+    name: str
+
+
+class LibraryFileDetail(LibraryFile):
+    """GET /api/v1/files/{item_id} — everything the opened file needs."""
+    summary: Optional[str] = None            # full markdown summary
+    content_md: str = ""                     # full extracted text
+    documents: list[FileDocument] = []       # empty unless 2+ documents
+    sections: Optional[list[FileSection]] = None  # None = no map or a stale map
+
+
+class FileMatch(BaseModel):
+    """An existing copy of the file the user is about to upload."""
+    item_id: str
+    title: str
+    created_at: str
+    same_conversation: bool
+    wi_seq: Optional[int] = None
+
+
+class FileMatchResponse(BaseModel):
+    """POST /api/v1/files/match"""
+    match: Optional[FileMatch] = None
 
 
 # ── Preferences ──────────────────────────────────────────

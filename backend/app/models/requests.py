@@ -408,3 +408,24 @@ class UploadInitRequest(BaseModel):
     @classmethod
     def check_filename_null_bytes(cls, v):
         return _reject_null_bytes(v) if isinstance(v, str) else v
+
+
+# ── «ملفاتي» (my_files.md §11) ───────────────────────────
+
+class FileMatchRequest(BaseModel):
+    """POST /api/v1/files/match — asked BEFORE the upload session is opened.
+
+    The same three fields the init call sends (``UploadInitRequest``), so the
+    client passes what it is about to upload. No upper bound on ``size_bytes``:
+    a file the upload would refuse simply matches nothing (the match is
+    advisory — it must never be the reason a pick fails).
+    """
+    filename: str = Field(..., min_length=1, max_length=500)
+    size_bytes: int = Field(..., ge=0)
+    mime_type: str = Field(..., min_length=1, max_length=100)
+    conversation_id: Optional[str] = None
+
+    @field_validator("filename", mode="before")
+    @classmethod
+    def check_filename_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v

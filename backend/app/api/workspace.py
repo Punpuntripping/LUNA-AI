@@ -46,6 +46,7 @@ from backend.app.models.responses import (
 )
 from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
 from backend.app.services import (
+    files_service,
     library_service,
     message_service,
     wi_preview_service,
@@ -146,6 +147,13 @@ def _to_response(
             total_chars=preview.cut.total_chars,
             hidden_ref_count=preview.hidden_ref_count,
         )
+    # «ملفاتي» file card (my_files.md §11): attachments only, and never on a
+    # locked item — the summary of a locked body would carry what the lock
+    # hides. (Attachments are user-created and never lock; both guards stay.)
+    # Every other kind leaves it None, which the model omits from the JSON.
+    summary_preview: Optional[str] = None
+    if preview is None and data.get("kind") == "attachment":
+        summary_preview = files_service.summary_preview(data.get("summary"))
     return WorkspaceItemResponse(
         item_id=item_id,
         user_id=data["user_id"],
@@ -166,6 +174,7 @@ def _to_response(
         created_at=data["created_at"],
         updated_at=data["updated_at"],
         preview=preview_block,
+        summary_preview=summary_preview,
     )
 
 
