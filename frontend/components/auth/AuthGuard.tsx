@@ -95,11 +95,26 @@ const PUBLIC_PREFIXES = [
   "/forgot-password",
 ] as const;
 
+/**
+ * Dev-only preview harnesses (`app/dev-preview/*`): they render fixtures with
+ * no session and no backend. Empty outside `next dev` — and the routes
+ * themselves answer 404 there — so production is unaffected.
+ */
+const DEV_PUBLIC_PREFIXES: readonly string[] =
+  process.env.NODE_ENV === "development" ? ["/dev-preview"] : [];
+
 export function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;
   // The marketing landing page is the public front door. Matched exactly — a
   // bare-prefix "/" would swallow every authenticated route.
   if (pathname === "/") return true;
+  if (
+    DEV_PUBLIC_PREFIXES.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    )
+  ) {
+    return true;
+  }
   // Private routes nested under a public prefix win over the prefix match.
   if (
     PRIVATE_EXCEPTIONS.some(
