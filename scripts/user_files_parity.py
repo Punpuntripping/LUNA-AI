@@ -2,7 +2,7 @@
 
 READ-ONLY. Two modes (cwd = repo root)::
 
-    python scripts/user_files_parity.py --sql                 # the 221 self-check queries
+    python scripts/user_files_parity.py --sql                 # the 222 self-check queries
     python scripts/user_files_parity.py --sql --print-sql     # print them (no DB access)
     python scripts/user_files_parity.py --agents [--user U] [--conversation C] [--limit N]
                                         [--out FILE.json] [--baseline FILE.json]
@@ -19,10 +19,10 @@ check: from Phase 3 a library upload is a file with no conversation item.
 attachment, once with the files read switch forced OFF and once forced ON
 (``shared.files.flags.override``), and compares SHA-256 digests of each result's
 canonical JSON. It prints ``conversation  function  equal|DIFFERENT  lengths``
-and never prints text. With the schema not there yet (before 221) only the OFF
+and never prints text. With the schema not there yet (before 222) only the OFF
 pass runs. ``--out`` saves ``{conversation: {function: {off, off_len, on, on_len}}}``
 (digests and lengths only) to a file OUTSIDE every git repository; ``--baseline``
-compares this run's OFF digests with a saved file (run before 221 and after it,
+compares this run's OFF digests with a saved file (run before 222 and after it,
 switch off both times: they must match). ``file_id`` — the field Phase 2 adds to
 the «الملفات» responses — is left out of their digests.
 
@@ -492,7 +492,7 @@ def run_agents(
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = ap.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--sql", action="store_true", help="the 221 count / field / link checks")
+    mode.add_argument("--sql", action="store_true", help="the 222 count / field / link checks")
     mode.add_argument("--agents", action="store_true", help="what each agent loader returns, switch off vs on")
     ap.add_argument("--print-sql", action="store_true", help="with --sql: print the queries, touch nothing")
     ap.add_argument("--user", default="", help="only this users.user_id")

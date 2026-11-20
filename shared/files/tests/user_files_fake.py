@@ -1,4 +1,4 @@
-"""In-memory PostgREST stand-in with ``user_files`` and the 221 triggers.
+"""In-memory PostgREST stand-in with ``user_files`` and the 222 triggers.
 
 No live database. Supports the query shapes the Phase-2 readers and writers use:
 ``select`` with plain columns, ``alias:col``, ``col->>key`` / ``col->key`` paths
@@ -11,11 +11,11 @@ and embeds (``conversations!artifacts_conversation_id_fkey(...)`` from an item,
 ``user_files`` generated columns (``content_chars``, ``word_count``,
 ``filename``, ``mime_type``, ``file_size_bytes``, ``doc_type``, ``ocr_status``,
 ``upload_status``) are computed on read. With ``triggers=True`` the fake runs
-the 221 sync both ways: an item update reaches its file (mirror, only while
+the 222 sync both ways: an item update reaches its file (mirror, only while
 ``file_id == item_id``), a file patch reaches every item of the file; new text
-clears the summary (030 / 220).
+clears the summary (030 / 221).
 
-``schema_ready=False`` answers like a database before migration 221: any read
+``schema_ready=False`` answers like a database before migration 222: any read
 of ``user_files`` or of ``workspace_items.file_id`` fails.
 
 Every select, filter value, update statement and RPC is recorded so a test can
@@ -33,15 +33,15 @@ ITEMS = "workspace_items"
 FILES = "user_files"
 CONVERSATIONS = "conversations"
 
-#: (columns the file→item sync copies, migration 221 trigger 3)
+#: (columns the file→item sync copies, migration 222 trigger 3)
 _SYNC_TO_ITEMS = (
     "title", "content_md", "summary", "summary_source_length", "summary_updated_at",
     "metadata", "storage_path", "document_id",
 )
-#: (columns the item→file mirror copies, migration 221 trigger 2)
+#: (columns the item→file mirror copies, migration 222 trigger 2)
 _MIRROR_TO_FILE = _SYNC_TO_ITEMS + ("deleted_at",)
 _SUMMARY_TRIO = ("summary", "summary_source_length", "summary_updated_at")
-#: The keys ``user_file_patch`` accepts in ``p_fields`` (migration 220: others raise 22023).
+#: The keys ``user_file_patch`` accepts in ``p_fields`` (migration 221: others raise 22023).
 PATCH_FIELDS = frozenset({
     "title", "content_md", "summary", "summary_source_length", "summary_updated_at",
     "storage_path", "deleted_at",
@@ -323,7 +323,7 @@ class FakeSupabase:
         return next(f for f in self.tables[FILES] if f["file_id"] == file_id)
 
     def backfill(self) -> None:
-        """Migration 221 Tx B + link: every attachment gets a file under its own id."""
+        """Migration 222 Tx B + link: every attachment gets a file under its own id."""
         have = {f["file_id"] for f in self.tables[FILES]}
         for wi in self.tables[ITEMS]:
             if wi.get("kind") != "attachment":
@@ -390,7 +390,7 @@ class FakeSupabase:
             ]
         raise AssertionError(f"unsupported embed {table} -> {target}!{hint}")
 
-    # the 221 triggers ---------------------------------------------------------
+    # the 222 triggers ---------------------------------------------------------
     def _mirror_item_to_file(self, wi: dict) -> None:
         if not self.triggers or wi.get("kind") != "attachment":
             return
@@ -445,11 +445,11 @@ class FakeSupabase:
             if k == "content_md":
                 v = "" if v is None else v
             elif k == "title" and v is None:
-                v = f.get("title")              # a JSON null title keeps the title (220)
+                v = f.get("title")              # a JSON null title keeps the title (221)
             f[k] = v
         f["metadata"] = {**(f.get("metadata") or {}), **copy.deepcopy(p_metadata_patch or {})}
         if f.get("content_md") != before:
-            for k in _SUMMARY_TRIO:   # 220 invalidate
+            for k in _SUMMARY_TRIO:   # 221 invalidate
                 f[k] = None
         f["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._sync_file_to_items(f)

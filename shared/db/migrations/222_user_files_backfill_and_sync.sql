@@ -1,7 +1,7 @@
 -- ============================================================================
--- Migration 221 — link every attachment to its file, copy it, keep both in sync.
+-- Migration 222 — link every attachment to its file, copy it, keep both in sync.
 --
--- Source: .claude/plans/my_files_phase2.md §B (221), §D, §G step 2; parent plan
+-- Source: .claude/plans/my_files_phase2.md §B (222), §D, §G step 2; parent plan
 --         .claude/plans/my_files.md D14 (EVERY attachment migrates; per-user
 --         count check, all and live) and D15 (thin pointer).
 --
@@ -79,7 +79,7 @@
 --
 -- SELF-TEST SAFETY (reviewer note, 2026-11-19) ─────────────────────────────────
 --   The behaviour test inserts two throwaway attachment pointers inside a
---   subtransaction that is always rolled back (custom SQLSTATE LS221).
+--   subtransaction that is always rolled back (custom SQLSTATE LS222).
 --   It cannot fail or leave anything behind on production:
 --   * trg_workspace_items_cap (enforce_artifact_cap) returns at once for
 --     kind = 'attachment' — no count, cannot raise.
@@ -119,7 +119,7 @@
 -- probe (readers not blocked during Tx C, writers wait).
 --
 -- PREFLIGHT (read-only):
---   SELECT to_regclass('public.user_files') IS NOT NULL                       AS has_220,
+--   SELECT to_regclass('public.user_files') IS NOT NULL                       AS has_221,
 --          EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.workspace_items'::regclass
 --                   AND attname = 'file_id' AND NOT attisdropped)            AS has_file_id,  -- false
 --          (SELECT string_agg(tgname || '=' || tgenabled, ', ') FROM pg_trigger
@@ -128,35 +128,35 @@
 --   SELECT rolname, rolconfig FROM pg_roles WHERE rolname IN ('service_role', 'authenticator');
 --     (statement_timeout of the backend role: writers wait for Tx C)
 --
--- Dependencies: 220 (user_files, user_files_parse_ts), workspace_items, users,
+-- Dependencies: 221 (user_files, user_files_parse_ts), workspace_items, users,
 --               purge_user_data (090).
--- DEPLOY ORDER: after 220; before any USER_FILES_* flag is on. Independent of
+-- DEPLOY ORDER: after 221; before any USER_FILES_* flag is on. Independent of
 --   code deploys (flags off; the code's schema probe guards the rest). Quiet window.
 -- RUN: as postgres (table owner: DISABLE TRIGGER needs ownership), as ONE
 --   request (Supabase SQL editor) or `psql -v ON_ERROR_STOP=1 -f` — the run must
 --   stop at the first error.
 -- IDEMPOTENT: every step is catalog-guarded or ON CONFLICT / IS DISTINCT FROM;
 --   the FK and CHECK adds carry duplicate_object guards. Safe to run twice.
--- DRY RUN: the same file with every COMMIT replaced by ROLLBACK (220 applied).
+-- DRY RUN: the same file with every COMMIT replaced by ROLLBACK (221 applied).
 --   Tx A and Tx B then roll back and Tx C does their work itself: it copies
 --   every row BEFORE taking its lock (nobody waits, ≈ 3 s), then adds the
 --   column under ACCESS EXCLUSIVE right after the lock, so in a dry run readers
 --   AND writers wait for the locked part of Tx C (≈ 0.2 s measured). Tx D
 --   notes the missing column and skips.
--- ROLLBACK (set both USER_FILES_* flags off and redeploy first; roll back 222
+-- ROLLBACK (set both USER_FILES_* flags off and redeploy first; roll back 223
 -- first if it was applied — the guard refuses otherwise). No data is lost: every
 -- write through the file path was copied to the pointer in the same transaction.
 -- purge_user_data is restored WITHOUT the user_files line but KEEPS the
 -- task_state-first fix: a rollback must not re-introduce a known failure. So
 -- after rollback its body is the live one with the task_state block moved to
--- the top — the only intended difference from the pre-221 catalog.
+-- the top — the only intended difference from the pre-222 catalog.
 --   BEGIN;
 --   SET LOCAL lock_timeout = '5s';
 --   DO $$ BEGIN
 --       IF EXISTS (SELECT 1 FROM pg_constraint WHERE contype = 'f'
 --                   AND confrelid = to_regclass('public.user_files')
 --                   AND conrelid <> 'public.workspace_items'::regclass) THEN
---           RAISE EXCEPTION '221 rollback: roll back 222 first (a table still references user_files)';
+--           RAISE EXCEPTION '222 rollback: roll back 223 first (a table still references user_files)';
 --       END IF;
 --   END $$;
 --   DROP TRIGGER IF EXISTS trg_user_files_sync_pointers    ON public.user_files;
@@ -218,7 +218,7 @@ BEGIN
             ADD CONSTRAINT workspace_items_file_kind_chk
                 CHECK (file_id IS NULL OR kind = 'attachment') NOT VALID;
         COMMENT ON COLUMN public.workspace_items.file_id IS
-            'For kind=attachment: the user_files row this conversation item points at (221). Equal to item_id for uploads made in a conversation; never rely on that.';
+            'For kind=attachment: the user_files row this conversation item points at (222). Equal to item_id for uploads made in a conversation; never rely on that.';
     END IF;
 END $$;
 
@@ -255,7 +255,7 @@ DO $$
 BEGIN
     IF (SELECT count(*) FROM pg_trigger WHERE tgrelid = 'public.workspace_items'::regclass AND tgenabled = 'O'
           AND tgname IN ('update_artifacts_updated_at', 'trg_workspace_items_invalidate_summary')) <> 2 THEN
-        RAISE EXCEPTION '221: update_artifacts_updated_at / trg_workspace_items_invalidate_summary missing or not plainly enabled; refusing to toggle them';
+        RAISE EXCEPTION '222: update_artifacts_updated_at / trg_workspace_items_invalidate_summary missing or not plainly enabled; refusing to toggle them';
     END IF;
 END $$;
 
@@ -286,7 +286,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_attribute
                     WHERE attrelid = 'public.workspace_items'::regclass
                       AND attname = 'file_id' AND NOT attisdropped) THEN
-        RAISE NOTICE '221: file_id missing at Tx C (dry run?) — adding it here under ACCESS EXCLUSIVE';
+        RAISE NOTICE '222: file_id missing at Tx C (dry run?) — adding it here under ACCESS EXCLUSIVE';
         ALTER TABLE public.workspace_items
             ADD COLUMN file_id uuid,
             ADD CONSTRAINT workspace_items_file_kind_chk
@@ -299,7 +299,7 @@ END $$;
 -- size, both read from the TOAST header without detoasting. The link UPDATE
 -- sets only file_id, so the text keeps its TOAST pointer; Tx D compares the
 -- full text bytes after COMMIT. Session-temporary function, dropped below.
-CREATE OR REPLACE FUNCTION pg_temp.m221_fingerprint() RETURNS text LANGUAGE sql STABLE AS $f$
+CREATE OR REPLACE FUNCTION pg_temp.m222_fingerprint() RETURNS text LANGUAGE sql STABLE AS $f$
     SELECT md5(string_agg(md5(ROW(
                wi.item_id, wi.user_id, wi.conversation_id, wi.case_id, wi.agent_family, wi.title, wi.metadata,
                wi.created_at, wi.updated_at, wi.deleted_at, wi.message_id, wi.kind, wi.created_by, wi.storage_path,
@@ -311,7 +311,7 @@ CREATE OR REPLACE FUNCTION pg_temp.m221_fingerprint() RETURNS text LANGUAGE sql 
       FROM public.workspace_items wi
      WHERE wi.kind = 'attachment'
 $f$;
-CREATE TEMP TABLE _221_before ON COMMIT DROP AS SELECT pg_temp.m221_fingerprint() AS h;
+CREATE TEMP TABLE _222_before ON COMMIT DROP AS SELECT pg_temp.m222_fingerprint() AS h;
 
 -- Catch-up under the lock for rows written since (new, changed, hard-deleted).
 -- The file's own triggers are off: this is a copy, not an edit (the summary
@@ -534,7 +534,7 @@ BEGIN
 
     DELETE FROM public.retrieval_artifacts WHERE user_id = p_user_id;
     DELETE FROM public.workspace_items     WHERE user_id = p_user_id;
-    DELETE FROM public.user_files          WHERE user_id = p_user_id;  -- 221: after its pointers (FK)
+    DELETE FROM public.user_files          WHERE user_id = p_user_id;  -- 222: after its pointers (FK)
     DELETE FROM public.conversations       WHERE user_id = p_user_id;
     DELETE FROM public.lawyer_cases        WHERE lawyer_user_id = p_user_id;
     DELETE FROM public.message_feedback    WHERE user_id = p_user_id;
@@ -570,7 +570,7 @@ BEGIN
     SELECT count(*) INTO v_n FROM public.workspace_items
      WHERE (kind = 'attachment' AND file_id IS DISTINCT FROM item_id)
         OR (kind <> 'attachment' AND file_id IS NOT NULL);
-    IF v_n <> 0 THEN RAISE EXCEPTION '221: % rows with a wrong file_id', v_n; END IF;
+    IF v_n <> 0 THEN RAISE EXCEPTION '222: % rows with a wrong file_id', v_n; END IF;
 
     -- count check, per user, all and live (owner decision D14)
     SELECT count(*) INTO v_n FROM
@@ -580,7 +580,7 @@ BEGIN
         (SELECT user_id, count(*) n, count(*) FILTER (WHERE deleted_at IS NULL) live
            FROM public.user_files GROUP BY 1) b USING (user_id)
      WHERE a.n IS DISTINCT FROM b.n OR a.live IS DISTINCT FROM b.live;
-    IF v_n <> 0 THEN RAISE EXCEPTION '221: attachment / file counts differ for % user(s)', v_n; END IF;
+    IF v_n <> 0 THEN RAISE EXCEPTION '222: attachment / file counts differ for % user(s)', v_n; END IF;
 
     -- field parity on every row, including the derived columns agents read.
     -- The text is compared by byte length + word count here (no detoast while
@@ -600,14 +600,14 @@ BEGIN
             f.document_id, f.created_at, f.updated_at, f.deleted_at,
             f.doc_type, f.filename, f.upload_status, f.ocr_status,
             f.library_hidden_at, f.origin);
-    IF v_n <> 0 THEN RAISE EXCEPTION '221: % file row(s) differ from their attachment row', v_n; END IF;
+    IF v_n <> 0 THEN RAISE EXCEPTION '222: % file row(s) differ from their attachment row', v_n; END IF;
 
     -- the pointer rows themselves did not change (updated_at included)
-    IF (SELECT h FROM _221_before) IS DISTINCT FROM pg_temp.m221_fingerprint() THEN
-        RAISE EXCEPTION '221: attachment rows changed during the migration';
+    IF (SELECT h FROM _222_before) IS DISTINCT FROM pg_temp.m222_fingerprint() THEN
+        RAISE EXCEPTION '222: attachment rows changed during the migration';
     END IF;
 
-    -- pages / maps / helper runs all have a file under the same id (222 depends on it)
+    -- pages / maps / helper runs all have a file under the same id (223 depends on it)
     SELECT (SELECT count(*) FROM public.attachment_pages p
              WHERE NOT EXISTS (SELECT 1 FROM public.user_files f WHERE f.file_id = p.item_id))
          + (SELECT count(*) FROM public.attachment_segment_maps m
@@ -615,12 +615,12 @@ BEGIN
          + (SELECT count(*) FROM public.helper_runs h
              WHERE NOT EXISTS (SELECT 1 FROM public.user_files f WHERE f.file_id = h.item_id))
       INTO v_n;
-    IF v_n <> 0 THEN RAISE EXCEPTION '221: % page / map / helper rows without a file', v_n; END IF;
+    IF v_n <> 0 THEN RAISE EXCEPTION '222: % page / map / helper rows without a file', v_n; END IF;
 
     -- constraints validated
     IF (SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.workspace_items'::regclass AND convalidated
           AND conname IN ('workspace_items_file_owner_fkey', 'workspace_items_file_kind_chk')) <> 2 THEN
-        RAISE EXCEPTION '221: file FK / CHECK missing or not validated';
+        RAISE EXCEPTION '222: file FK / CHECK missing or not validated';
     END IF;
 
     -- triggers in place and enabled (update_artifacts_updated_at was toggled above)
@@ -632,17 +632,17 @@ BEGIN
          OR (tgrelid = 'public.user_files'::regclass
              AND tgname IN ('trg_user_files_sync_pointers', 'trg_user_files_invalidate_summary',
                             'trg_user_files_updated_at')));
-    IF v_n <> 6 THEN RAISE EXCEPTION '221: expected 6 enabled triggers, found %', v_n; END IF;
+    IF v_n <> 6 THEN RAISE EXCEPTION '222: expected 6 enabled triggers, found %', v_n; END IF;
     IF EXISTS (SELECT 1 FROM pg_trigger WHERE NOT tgisinternal AND tgenabled <> 'O'
                 AND tgrelid IN ('public.workspace_items'::regclass, 'public.user_files'::regclass)) THEN
-        RAISE EXCEPTION '221: a trigger on workspace_items / user_files is left disabled';
+        RAISE EXCEPTION '222: a trigger on workspace_items / user_files is left disabled';
     END IF;
 
     -- trigger functions are not client-callable
     IF has_function_privilege('authenticated', 'public.user_files_sync_pointers()', 'EXECUTE')
        OR has_function_privilege('anon', 'public.workspace_items_file_link()', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.purge_user_data(uuid)', 'EXECUTE') THEN
-        RAISE EXCEPTION '221: a 221 function is callable by clients';
+        RAISE EXCEPTION '222: a 222 function is callable by clients';
     END IF;
 
     -- purge order: task_state and retrieval_artifacts (NO ACTION FKs onto
@@ -653,17 +653,17 @@ BEGIN
        OR strpos(v_src, 'DELETE FROM public.workspace_items') = 0
        OR strpos(v_src, 'DELETE FROM public.user_files') = 0
        OR strpos(v_src, 'DELETE FROM public.conversations') = 0 THEN
-        RAISE EXCEPTION '221: purge_user_data lacks one of the task_state / retrieval_artifacts / workspace_items / user_files / conversations deletes';
+        RAISE EXCEPTION '222: purge_user_data lacks one of the task_state / retrieval_artifacts / workspace_items / user_files / conversations deletes';
     END IF;
     IF strpos(v_src, 'DELETE FROM public.task_state') > strpos(v_src, 'DELETE FROM public.workspace_items')
        OR strpos(v_src, 'DELETE FROM public.task_state') > strpos(v_src, 'DELETE FROM public.conversations') THEN
-        RAISE EXCEPTION '221: purge_user_data must delete task_state before workspace_items and conversations';
+        RAISE EXCEPTION '222: purge_user_data must delete task_state before workspace_items and conversations';
     END IF;
     IF strpos(v_src, 'DELETE FROM public.retrieval_artifacts') > strpos(v_src, 'DELETE FROM public.workspace_items') THEN
-        RAISE EXCEPTION '221: purge_user_data must delete retrieval_artifacts before workspace_items';
+        RAISE EXCEPTION '222: purge_user_data must delete retrieval_artifacts before workspace_items';
     END IF;
     IF strpos(v_src, 'DELETE FROM public.workspace_items') > strpos(v_src, 'DELETE FROM public.user_files') THEN
-        RAISE EXCEPTION '221: purge_user_data must delete workspace_items before user_files';
+        RAISE EXCEPTION '222: purge_user_data must delete workspace_items before user_files';
     END IF;
 
     -- behaviour, on rows that never commit (see SELF-TEST SAFETY in the header).
@@ -687,20 +687,20 @@ BEGIN
      WHERE deletion_requested_at IS NULL AND user_id <> v_user ORDER BY created_at, user_id LIMIT 1;
 
     IF NOT v_safe THEN
-        RAISE NOTICE '221: unknown INSERT trigger on workspace_items — behaviour test skipped (catalog checks passed)';
+        RAISE NOTICE '222: unknown INSERT trigger on workspace_items — behaviour test skipped (catalog checks passed)';
     ELSIF v_user IS NULL THEN
-        RAISE NOTICE '221: no user — behaviour test skipped';
+        RAISE NOTICE '222: no user — behaviour test skipped';
     ELSE
         BEGIN
             -- (a) an attachment insert creates its file, same uuid, same transaction
             INSERT INTO public.workspace_items (item_id, user_id, kind, created_by, title, storage_path, summary, metadata)
-            VALUES (v_item, v_user, 'attachment', 'user', '221 self-test', '221/self-test', '221 self-test',
+            VALUES (v_item, v_user, 'attachment', 'user', '222 self-test', '222/self-test', '222 self-test',
                     '{"filename":"t.pdf","mime_type":"application/pdf","file_size_bytes":10,"upload_status":"uploading"}');
             IF NOT EXISTS (SELECT 1 FROM public.user_files WHERE file_id = v_item AND user_id = v_user
                               AND filename = 't.pdf' AND file_size_bytes = 10 AND upload_status = 'uploading'
-                              AND summary = '221 self-test')
+                              AND summary = '222 self-test')
                OR (SELECT file_id FROM public.workspace_items WHERE item_id = v_item) IS DISTINCT FROM v_item THEN
-                RAISE EXCEPTION '221: an attachment insert did not create its file';
+                RAISE EXCEPTION '222: an attachment insert did not create its file';
             END IF;
 
             -- (b) old path: a pointer write reaches the file; new text clears both summaries
@@ -710,12 +710,12 @@ BEGIN
             IF NOT EXISTS (SELECT 1 FROM public.user_files WHERE file_id = v_item AND content_md = 'abc def'
                               AND content_chars = 7 AND word_count = 2 AND ocr_status = 'done' AND summary IS NULL)
                OR (SELECT summary FROM public.workspace_items WHERE item_id = v_item) IS NOT NULL THEN
-                RAISE EXCEPTION '221: pointer -> file mirror failed';
+                RAISE EXCEPTION '222: pointer -> file mirror failed';
             END IF;
 
             -- (c) a second pointer (item_id <> file_id) of the same owner
             INSERT INTO public.workspace_items (item_id, user_id, kind, created_by, title, file_id, summary)
-            VALUES (v_item2, v_user, 'attachment', 'user', '221 self-test 2', v_item, '221 self-test');
+            VALUES (v_item2, v_user, 'attachment', 'user', '222 self-test 2', v_item, '222 self-test');
 
             -- (d) new path: the file write reaches every pointer; metadata is merged
             PERFORM public.user_file_patch(v_item, '{"summary":"s","title":"t2"}'::jsonb,
@@ -724,7 +724,7 @@ BEGIN
                  WHERE file_id = v_item AND summary = 's' AND title = 't2' AND content_md = 'abc def'
                    AND metadata->>'doc_type' = 'contract' AND metadata->>'ocr_status' = 'done'
                    AND metadata->>'filename' = 't.pdf') <> 2 THEN
-                RAISE EXCEPTION '221: file -> pointer sync failed';
+                RAISE EXCEPTION '222: file -> pointer sync failed';
             END IF;
 
             -- (e) new text through the file clears the summary everywhere
@@ -732,34 +732,34 @@ BEGIN
             IF EXISTS (SELECT 1 FROM public.user_files WHERE file_id = v_item AND summary IS NOT NULL)
                OR (SELECT count(*) FROM public.workspace_items
                     WHERE file_id = v_item AND content_md = 'x' AND summary IS NULL AND word_count = 1) <> 2 THEN
-                RAISE EXCEPTION '221: new text must clear the summary on the file and every pointer';
+                RAISE EXCEPTION '222: new text must clear the summary on the file and every pointer';
             END IF;
 
             -- (f) a pointer cannot link another user's file
             IF v_other IS NOT NULL THEN
                 BEGIN
                     INSERT INTO public.workspace_items (user_id, kind, created_by, title, file_id, summary)
-                    VALUES (v_other, 'attachment', 'user', '221 self-test 3', v_item, '221 self-test');
-                    RAISE EXCEPTION '221: a pointer linked another user''s file';
+                    VALUES (v_other, 'attachment', 'user', '222 self-test 3', v_item, '222 self-test');
+                    RAISE EXCEPTION '222: a pointer linked another user''s file';
                 EXCEPTION WHEN foreign_key_violation THEN NULL;
                 END;
             END IF;
 
-            RAISE EXCEPTION 'undo' USING ERRCODE = 'LS221';
-        EXCEPTION WHEN SQLSTATE 'LS221' THEN
+            RAISE EXCEPTION 'undo' USING ERRCODE = 'LS222';
+        EXCEPTION WHEN SQLSTATE 'LS222' THEN
             v_ok := true;
         END;
         IF NOT v_ok
            OR EXISTS (SELECT 1 FROM public.user_files WHERE file_id IN (v_item, v_item2))
            OR EXISTS (SELECT 1 FROM public.workspace_items WHERE item_id IN (v_item, v_item2)) THEN
-            RAISE EXCEPTION '221: self-test left a row behind';
+            RAISE EXCEPTION '222: self-test left a row behind';
         END IF;
     END IF;
 
-    RAISE NOTICE '221 OK: every attachment has its file (D14 counts + parity), pointers unchanged, sync both ways, purge covers files';
+    RAISE NOTICE '222 OK: every attachment has its file (D14 counts + parity), pointers unchanged, sync both ways, purge covers files';
 END $$;
 
-DROP FUNCTION pg_temp.m221_fingerprint();
+DROP FUNCTION pg_temp.m222_fingerprint();
 
 COMMIT;
 
@@ -777,7 +777,7 @@ DECLARE v_n bigint;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.workspace_items'::regclass
                     AND attname = 'file_id' AND NOT attisdropped) THEN
-        RAISE NOTICE '221 (Tx D): no workspace_items.file_id (dry run?) — full-text check skipped';
+        RAISE NOTICE '222 (Tx D): no workspace_items.file_id (dry run?) — full-text check skipped';
         RETURN;
     END IF;
     EXECUTE $q$
@@ -786,9 +786,9 @@ BEGIN
          WHERE wi.kind = 'attachment' AND wi.item_id = wi.file_id
            AND COALESCE(wi.content_md, '') IS DISTINCT FROM f.content_md $q$ INTO v_n;
     IF v_n <> 0 THEN
-        RAISE EXCEPTION '221 (Tx D): % file text(s) differ from their attachment — run the 221 rollback', v_n;
+        RAISE EXCEPTION '222 (Tx D): % file text(s) differ from their attachment — run the 222 rollback', v_n;
     END IF;
-    RAISE NOTICE '221 OK (Tx D): every file text is byte-identical to its attachment';
+    RAISE NOTICE '222 OK (Tx D): every file text is byte-identical to its attachment';
 END $$;
 
 COMMIT;

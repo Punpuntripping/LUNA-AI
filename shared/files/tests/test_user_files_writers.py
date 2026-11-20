@@ -3,7 +3,7 @@
 Switch off: each site issues TODAY's exact statement (table, payload with its
 key order, filters) and no RPC. Switch on: ``user_file_patch`` with only the
 site's own delta (and, for cancels, the item's ``deleted_at`` after it), the
-item following by the 221 trigger — simulated by the fake. The pointer has
+item following by the 222 trigger — simulated by the fake. The pointer has
 ``item_id != file_id``. No live DB; all text invented.
 """
 from __future__ import annotations

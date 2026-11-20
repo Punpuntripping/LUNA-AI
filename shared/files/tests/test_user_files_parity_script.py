@@ -146,10 +146,10 @@ def test_baseline_compares_off_digests(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(parity, "_inside_git", lambda _p: False)
     before = tmp_path / "before.json"
     sb = _world()
-    sb.schema_ready = False                      # "before 221"
+    sb.schema_ready = False                      # "before 222"
     assert parity.run_agents(sb, out_path=before) == 0
     flags.reset_probe()
-    assert parity.run_agents(_world(), baseline_path=before) == 0       # after 221, switch off: same
+    assert parity.run_agents(_world(), baseline_path=before) == 0       # after 222, switch off: same
     flags.reset_probe()
     changed = _world()
     changed.row(ITEM)["summary"] = "changed"

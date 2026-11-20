@@ -116,7 +116,7 @@ def _content_lengths(supabase: Any, ids: list[str], user_id: str | None) -> dict
     if files_store.files_read_enabled(user_id, supabase=supabase):
         # Files in their own table (my_files_phase2.md §C4): the file's
         # content_chars, without reading the text. The live-file filter stands in
-        # for the item's deleted_at (equal while the 221 mirror runs); the item's
+        # for the item's deleted_at (equal while the 222 mirror runs); the item's
         # own deleted_at is kept too. An item without a file is read as before.
         lengths = files_store.content_chars_for_items(supabase, ids, user_id=user_id)
         ids = [i for i in ids if i not in lengths]

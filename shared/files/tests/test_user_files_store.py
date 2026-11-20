@@ -476,7 +476,7 @@ def test_hide_files_rpc():
 
 
 def test_the_fake_rejects_fields_the_rpc_rejects():
-    """Migration 220's user_file_patch raises 22023 on any other p_fields key —
+    """Migration 221's user_file_patch raises 22023 on any other p_fields key —
     a writer must never send ``metadata`` or ``updated_at`` as a field."""
     sb = FakeSupabase(user_files=[file_row()])
     for bad in ({"metadata": {}}, {"updated_at": "x"}, {"word_count": 1}):

@@ -1,7 +1,7 @@
 -- ============================================================================
--- Migration 222 — pages, segment maps and helper runs hang on the FILE.
+-- Migration 223 — pages, segment maps and helper runs hang on the FILE.
 --
--- Source: .claude/plans/my_files_phase2.md §B (222), §G step 6. Last Phase-2
+-- Source: .claude/plans/my_files_phase2.md §B (223), §G step 6. Last Phase-2
 --         step and a Phase-3 prerequisite («الملفات»: a file outlives its
 --         conversation items).
 --
@@ -15,17 +15,17 @@
 --   message_attachments stays on workspace_items: a message links to the
 --   conversation's item.
 --   Adds CHECK workspace_items_attachment_file_chk (kind <> 'attachment' OR
---   file_id IS NOT NULL): every attachment pointer has a file (the 221 link
+--   file_id IS NOT NULL): every attachment pointer has a file (the 222 link
 --   trigger guarantees it for new rows).
 --
--- LIFECYCLE AFTER 222 ──────────────────────────────────────────────────────────
+-- LIFECYCLE AFTER 223 ──────────────────────────────────────────────────────────
 --   * Hard delete of a POINTER no longer removes pages / maps / helper runs;
 --     they die with the file (purge_user_data deletes files after pointers,
 --     and users → user_files cascades).
 --   * helper_runs becomes file-only: all rows are the segmenter today; a future
 --     helper on a non-file item needs its own key.
 --
--- VERIFIED: 221's self-check proved every page / map / helper row has a file
+-- VERIFIED: 222's self-check proved every page / map / helper row has a file
 --   under the same id; the preflight below re-checks it.
 -- TESTED LOCALLY 2026-11-19 on PostgreSQL 17.6 (scratchpad harness
 --   phase2_dbtest): applied twice, cascades from user_files proven, rollback
@@ -36,7 +36,7 @@
 --        + (SELECT count(*) FROM public.attachment_segment_maps m WHERE NOT EXISTS (SELECT 1 FROM public.user_files f WHERE f.file_id = m.item_id))
 --        + (SELECT count(*) FROM public.helper_runs h WHERE NOT EXISTS (SELECT 1 FROM public.user_files f WHERE f.file_id = h.item_id));
 --
--- Dependencies: 220, 221.
+-- Dependencies: 221, 222.
 -- DEPLOY ORDER: after both USER_FILES_* flags are on for everyone and soaked.
 --   No code depends on it (ids are equal).
 -- LOCKS: Tx 1 (≈ 10-16 ms measured locally): dropping the three FKs and adding the CHECK take
@@ -58,7 +58,7 @@
 --       IF (SELECT count(*) FROM public.attachment_pages p WHERE NOT EXISTS (SELECT 1 FROM public.workspace_items w WHERE w.item_id = p.item_id))
 --        + (SELECT count(*) FROM public.attachment_segment_maps m WHERE NOT EXISTS (SELECT 1 FROM public.workspace_items w WHERE w.item_id = m.item_id))
 --        + (SELECT count(*) FROM public.helper_runs h WHERE NOT EXISTS (SELECT 1 FROM public.workspace_items w WHERE w.item_id = h.item_id)) <> 0 THEN
---           RAISE EXCEPTION '222 rollback: some page / map / helper rows have no same-id workspace item';
+--           RAISE EXCEPTION '223 rollback: some page / map / helper rows have no same-id workspace item';
 --       END IF;
 --   END $$;
 --   ALTER TABLE public.attachment_pages DROP CONSTRAINT IF EXISTS attachment_pages_item_id_fkey,
@@ -92,7 +92,7 @@ BEGIN
              WHERE NOT EXISTS (SELECT 1 FROM public.user_files f WHERE f.file_id = h.item_id))
       INTO v_n;
     IF v_n <> 0 THEN
-        RAISE EXCEPTION '222: % page / map / helper rows have no file — run 221 first', v_n;
+        RAISE EXCEPTION '223: % page / map / helper rows have no file — run 222 first', v_n;
     END IF;
 
     FOR r IN SELECT * FROM (VALUES ('attachment_pages',        'attachment_pages_item_id_fkey'),
@@ -118,9 +118,9 @@ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
-COMMENT ON COLUMN public.attachment_pages.item_id        IS 'user_files.file_id (222). Name kept from 215.';
-COMMENT ON COLUMN public.attachment_segment_maps.item_id IS 'user_files.file_id (222). Name kept from 215.';
-COMMENT ON COLUMN public.helper_runs.item_id             IS 'user_files.file_id (222). Name kept from 216.';
+COMMENT ON COLUMN public.attachment_pages.item_id        IS 'user_files.file_id (223). Name kept from 215.';
+COMMENT ON COLUMN public.attachment_segment_maps.item_id IS 'user_files.file_id (223). Name kept from 215.';
+COMMENT ON COLUMN public.helper_runs.item_id             IS 'user_files.file_id (223). Name kept from 216.';
 
 -- self-check (before COMMIT, so a dry run proves it too)
 DO $$
@@ -133,25 +133,25 @@ BEGIN
                                    ('public.attachment_segment_maps'::regclass, 'attachment_segment_maps_item_id_fkey'),
                                    ('public.helper_runs'::regclass,             'helper_runs_item_id_fkey'));
     IF v_n <> 3 THEN
-        RAISE EXCEPTION '222: expected 3 validated cascading FKs onto user_files, found %', v_n;
+        RAISE EXCEPTION '223: expected 3 validated cascading FKs onto user_files, found %', v_n;
     END IF;
     SELECT count(*) INTO v_n FROM pg_constraint
      WHERE contype = 'f' AND confrelid = 'public.workspace_items'::regclass
        AND conrelid IN ('public.attachment_pages'::regclass, 'public.attachment_segment_maps'::regclass,
                         'public.helper_runs'::regclass);
     IF v_n <> 0 THEN
-        RAISE EXCEPTION '222: % FK(s) from pages / maps / helper runs still reference workspace_items', v_n;
+        RAISE EXCEPTION '223: % FK(s) from pages / maps / helper runs still reference workspace_items', v_n;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE contype = 'f' AND confdeltype = 'c'
                     AND conrelid = 'public.attachment_segments'::regclass
                     AND confrelid = 'public.attachment_segment_maps'::regclass) THEN
-        RAISE EXCEPTION '222: attachment_segments lost its cascade from the map';
+        RAISE EXCEPTION '223: attachment_segments lost its cascade from the map';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.workspace_items'::regclass
                     AND conname = 'workspace_items_attachment_file_chk') THEN
-        RAISE EXCEPTION '222: workspace_items_attachment_file_chk missing';
+        RAISE EXCEPTION '223: workspace_items_attachment_file_chk missing';
     END IF;
-    RAISE NOTICE '222 OK (Tx 1): pages, maps, helper runs cascade from user_files; attachment CHECK added';
+    RAISE NOTICE '223 OK (Tx 1): pages, maps, helper runs cascade from user_files; attachment CHECK added';
 END $$;
 
 COMMIT;
@@ -164,13 +164,13 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.workspace_items'::regclass
                     AND conname = 'workspace_items_attachment_file_chk') THEN
-        RAISE NOTICE '222 (Tx 2): workspace_items_attachment_file_chk not present (dry run?) — nothing to validate';
+        RAISE NOTICE '223 (Tx 2): workspace_items_attachment_file_chk not present (dry run?) — nothing to validate';
     ELSIF NOT (SELECT convalidated FROM pg_constraint WHERE conrelid = 'public.workspace_items'::regclass
                 AND conname = 'workspace_items_attachment_file_chk') THEN
         ALTER TABLE public.workspace_items VALIDATE CONSTRAINT workspace_items_attachment_file_chk;
-        RAISE NOTICE '222 OK (Tx 2): every attachment pointer has a file (CHECK validated)';
+        RAISE NOTICE '223 OK (Tx 2): every attachment pointer has a file (CHECK validated)';
     ELSE
-        RAISE NOTICE '222 OK (Tx 2): CHECK already validated';
+        RAISE NOTICE '223 OK (Tx 2): CHECK already validated';
     END IF;
 END $$;
 

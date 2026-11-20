@@ -3,7 +3,7 @@
 Each test builds a fake whose FILE row differs from its POINTER row (title, text,
 summary, type, metadata) and whose pointer has ``item_id != file_id``, then runs
 the real loader with the read switch off and on. Off: the pointer's values and
-no ``user_files`` read at all. On: the file's values. No live DB; the 221 sync
+no ``user_files`` read at all. On: the file's values. No live DB; the 222 sync
 triggers are off here so the two rows stay different. All text is invented.
 
 ``files_service`` (the «الملفات» routes) is covered by

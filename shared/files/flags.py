@@ -6,7 +6,7 @@ set or this ``users.user_id`` is on it. A ``None`` user with an allow-list set
 reads as off. Off on error — off is today's behaviour.
 
 Both switches also need the schema: until PostgREST serves ``user_files`` and
-``workspace_items.file_id`` (migrations 220 + 221), they read as OFF whatever
+``workspace_items.file_id`` (migrations 221 + 222), they read as OFF whatever
 the flags say. The probe result is cached for the process once it is True; while
 False it is re-run at most once a minute and each failed probe logs one error.
 

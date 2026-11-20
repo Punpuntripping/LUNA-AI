@@ -1,7 +1,7 @@
 """The only code that reads or writes ``user_files`` (Phase 2 — files in their own table).
 
 Plan: ``.claude/plans/my_files_phase2.md`` §C1 (this module), §C4 (the reader
-pattern), §C5 (the writer calls). Migrations 220 + 221 create the table, the
+pattern), §C5 (the writer calls). Migrations 221 + 222 create the table, the
 ``workspace_items.file_id`` link and the triggers that keep a file and its
 conversation items (pointers) equal in both directions.
 
@@ -46,7 +46,7 @@ FILE_ALIASES: dict[str, str] = {"doc_type": "doc_type"}
 #: Ids per ``in.(…)`` filter — keeps a request URL well inside PostgREST limits.
 ID_BATCH = 100
 
-#: The 221 copy reads ``COALESCE(wi.content_md, '')`` / ``COALESCE(wi.metadata,
+#: The 222 copy reads ``COALESCE(wi.content_md, '')`` / ``COALESCE(wi.metadata,
 #: '{}')``. A pointer NULL whose file holds that default is the same value: the
 #: overlay keeps the pointer's ``None`` so the reader sees exactly what it saw.
 _COALESCED: dict[str, Any] = {"content_md": "", "metadata": {}}
@@ -117,7 +117,7 @@ def _ids_text(ids: list[str], limit: int = 10) -> str:
 
 def with_file_id(columns: str, *, user_id: Any = None, supabase: Any = None) -> str:
     """``columns`` + ``", file_id"`` when the read switch is on, else ``columns``
-    unchanged. ``*`` already carries ``file_id`` once migration 221 is in."""
+    unchanged. ``*`` already carries ``file_id`` once migration 222 is in."""
     if not files_read_enabled(user_id, supabase=supabase):
         return columns
     cols = _top_level_columns(columns)
@@ -356,7 +356,7 @@ def write_attachment(
     Returns the PostgREST response.
 
     Switch on: ``user_file_patch(file, fields, metadata_patch, owner_id)``; the
-    221 trigger copies the file's fields onto its pointers in the same
+    222 trigger copies the file's fields onto its pointers in the same
     transaction. ``pointer_update`` (cancel: ``deleted_at``) is then written on
     the pointer itself, because the file→pointer sync never copies it. A
     pointer with no file, or a patch that wrote no row, falls back to today's

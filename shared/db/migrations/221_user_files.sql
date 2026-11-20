@@ -1,10 +1,15 @@
 -- ============================================================================
--- Migration 220 — user_files: one row per uploaded file per user (INERT).
+-- Migration 221 — user_files: one row per uploaded file per user (INERT).
 --
--- Source: .claude/plans/my_files_phase2.md §B (220); parent plan
+-- NUMBERING: written and APPLIED ON PROD 2026-11-19 as "220_user_files.sql" (its
+-- self-check printed "220 OK"). Renumbered to 221 on 2026-11-20 because master
+-- took 220 for attachment_segment_owner (seg-v5.2); the companions moved to 222
+-- and 223. The SQL is unchanged and idempotent — re-running it on prod is a no-op.
+--
+-- Source: .claude/plans/my_files_phase2.md §B (221); parent plan
 --         .claude/plans/my_files.md, owner decisions D14 (every attachment
 --         migrates, per-user count check) and D15 (thin pointer). Phase 2 of
---         «الملفات». Nothing reads or writes this table until 221 links it
+--         «الملفات». Nothing reads or writes this table until 222 links it
 --         and the USER_FILES_* flags are turned on.
 --
 -- WHAT IT STORES ─────────────────────────────────────────────────────────────
@@ -14,7 +19,7 @@
 --   document_id, origin ('chat' | 'library'), library_hidden_at («حذف من
 --   الملفات», NULL = listed), created / updated / deleted stamps.
 --   A conversation's use of a file stays a workspace_items row (kind =
---   attachment) that points here through workspace_items.file_id (221).
+--   attachment) that points here through workspace_items.file_id (222).
 --   Text is stored REAL (store-real invariant, وضع السرية); consumers encode
 --   what they load.
 --
@@ -47,7 +52,7 @@
 --     (trg_user_files_invalidate_summary — same rule as workspace_items, 030).
 --   * updated_at moves on every UPDATE (trg_user_files_updated_at).
 --   * user_id → users ON DELETE CASCADE (the terminal auth-user delete);
---     purge_user_data deletes files explicitly from 221 on.
+--     purge_user_data deletes files explicitly from 222 on.
 --
 -- SECURITY / RLS ──────────────────────────────────────────────────────────────
 --   RLS ENABLED (absolute rule 6), one owner-scoped SELECT policy, no client
@@ -55,7 +60,7 @@
 --   backend reads and writes as service_role and the browser never touches it.
 --   EXECUTE on every new function is revoked from PUBLIC / anon /
 --   authenticated (Supabase's default privileges grant it to them) and granted
---   to service_role (the parse helper is also called from 221's triggers, which
+--   to service_role (the parse helper is also called from 222's triggers, which
 --   run as service_role).
 --
 -- VERIFIED LIVE (catalog-only, prod dwgghvxogtwyaxmbgjod, 2026-11-19, by the
@@ -74,7 +79,7 @@
 --          to_regprocedure('public.user_file_patch(uuid,jsonb,jsonb,uuid)');  -- all NULL
 --
 -- Dependencies: users, case_documents, compute_word_count (048), update_updated_at.
--- DEPLOY ORDER: any time, before 221. No code touches the table until 221 and a flag.
+-- DEPLOY ORDER: any time, before 222. No code touches the table until 222 and a flag.
 -- LOCKS: a new table; its two FKs take SHARE ROW EXCLUSIVE on users and
 --   case_documents until COMMIT (writes to those two wait milliseconds; reads
 --   never wait). lock_timeout 5s fails fast instead of queueing.
@@ -82,13 +87,13 @@
 --   TRIGGER, DROP POLICY IF EXISTS + CREATE POLICY; REVOKE / GRANT / COMMENT
 --   re-run cleanly. Safe to run twice.
 -- DRY RUN: the same file with the final COMMIT replaced by ROLLBACK.
--- ROLLBACK (221 must be rolled back first; the guard refuses otherwise):
+-- ROLLBACK (222 must be rolled back first; the guard refuses otherwise):
 --   BEGIN;
 --   SET LOCAL lock_timeout = '5s';
 --   DO $$ BEGIN
 --       IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'public.workspace_items'::regclass
 --                   AND attname = 'file_id' AND NOT attisdropped) THEN
---           RAISE EXCEPTION '220 rollback: roll back 221 first (workspace_items.file_id exists)';
+--           RAISE EXCEPTION '221 rollback: roll back 222 first (workspace_items.file_id exists)';
 --       END IF;
 --   END $$;
 --   DROP TABLE IF EXISTS public.user_files;          -- no CASCADE on purpose
@@ -132,7 +137,7 @@ CREATE TABLE IF NOT EXISTS public.user_files (
     ocr_status      text    GENERATED ALWAYS AS (metadata->>'ocr_status') STORED,
     upload_status   text    GENERATED ALWAYS AS (metadata->>'upload_status') STORED,
     CONSTRAINT user_files_pkey PRIMARY KEY (file_id),
-    CONSTRAINT user_files_file_owner_uq UNIQUE (file_id, user_id),       -- target of the same-owner FK (221)
+    CONSTRAINT user_files_file_owner_uq UNIQUE (file_id, user_id),       -- target of the same-owner FK (222)
     CONSTRAINT user_files_origin_chk CHECK (origin IN ('chat', 'library')),
     -- metadata is merged with ||; on a non-object that would build an array.
     CONSTRAINT user_files_metadata_object_chk CHECK (jsonb_typeof(metadata) = 'object')
@@ -264,11 +269,11 @@ GRANT EXECUTE ON FUNCTION public.user_files_hide(uuid, uuid[])            TO ser
 GRANT EXECUTE ON FUNCTION public.user_files_parse_ts(text)                TO service_role;
 
 COMMENT ON TABLE public.user_files IS
-    'One row per uploaded file per user (220): extracted text, summary, type, original. Text stored REAL. A conversation''s use of a file is a workspace_items row (kind=attachment) with file_id (221). Service-role only: RLS on, owner SELECT policy, no client grants.';
+    'One row per uploaded file per user (221): extracted text, summary, type, original. Text stored REAL. A conversation''s use of a file is a workspace_items row (kind=attachment) with file_id (222). Service-role only: RLS on, owner SELECT policy, no client grants.';
 COMMENT ON COLUMN public.user_files.library_hidden_at IS
     '«حذف من الملفات»: set once by user_files_hide (first stamp kept). NULL = listed. metadata.library_hidden_at is a copy for the pre-switch reader.';
 COMMENT ON FUNCTION public.user_file_patch(uuid, jsonb, jsonb, uuid) IS
-    'Write one file (220). p_fields: title, content_md, summary, summary_source_length, summary_updated_at, storage_path, deleted_at (others raise 22023). p_metadata_patch is merged with ||. Returns file_id, NULL when no row matched.';
+    'Write one file (221). p_fields: title, content_md, summary, summary_source_length, summary_updated_at, storage_path, deleted_at (others raise 22023). p_metadata_patch is merged with ||. Returns file_id, NULL when no row matched.';
 
 -- ── self-tests ───────────────────────────────────────────────────────────────
 DO $$
@@ -276,50 +281,50 @@ DECLARE
     v_n int;
 BEGIN
     IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.user_files'::regclass) THEN
-        RAISE EXCEPTION '220: RLS is off on user_files';
+        RAISE EXCEPTION '221: RLS is off on user_files';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.user_files'::regclass
                     AND polname = 'user_files_select_own' AND polcmd = 'r') THEN
-        RAISE EXCEPTION '220: owner SELECT policy missing on user_files';
+        RAISE EXCEPTION '221: owner SELECT policy missing on user_files';
     END IF;
     IF EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'public.user_files'::regclass AND polcmd <> 'r') THEN
-        RAISE EXCEPTION '220: user_files must have no client write policy';
+        RAISE EXCEPTION '221: user_files must have no client write policy';
     END IF;
 
     SELECT count(*) INTO v_n FROM information_schema.role_table_grants
      WHERE table_schema = 'public' AND table_name = 'user_files'
        AND grantee IN ('anon', 'authenticated', 'PUBLIC');
     IF v_n <> 0 THEN
-        RAISE EXCEPTION '220: % client-role privileges on user_files', v_n;
+        RAISE EXCEPTION '221: % client-role privileges on user_files', v_n;
     END IF;
     SELECT count(DISTINCT privilege_type) INTO v_n FROM information_schema.role_table_grants
      WHERE table_schema = 'public' AND table_name = 'user_files' AND grantee = 'service_role'
        AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE');
     IF v_n <> 4 THEN
-        RAISE EXCEPTION '220: service_role must hold DML on user_files (found % of 4)', v_n;
+        RAISE EXCEPTION '221: service_role must hold DML on user_files (found % of 4)', v_n;
     END IF;
 
     SELECT count(*) INTO v_n FROM information_schema.columns
      WHERE table_schema = 'public' AND table_name = 'user_files' AND is_generated = 'ALWAYS';
     IF v_n <> 8 THEN
-        RAISE EXCEPTION '220: expected 8 generated columns on user_files, found %', v_n;
+        RAISE EXCEPTION '221: expected 8 generated columns on user_files, found %', v_n;
     END IF;
 
     IF (SELECT count(*) FROM pg_trigger WHERE tgrelid = 'public.user_files'::regclass AND NOT tgisinternal
           AND tgenabled = 'O' AND tgname IN ('trg_user_files_invalidate_summary', 'trg_user_files_updated_at')) <> 2 THEN
-        RAISE EXCEPTION '220: the two BEFORE UPDATE triggers are missing or disabled';
+        RAISE EXCEPTION '221: the two BEFORE UPDATE triggers are missing or disabled';
     END IF;
 
     IF has_function_privilege('anon',          'public.user_file_patch(uuid,jsonb,jsonb,uuid)', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.user_file_patch(uuid,jsonb,jsonb,uuid)', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.user_files_hide(uuid,uuid[])', 'EXECUTE')
        OR has_function_privilege('authenticated', 'public.user_files_parse_ts(text)', 'EXECUTE') THEN
-        RAISE EXCEPTION '220: a user_files function is callable by clients';
+        RAISE EXCEPTION '221: a user_files function is callable by clients';
     END IF;
     IF NOT (has_function_privilege('service_role', 'public.user_file_patch(uuid,jsonb,jsonb,uuid)', 'EXECUTE')
             AND has_function_privilege('service_role', 'public.user_files_hide(uuid,uuid[])', 'EXECUTE')
             AND has_function_privilege('service_role', 'public.user_files_parse_ts(text)', 'EXECUTE')) THEN
-        RAISE EXCEPTION '220: service_role cannot execute the user_files functions';
+        RAISE EXCEPTION '221: service_role cannot execute the user_files functions';
     END IF;
 
     -- the parser: dates in, everything else NULL, never an error
@@ -328,10 +333,10 @@ BEGIN
        OR public.user_files_parse_ts('yesterday') IS NOT NULL
        OR public.user_files_parse_ts('2026-13-45') IS NOT NULL
        OR public.user_files_parse_ts('') IS NOT NULL THEN
-        RAISE EXCEPTION '220: user_files_parse_ts misbehaves';
+        RAISE EXCEPTION '221: user_files_parse_ts misbehaves';
     END IF;
 
-    RAISE NOTICE '220 OK: user_files created, RLS on, client roles revoked, service_role DML, 8 generated columns, RPCs service-only';
+    RAISE NOTICE '221 OK: user_files created, RLS on, client roles revoked, service_role DML, 8 generated columns, RPCs service-only';
 END $$;
 
 COMMIT;
