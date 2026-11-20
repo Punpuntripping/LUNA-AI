@@ -18,6 +18,7 @@ import { FileTypePill } from "./FileTypePill";
 import { FileTypeTile, fileFamilyStyle } from "./file-type-style";
 import { FileSections } from "./FileSections";
 import { FILES_COPY } from "./copy";
+import { ReattachAdvice } from "./ReattachAdvice";
 
 interface FileViewerProps {
   file: LibraryFileDetail;
@@ -93,6 +94,8 @@ export function FileViewer({ file, variant = "page", notice }: FileViewerProps) 
             </div>
           </header>
         )}
+
+        {file.reattach_advised && <ReattachAdvice className="mt-3" />}
 
         <div className="mt-3 flex flex-wrap items-center gap-1 border-y border-border/60 py-1">
           {file.original_available ? (

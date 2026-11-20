@@ -44,6 +44,8 @@ export const FILES_COPY = {
   addToConversation: "أضف إلى محادثة",
   removeFromLibrary: "حذف من الملفات",
   noSummary: "لا يوجد ملخص بعد",
+  /** Owner, 2026-11-20: advise re-attaching, with no reason given. */
+  reattachAdvised: "ننصح بإعادة إرفاق هذا الملف",
   /** The quiet marker on a file that opens as an outline (`has_sections`). */
   hasSections: "مقسّم إلى أقسام",
 

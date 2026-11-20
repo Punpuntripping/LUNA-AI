@@ -319,6 +319,20 @@ def _extraction_complete(meta: dict) -> bool:
     return True
 
 
+def reattach_advised(meta: dict) -> bool:
+    """«ننصح بإعادة إرفاق هذا الملف» (owner, 2026-11-20): the extraction is known
+    to be shorter than the file and nothing told the user. That is the
+    pre-budget 30-page cap (see ``_LEGACY_OCR_PAGE_CAP``): fewer pages read
+    than the file has, with NO ``ocr_partial`` marker. A budget-cut file is
+    excluded — it carries the marker and its own notice. The UI shows the
+    advice without the reason."""
+    if (meta or {}).get("ocr_status") != "done" or meta.get("ocr_partial"):
+        return False
+    read = _int_or_none(meta.get("ocr_pages"))
+    pages = _int_or_none(meta.get("page_count"))
+    return read is not None and pages is not None and 0 < read < pages
+
+
 def _ts(row: dict) -> float:
     raw = row.get("created_at")
     try:
@@ -375,6 +389,7 @@ def _file_dict(row: dict, *, chars: int, has_sections: bool, copies: int) -> dic
         "wi_seq": _int_or_none(row.get("wi_seq")),
         "copies": max(1, copies),
         "created_at": str(row.get("created_at") or ""),
+        "reattach_advised": reattach_advised(meta),
     }
 
 

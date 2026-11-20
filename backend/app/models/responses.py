@@ -360,6 +360,9 @@ class WorkspaceItemResponse(BaseModel):
     # text, ≤ 280 chars, "" when the summary is not written yet. Set on
     # ``kind='attachment'`` only; every other kind leaves it None (absent).
     summary_preview: Optional[str] = None
+    # Attachments only, and only when True (files_service.reattach_advised):
+    # «ننصح بإعادة إرفاق هذا الملف». Absent from the JSON otherwise.
+    reattach_advised: Optional[bool] = None
 
     @model_serializer(mode="wrap")
     def _omit_absent_preview(self, handler: SerializerFunctionWrapHandler):
@@ -372,7 +375,7 @@ class WorkspaceItemResponse(BaseModel):
         # serializes exactly as before the field existed.
         data = handler(self)
         if isinstance(data, dict):
-            for key in ("preview", "summary_preview"):
+            for key in ("preview", "summary_preview", "reattach_advised"):
                 if data.get(key) is None:
                     data.pop(key, None)
         return data
@@ -414,6 +417,7 @@ class LibraryFile(BaseModel):
     wi_seq: Optional[int] = None
     copies: int = 1                          # identical files folded into this row
     created_at: str
+    reattach_advised: bool = False           # «ننصح بإعادة إرفاق هذا الملف» (no reason shown)
     # Phase 2 (my_files_phase2.md §D): the user_files row behind this item. Set
     # only while the files read switch is on; absent from the JSON otherwise,
     # so the response is byte-identical to Phase 1 with the switch off.

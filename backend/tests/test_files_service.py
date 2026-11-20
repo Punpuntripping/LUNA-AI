@@ -242,7 +242,7 @@ def test_list_never_selects_content_md_nor_returns_text_or_full_summary(data_pat
     assert set(f) == {
         "item_id", "title", "filename", "mime_type", "doc_type", "summary_preview", "page_count",
         "chars", "has_sections", "original_available", "conversation_id", "wi_seq", "copies",
-        "created_at",
+        "created_at", "reattach_advised",
     } | ({"file_id"} if _on_files(data_path) else set())
     if _on_files(data_path):
         assert f["file_id"] == a["item_id"] and f["item_id"] == a["item_id"]
@@ -822,6 +822,46 @@ def test_workspace_response_summary_preview_attachments_only_and_never_when_lock
     locked = WiPreview(cut=preview_cut(SAMPLE_TEXT), visible_ns=frozenset(), hidden_ref_count=0)
     dumped = _to_response(attachment, locked).model_dump(mode="json")
     assert "summary_preview" not in dumped
+
+
+@pytest.mark.parametrize(
+    "meta, want",
+    [
+        ({"ocr_pages": 30, "page_count": 55}, True),                        # the pre-budget 30-page cap
+        ({"ocr_pages": 30, "page_count": 30}, False),                       # read in full
+        ({"ocr_pages": 12, "page_count": 12}, False),
+        ({"ocr_pages": 30}, False),                                         # length unknown: no claim
+        ({"page_count": 55}, False),
+        ({"ocr_pages": 10, "page_count": 55, "ocr_partial": True}, False),  # budget cut: has its own notice
+        ({"ocr_pages": 30, "page_count": 55, "ocr_status": "failed"}, False),
+        ({"ocr_pages": "30", "page_count": "303"}, True),                   # numbers stored as text
+    ],
+)
+def test_reattach_advised_rule(meta, want):
+    assert fs.reattach_advised({"ocr_status": "done", **meta}) is want
+
+
+def test_reattach_advised_reaches_the_list_the_detail_and_the_conversation_item():
+    from backend.app.api.workspace import _to_response
+
+    cut = att(conv=CONV_A, filename="طويل.pdf", size=9000, ocr_pages=30, page_count=120)
+    whole = att(conv=CONV_A, filename="قصير.pdf", size=800, ocr_pages=4, page_count=4)
+    sb = FakeSupabase(workspace_items=[cut, whole], conversations=conversations())
+
+    listed = {f["item_id"]: f for f in fs.list_library_files(sb, USER)["files"]}
+    assert listed[cut["item_id"]]["reattach_advised"] is True
+    assert listed[whole["item_id"]]["reattach_advised"] is False
+    assert fs.get_library_file(sb, USER, cut["item_id"])["reattach_advised"] is True
+
+    assert _to_response(cut).model_dump(mode="json")["reattach_advised"] is True
+    assert "reattach_advised" not in _to_response(whole).model_dump(mode="json")   # absent, never False
+    note = {**att(kind="note"), "metadata": {"ocr_status": "done", "ocr_pages": 30, "page_count": 99}}
+    assert "reattach_advised" not in _to_response(note).model_dump(mode="json")    # attachments only
+
+    # …and the cut copy is never offered as "you already have this file" (§3.8)
+    assert fs.match_library_file(
+        sb, USER, filename="طويل.pdf", size_bytes=9000, mime_type="application/pdf", conversation_id=CONV_A,
+    ) is None
 
 
 # ===========================================================================

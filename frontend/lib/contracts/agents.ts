@@ -93,6 +93,12 @@ export interface WorkspaceItem {
    * absent for every other kind and on a backend older than the field.
    */
   summary_preview?: string | null;
+  /**
+   * Attachments only, and only ever `true` (the key is absent otherwise):
+   * «ننصح بإعادة إرفاق هذا الملف» — the stored extraction is known to be shorter
+   * than the file. The UI advises and gives no reason.
+   */
+  reattach_advised?: boolean | null;
 }
 
 /** `WorkspaceItem.preview` — mirror of backend `WorkspaceItemPreview`. */

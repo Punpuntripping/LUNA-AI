@@ -24,6 +24,7 @@ import {
 import { WiBadge } from "@/components/workspace/WiBadge";
 import { FileTypePill } from "./FileTypePill";
 import { FILES_COPY } from "./copy";
+import { ReattachAdvice } from "./ReattachAdvice";
 import {
   FILE_STATUS_COPY,
   formatFileDate,
@@ -98,6 +99,7 @@ export function FileCard({
       </div>
 
       <CardSummary file={file} />
+      {file.reattach_advised && <ReattachAdvice className="mt-2" />}
 
       <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
         {showWiBadge && <WiBadge seq={file.wi_seq} />}

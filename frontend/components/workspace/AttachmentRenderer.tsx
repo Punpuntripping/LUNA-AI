@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Loader2, FileWarning, Download, FileText, ScanText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ArtifactPreview } from "./ArtifactPreview";
+import { ReattachAdvice } from "@/components/files/ReattachAdvice";
 import { useWorkspaceItemFileUrl } from "@/hooks/use-workspace";
 import type { WorkspaceItem } from "@/types";
 
@@ -71,6 +72,7 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
   if (ocrText && (purged || !showOriginal)) {
     return (
       <div className="flex h-full min-h-0 flex-1 flex-col">
+      {item.reattach_advised && <ReattachAdvice variant="banner" />}
       {hasPartialReadNote(meta) && <PartialReadNote meta={meta} />}
       <ArtifactPreview
         content={ocrText}
@@ -116,6 +118,7 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
 
   return (
     <div className="flex h-full flex-1 flex-col">
+      {item.reattach_advised && <ReattachAdvice variant="banner" />}
       {ocrText ? (
         // Original-file mode entered from the OCR view — offer the way back.
         <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-1.5">

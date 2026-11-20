@@ -6,6 +6,7 @@ import { cn, getRelativeTimeAr } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { trackWiOpened } from "@/components/analytics/run-tracker";
 import { WiBadge } from "./WiBadge";
+import { ReattachAdvice } from "@/components/files/ReattachAdvice";
 import type { WorkspaceItem, WorkspaceItemKind } from "@/types";
 
 const KIND_ICON: Record<WorkspaceItemKind, typeof FileText> = {
@@ -143,6 +144,8 @@ export function WorkspaceCard({ item, onClick }: WorkspaceCardProps) {
               {getRelativeTimeAr(item.created_at)}
             </span>
           </div>
+
+          {item.reattach_advised && <ReattachAdvice />}
         </div>
       </div>
     </button>

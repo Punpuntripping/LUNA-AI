@@ -345,7 +345,10 @@ test("libraryFileCardModel / workspaceAttachmentCardModel", () => {
     created_at: lf.created_at,
     wi_seq: 3,
     status: "ready",
+    reattach_advised: false,
   });
+  // «ننصح بإعادة إرفاق هذا الملف»: only an explicit `true` from the server turns it on.
+  assert.equal(libraryFileCardModel({ ...lf, reattach_advised: true }).reattach_advised, true);
 
   const base: WorkspaceItem = {
     item_id: "w1",
@@ -368,6 +371,9 @@ test("libraryFileCardModel / workspaceAttachmentCardModel", () => {
   };
   const pending = workspaceAttachmentCardModel(base);
   assert.equal(pending.status, "pending");
+  assert.equal(pending.reattach_advised, false);
+  assert.equal(workspaceAttachmentCardModel({ ...base, reattach_advised: true }).reattach_advised, true);
+  assert.equal(workspaceAttachmentCardModel({ ...base, reattach_advised: null }).reattach_advised, false);
   assert.equal(workspaceAttachmentCardModel(base, { extracting: true }).status, "processing");
   assert.equal(pending.summary_preview, "");
   assert.equal(pending.doc_type, null);

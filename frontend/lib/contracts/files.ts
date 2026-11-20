@@ -56,6 +56,11 @@ export interface LibraryFile {
   copies: number;
   /** ISO 8601. */
   created_at: string;
+  /**
+   * «ننصح بإعادة إرفاق هذا الملف»: the stored extraction is known to be shorter
+   * than the file. The UI advises and gives no reason. Absent on an older backend.
+   */
+  reattach_advised?: boolean;
 }
 
 /** `GET /files`. */
@@ -525,6 +530,8 @@ export interface FileCardModel {
   created_at: string;
   wi_seq: number | null;
   status: FileProcessingStatus;
+  /** «ننصح بإعادة إرفاق هذا الملف». */
+  reattach_advised: boolean;
 }
 
 export function libraryFileCardModel(file: LibraryFile): FileCardModel {
@@ -537,6 +544,7 @@ export function libraryFileCardModel(file: LibraryFile): FileCardModel {
     created_at: file.created_at,
     wi_seq: file.wi_seq ?? null,
     status: "ready",
+    reattach_advised: file.reattach_advised === true,
   };
 }
 
@@ -566,6 +574,7 @@ export function workspaceAttachmentCardModel(
     created_at: item.created_at,
     wi_seq: item.wi_seq ?? null,
     status: fileStatusFromOcr(meta.ocr_status, hasText, options.extracting ?? false),
+    reattach_advised: item.reattach_advised === true,
   };
 }
 

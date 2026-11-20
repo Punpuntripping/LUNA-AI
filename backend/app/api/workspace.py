@@ -152,8 +152,11 @@ def _to_response(
     # hides. (Attachments are user-created and never lock; both guards stay.)
     # Every other kind leaves it None, which the model omits from the JSON.
     summary_preview: Optional[str] = None
+    reattach_advised: Optional[bool] = None
     if preview is None and data.get("kind") == "attachment":
         summary_preview = files_service.summary_preview(data.get("summary"))
+        # True or absent — never False on the wire (the key is omitted).
+        reattach_advised = files_service.reattach_advised(data.get("metadata") or {}) or None
     return WorkspaceItemResponse(
         item_id=item_id,
         user_id=data["user_id"],
@@ -175,6 +178,7 @@ def _to_response(
         updated_at=data["updated_at"],
         preview=preview_block,
         summary_preview=summary_preview,
+        reattach_advised=reattach_advised,
     )
 
 

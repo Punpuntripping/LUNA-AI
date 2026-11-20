@@ -12,6 +12,7 @@ import {
 import { FileCardMenu } from "./FileCard";
 import { FileTypeTile, fileFamilyStyle } from "./file-type-style";
 import { FILES_COPY } from "./copy";
+import { ReattachAdvice } from "./ReattachAdvice";
 
 interface FileDocCardProps {
   file: LibraryFile;
@@ -99,6 +100,8 @@ export function FileDocCard({
         ) : (
           <p className="mt-1.5 text-xs text-muted-foreground/70">{FILES_COPY.noSummary}</p>
         )}
+
+        {file.reattach_advised && <ReattachAdvice className="mt-2.5 self-start" />}
 
         <div className="mt-auto pt-4">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-dashed border-border pt-2.5 text-xs tabular-nums text-muted-foreground">

@@ -800,3 +800,38 @@ code deploy with flags off, then the read flag, the write flag, and 222.
   opens the approval popup; «استخدام الموجود» cancels (or removes) the new upload and attaches the
   existing item through the composer's existing attach-an-item path; «رفع نسخة جديدة», closing, or
   sending without answering keeps today's behaviour.
+- **Built, verified, committed locally (not pushed):** `d29d11d` (status route + per-user gate + popup
+  wired into «+» → مرفق and the pane's «إضافة ملف») and `7f97082` (preview: a `composer` screen that runs
+  the real composer and pane against a stubbed API, and `?status=off`). `tsc` clean, 24 contract tests,
+  295 backend tests. The composer has no paste or drag-and-drop upload today, so there was nothing else
+  to wire. With the build flag on and the status answering off, the app shows today's sidebar and pane
+  and makes no `/files` call other than the status.
+- Noticed, not changed: image thumbnails on the composer's attachment chip are blocked by the page's
+  content security policy (`img-src` has no `blob:`) — seen in the preview with the app's own policy;
+  to confirm on the live site.
+- Remaining "Left before this can ship" items after this: 5 (`original_purged` field), 6 (text
+  downloaded twice in the pane), 9 (keep or drop the preview commits), 11 (reviews + production build
+  in CI). Items 2, 3, 4, 7, 8 and 10 are done.
+
+### «ننصح بإعادة إرفاق هذا الملف» — owner 2026-11-20
+
+Until 2026-11-16 text extraction silently stopped at the first 30 pages of a file. Owner: tell the user
+to redo it, "something like ننصح بإعادة إرفاقها", with no details, and never show the same-file popup
+for such a file.
+
+- **Who is affected (prod, 2026-11-20):** 19 files of 8 users, all read to exactly page 30 of files up
+  to 303 pages long; 1,251 pages were never read. First 2026-10-30, last 2026-11-16. No extracted file
+  is in the unknowable state (30 pages read, page count missing).
+- **Rule (one function, `files_service.reattach_advised`):** extraction finished, fewer pages read than
+  the file has, and no budget marker (`ocr_partial`). A file cut by the page budget is excluded — it
+  already carries its own notice.
+- **API:** `LibraryFile.reattach_advised: boolean` (list and detail, both storage paths) and
+  `WorkspaceItem.reattach_advised` on attachments, present only when true.
+- **UI:** the line «ننصح بإعادة إرفاق هذا الملف», no reason given — a tag on the «الملفات» card and on the
+  pane's file card, a line on the opened file, and (NOT behind the «الملفات» flag) a banner on the old
+  attachment view and a tag on the old pane card, so it reaches users whatever the rollout state.
+- **Same-file popup:** such a copy was already excluded from the match (`_extraction_complete`), now
+  pinned by a test together with the advice. A re-attached copy is extracted afresh; in «الملفات» the
+  newest copy is the one shown, so the advice disappears from the library card once the file is
+  re-attached (it stays on the old item inside its conversation).
+- Mobile app: not done (the mobile attachment view does not read the new field yet).
