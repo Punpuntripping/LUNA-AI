@@ -33,6 +33,12 @@ import {
   workspaceAttachmentCardModel,
   type FileDocType,
   type LibraryFile,
+  filterSectionsByOwner,
+  sectionBroughtBy,
+  sectionOwnerGroups,
+  sectionOwnerLabel,
+  sectionOwnerSide,
+  SECTION_OWNER_CLASS_LABELS,
 } from "../files";
 import type { WorkspaceItem } from "../agents";
 
@@ -499,4 +505,73 @@ test("replacedUploadCleanup: late events of an upload already replaced", () => {
   assert.equal(replacedUploadCleanup("completed"), "delete_new_item");
   assert.equal(replacedUploadCleanup("failed"), "none");
   assert.equal(replacedUploadCleanup("cancelled"), "none");
+});
+
+// ---------------------------------------------------------------------------
+// Section owners (seg-v5.2)
+// ---------------------------------------------------------------------------
+
+const owned = (
+  over: Partial<{ owner_class: string | null; owner: string | null; brought_by: string | null; is_metadata: boolean }>,
+) => ({ owner_class: null, owner: null, brought_by: null, is_metadata: false, ...over });
+
+test("sectionOwnerLabel: the document's words, else the class name, else nothing", () => {
+  assert.equal(sectionOwnerLabel(owned({ owner_class: "respondent", owner: " المدعى عليه الثاني " })), "المدعى عليه الثاني");
+  assert.equal(sectionOwnerLabel(owned({ owner_class: "court" })), SECTION_OWNER_CLASS_LABELS.court);
+  assert.equal(sectionOwnerLabel(owned({ owner_class: "expert", owner: "" })), "الخبير");
+  assert.equal(sectionOwnerLabel(owned({})), null);                                   // an older map
+  assert.equal(sectionOwnerLabel(owned({ owner_class: "not_a_class" })), null);       // never a raw key
+  // a «بيانات المستند» section keeps its own tag only
+  assert.equal(sectionOwnerLabel(owned({ owner_class: "court", owner: "المحكمة", is_metadata: true })), null);
+});
+
+test("sectionBroughtBy: only when the map names a party, never on metadata", () => {
+  assert.equal(sectionBroughtBy(owned({ owner_class: "witness", brought_by: " المدعي " })), "المدعي");
+  assert.equal(sectionBroughtBy(owned({ owner_class: "witness", brought_by: "" })), null);
+  assert.equal(sectionBroughtBy(owned({ brought_by: "المدعي", is_metadata: true })), null);
+});
+
+test("sectionOwnerSide: two sides, officials, everyone else", () => {
+  assert.equal(sectionOwnerSide("claimant"), "claimant");
+  assert.equal(sectionOwnerSide("prosecution"), "claimant");
+  assert.equal(sectionOwnerSide("respondent"), "respondent");
+  assert.equal(sectionOwnerSide("court"), "official");
+  assert.equal(sectionOwnerSide("authority"), "official");
+  assert.equal(sectionOwnerSide("expert"), "other");
+  assert.equal(sectionOwnerSide(null), "other");
+  assert.equal(sectionOwnerSide("something_new"), "other");
+});
+
+test("sectionOwnerGroups / filterSectionsByOwner", () => {
+  const sections = [
+    owned({ owner_class: "court", is_metadata: true }),      // metadata never counts
+    owned({ owner_class: "claimant" }),
+    owned({ owner_class: "respondent" }),
+    owned({ owner_class: "claimant" }),
+    owned({ owner_class: "court" }),
+    owned({}),                                               // no owner
+    owned({ owner_class: "not_a_class" }),                   // unknown key: no chip
+  ];
+  assert.deepEqual(sectionOwnerGroups(sections), [
+    { key: "claimant", label: "المدعي", count: 2 },
+    { key: "respondent", label: "المدعى عليه", count: 1 },
+    { key: "court", label: "المحكمة", count: 1 },
+  ]);
+  // one owner class only: no filter at all
+  assert.deepEqual(sectionOwnerGroups([owned({ owner_class: "court" }), owned({ owner_class: "court" })]), []);
+  assert.deepEqual(sectionOwnerGroups([owned({}), owned({})]), []);
+
+  assert.equal(filterSectionsByOwner(sections, null).length, sections.length);
+  assert.equal(filterSectionsByOwner(sections, "claimant").length, 2);
+  assert.equal(filterSectionsByOwner(sections, "court").length, 1);                   // not the metadata row
+});
+
+test("every owner class has an Arabic name (no raw key can reach the screen)", () => {
+  const classes = [
+    "claimant", "respondent", "prosecution", "victim", "intervenor", "both_parties", "court", "court_officer",
+    "arbitrator", "committee", "conciliator", "investigator", "inspector", "expert", "translator", "witness",
+    "authority", "third_party", "contract_party", "mixed",
+  ];
+  for (const c of classes) assert.ok(SECTION_OWNER_CLASS_LABELS[c], c);
+  assert.equal(SECTION_OWNER_CLASS_LABELS.unknown, undefined);
 });

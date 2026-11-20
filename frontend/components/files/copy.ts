@@ -67,6 +67,9 @@ export const FILES_COPY = {
   expandAll: "توسيع الكل",
   collapseAll: "طيّ الكل",
   metadataTag: "بيانات المستند",
+  /** seg-v5.2 section owner: the filter above the sections and «قدّمه: …» on a row. */
+  ownerFilterLabel: "تصفية حسب صاحب القسم",
+  broughtBy: "قدّمه",
   emptySection: "لا يحتوي هذا القسم على نص",
   noText: "لا يوجد نص مستخرج لهذا الملف",
   backToLibrary: "الملفات",

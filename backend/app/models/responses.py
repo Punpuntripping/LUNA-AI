@@ -447,6 +447,10 @@ class FileSection(BaseModel):
     page_to: Optional[int] = None
     document_index: Optional[int] = None     # index into ``documents``; None = one document
     content_md: str
+    # seg-v5.2: whose words the section carries. All None on older maps.
+    owner_class: Optional[str] = None        # fixed key (claimant, respondent, court, expert…)
+    owner: Optional[str] = None              # the document's own role words («المدعى عليه الثاني»)
+    brought_by: Optional[str] = None         # the party that filed it, when not the owner
 
 
 class FileDocument(BaseModel):

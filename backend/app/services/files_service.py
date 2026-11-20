@@ -48,7 +48,7 @@ SEGMENTS_TABLE = "attachment_segments"
 CONVERSATION_FK = "artifacts_conversation_id_fkey"
 _CONVERSATION_EMBED = f"conversations!{CONVERSATION_FK}(deleted_at)"
 #: ``workspace_items(file_id, user_id)`` → ``user_files(file_id, user_id)``
-#: (migration 221): from a file, its conversation items (pointers).
+#: (migration 222): from a file, its conversation items (pointers).
 FILE_OWNER_FK = "workspace_items_file_owner_fkey"
 _POINTER_EMBED = (
     f"{ITEMS_TABLE}!{FILE_OWNER_FK}(item_id, conversation_id, wi_seq, deleted_at, created_at, "
@@ -455,7 +455,7 @@ def _fold(rows: list[dict]) -> list[tuple[dict, int]]:
 # The file path (Phase 2 — user_files)
 # ============================================
 
-#: A conversation item that links no file (not expected once 221 is in): the
+#: A conversation item that links no file (not expected once 222 is in): the
 #: caller answers it from the item, exactly as with the switch off.
 _UNLINKED = object()
 
@@ -889,7 +889,10 @@ def _sections(
             return None, []
         rows = _fetch_all(
             lambda: supabase.table(SEGMENTS_TABLE)
-            .select("seq, from_p, page_from, page_to, value, what, content_md")
+            .select(
+                "seq, from_p, page_from, page_to, value, what, content_md, "
+                "owner_class, owner, brought_by"   # seg-v5.2 (migration 220); NULL on older maps
+            )
             .eq("item_id", item_id)
             .order("seq")
         )
@@ -912,9 +915,24 @@ def _sections(
             "page_to": _int_or_none(r.get("page_to")),
             "document_index": _document_index(docs, _int_or_none(r.get("from_p"))) if several else None,
             "content_md": str(r.get("content_md") or ""),
+            **_section_owner(r),
         })
     documents = [{"name": name} for name, _a, _b in docs] if several else []
     return sections, documents
+
+
+def _section_owner(row: dict) -> dict:
+    """Whose words a section carries (seg-v5.2: ``owner_class`` is a fixed key,
+    ``owner`` the document's own role words, ``brought_by`` the party that filed
+    it when that is not the owner). ``unknown`` and blanks leave as ``None`` —
+    the client then shows nothing rather than a guess. Maps made before
+    seg-v5.2 have all three NULL."""
+    owner_class = str(row.get("owner_class") or "").strip().lower() or None
+    if owner_class == "unknown":
+        owner_class = None
+    owner = " ".join(str(row.get("owner") or "").split()) or None
+    brought_by = " ".join(str(row.get("brought_by") or "").split()) or None
+    return {"owner_class": owner_class, "owner": owner, "brought_by": brought_by}
 
 
 def _copies(supabase: SupabaseClient, user_id: str, item_id: str, row: dict) -> int:

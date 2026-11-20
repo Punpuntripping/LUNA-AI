@@ -55,16 +55,16 @@ SAMPLE_SUMMARY = (
 #
 # ``FakeSupabase`` is the shared in-memory PostgREST stand-in
 # (shared/files/tests/user_files_fake.py) — the same query shapes as before plus
-# ``user_files``, its generated columns, the pointer embed and the 221 sync
+# ``user_files``, its generated columns, the pointer embed and the 222 sync
 # triggers. Every test that reads or writes the library runs on each path
 # (my_files_phase2.md §F):
 #
 #   items             switches off, no user_files yet  — Phase 1, unchanged
-#   items-after-221   switches off, files backfilled   — the off path after the migration
+#   items-after-222   switches off, files backfilled   — the off path after the migration
 #   files-read        read switch on: the library is read from user_files
 #   files-read-write  both on: «حذف من الملفات» is one user_files_hide statement
 
-_MODES = ("items", "items-after-221", "files-read", "files-read-write")
+_MODES = ("items", "items-after-222", "files-read", "files-read-write")
 _PATH = {"mode": "items"}
 _PATH_AWARE = (
     "test_list_", "test_detail_", "test_hide_", "test_match_", "test_routes_", "test_no_query_",
@@ -165,8 +165,9 @@ def smap(item_id: str, chars: int, docs: Optional[list[dict]] = None, user: str 
 
 
 def seg(item_id: str, seq: int, value: str, *, from_p: int = 1, what: str = "قسم", text: str = "نص القسم",
-        page_from: Optional[int] = None, page_to: Optional[int] = None) -> dict:
+        page_from: Optional[int] = None, page_to: Optional[int] = None, **owner: Any) -> dict:
     return {
+        **owner,
         "item_id": item_id, "seq": seq, "from_p": from_p, "to_p": from_p,
         "page_from": page_from, "page_to": page_to, "char_start": 0, "char_end": 1,
         "label": "parties", "value": value, "what": what, "content_md": text,
@@ -406,7 +407,8 @@ def test_detail_sections_drop_boilerplate_and_repeats_and_hide_label_and_value()
     assert "شعار المحكمة" not in texts and "تذييل مكرر" not in texts
     assert [s["is_metadata"] for s in out["sections"]] == [True, False, False]
     for s in out["sections"]:
-        assert set(s) == {"seq", "what", "is_metadata", "page_from", "page_to", "document_index", "content_md"}
+        assert set(s) == {"seq", "what", "is_metadata", "page_from", "page_to", "document_index", "content_md",
+                          "owner_class", "owner", "brought_by"}
         assert s["document_index"] is None            # one document in the file
     assert out["documents"] == []
     assert out["sections"][1]["page_from"] == 2 and out["sections"][1]["page_to"] == 3
@@ -864,6 +866,26 @@ def test_reattach_advised_reaches_the_list_the_detail_and_the_conversation_item(
     ) is None
 
 
+def test_sections_carry_the_owner_fields_and_hide_unknown():
+    a = att()
+    sb = FakeSupabase(
+        workspace_items=[a], conversations=conversations(),
+        attachment_segment_maps=[smap(a["item_id"], len(SAMPLE_TEXT))],
+        attachment_segments=[
+            seg(a["item_id"], 1, "core", what="طلبات المدعي", owner_class="claimant", owner=" وكيل  المدعي "),
+            seg(a["item_id"], 2, "core", what="شهادة الشاهد", owner_class="witness", owner="الشاهد الأول",
+                brought_by="المدعي"),
+            seg(a["item_id"], 3, "core", what="نص بلا صاحب", owner_class="unknown", owner="", brought_by=""),
+            seg(a["item_id"], 4, "core", what="خريطة قديمة"),                      # before seg-v5.2
+        ],
+    )
+    s = fs.get_library_file(sb, USER, a["item_id"])["sections"]
+    assert (s[0]["owner_class"], s[0]["owner"], s[0]["brought_by"]) == ("claimant", "وكيل المدعي", None)
+    assert (s[1]["owner_class"], s[1]["owner"], s[1]["brought_by"]) == ("witness", "الشاهد الأول", "المدعي")
+    for row in s[2:]:
+        assert (row["owner_class"], row["owner"], row["brought_by"]) == (None, None, None)
+
+
 # ===========================================================================
 # 9. Drift guard — the contract's FileDocType == the summarizer's DocType
 # ===========================================================================
@@ -910,7 +932,7 @@ def test_files_path_pointer_id_differs_from_file_id(data_path):
         assert sb.rpcs[-1] == ("user_files_hide", {"p_user_id": USER, "p_file_ids": [FILE_ID]})
         assert fs.list_library_files(sb, USER)["files"] == []
     else:
-        # Write switch off: the stamp lands on the item only, and the 221 mirror
+        # Write switch off: the stamp lands on the item only, and the 222 mirror
         # copies an item to its file only while file_id = item_id — a split
         # pointer is a Phase-3 shape, which needs the write switch on (§E).
         assert fs.HIDDEN_KEY in sb.row(item_id)["metadata"]

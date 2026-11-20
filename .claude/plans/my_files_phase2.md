@@ -5,6 +5,11 @@
 Parent plan: `.claude/plans/my_files.md` (owner decisions D10, D14, D15). Owner-chosen shape: thin
 pointer. Applying any migration to production and turning any flag on each need the owner's go.
 
+**RENUMBERED 2026-11-20:** master took migration 220 (`220_attachment_segment_owner.sql`). The files
+migrations are now `221_user_files.sql` (applied on prod under its old number), `222_user_files_backfill_and_sync.sql`,
+`223_user_files_dependents.sql`, and the contract step is 224. This document still uses the old numbers
+220 / 221 / 222 / 223 — read them as 221 / 222 / 223 / 224. The SQL files in the repo are the source of truth.
+
 **Reviewer notes before build (2026-11-19):**
 - The self-test in 221 inserts a throwaway attachment for an arbitrary user; `trg_workspace_items_cap`
   and `summarize_artifact_on_insert` fire on it. Verify on a copy that neither can fail or leave a

@@ -85,6 +85,16 @@ export interface FileSection {
   document_index: number | null;
   /** The section's original text. */
   content_md: string;
+  /**
+   * seg-v5.2 — whose words, findings or decision the section carries. A fixed key
+   * (claimant, respondent, court, expert…). null when the document does not say, and on a
+   * map made before seg-v5.2.
+   */
+  owner_class?: string | null;
+  /** That owner in the document's own role words («المدعى عليه الثاني», «الخبير»). */
+  owner?: string | null;
+  /** The party that filed or relies on the section, when it is not the owner. */
+  brought_by?: string | null;
 }
 
 /** `GET /files/{item_id}`. */
@@ -576,6 +586,120 @@ export function workspaceAttachmentCardModel(
     status: fileStatusFromOcr(meta.ocr_status, hasText, options.extracting ?? false),
     reattach_advised: item.reattach_advised === true,
   };
+}
+
+// ------------------------------------------
+// Section owners (seg-v5.2: owner_class / owner / brought_by)
+// ------------------------------------------
+
+/**
+ * Arabic name of an owner class: the filter chip's label, and what a row shows
+ * when the map gave the class without the document's own words. Keys are the
+ * segmenter's `OWNER_CLASSES` minus `unknown` (never shown). First drafts for
+ * the owner to approve.
+ */
+export const SECTION_OWNER_CLASS_LABELS: Record<string, string> = {
+  claimant: "المدعي",
+  respondent: "المدعى عليه",
+  prosecution: "النيابة العامة",
+  victim: "المجني عليه",
+  intervenor: "المتدخل",
+  both_parties: "الطرفان",
+  court: "المحكمة",
+  court_officer: "موظف المحكمة",
+  arbitrator: "هيئة التحكيم",
+  committee: "اللجنة",
+  conciliator: "المصلح",
+  investigator: "جهة التحقيق",
+  inspector: "جهة التفتيش",
+  expert: "الخبير",
+  translator: "المترجم",
+  witness: "الشاهد",
+  authority: "جهة رسمية",
+  third_party: "طرف خارجي",
+  contract_party: "طرف في العقد",
+  mixed: "أكثر من طرف",
+};
+
+/** How an owner tag is tinted: the two sides of the case, whoever decides or issues, everyone else. */
+export type SectionOwnerSide = "claimant" | "respondent" | "official" | "other";
+
+const SECTION_OWNER_SIDES: Record<string, SectionOwnerSide> = {
+  claimant: "claimant",
+  prosecution: "claimant",
+  victim: "claimant",
+  respondent: "respondent",
+  court: "official",
+  court_officer: "official",
+  arbitrator: "official",
+  committee: "official",
+  conciliator: "official",
+  investigator: "official",
+  inspector: "official",
+  authority: "official",
+};
+
+export function sectionOwnerSide(ownerClass: string | null | undefined): SectionOwnerSide {
+  return SECTION_OWNER_SIDES[ownerClass ?? ""] ?? "other";
+}
+
+type OwnedSection = Pick<FileSection, "owner_class" | "owner" | "brought_by" | "is_metadata">;
+
+/**
+ * What a section row shows as its owner: the document's own words, else the
+ * class name; null = show nothing (not said, an older map, or a «بيانات المستند»
+ * section, which already carries its own tag).
+ */
+export function sectionOwnerLabel(section: OwnedSection): string | null {
+  if (section.is_metadata) return null;
+  const own = (section.owner ?? "").trim();
+  if (own) return own;
+  return SECTION_OWNER_CLASS_LABELS[section.owner_class ?? ""] ?? null;
+}
+
+/** «قدّمه: …» — the party that filed the section, when the map names one. */
+export function sectionBroughtBy(section: OwnedSection): string | null {
+  if (section.is_metadata) return null;
+  return (section.brought_by ?? "").trim() || null;
+}
+
+export interface SectionOwnerGroup {
+  /** The owner class. */
+  key: string;
+  label: string;
+  count: number;
+}
+
+/**
+ * The owner filter of an opened file: one entry per owner class present among
+ * the shown (non-metadata) sections, in order of first appearance. Empty unless
+ * the file has at least two — a filter with one choice is noise.
+ */
+export function sectionOwnerGroups(sections: readonly OwnedSection[]): SectionOwnerGroup[] {
+  const order: string[] = [];
+  const counts = new Map<string, number>();
+  for (const section of sections) {
+    if (section.is_metadata) continue;
+    const key = section.owner_class ?? "";
+    if (!(key in SECTION_OWNER_CLASS_LABELS)) continue;
+    if (!counts.has(key)) order.push(key);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  if (order.length < 2) return [];
+  return order.map((key) => ({
+    key,
+    label: SECTION_OWNER_CLASS_LABELS[key],
+    count: counts.get(key) ?? 0,
+  }));
+}
+
+/** The sections an owner filter leaves on screen (null = all of them). */
+export function filterSectionsByOwner<T extends OwnedSection>(
+  sections: readonly T[],
+  ownerClass: string | null,
+): T[] {
+  if (!ownerClass) return [...sections];
+  return sections.filter((s) => !s.is_metadata && s.owner_class === ownerClass);
 }
 
 // ------------------------------------------

@@ -20,10 +20,16 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import {
+  filterSectionsByOwner,
   formatSectionPages,
   groupSectionsByDocument,
+  sectionBroughtBy,
+  sectionOwnerGroups,
+  sectionOwnerLabel,
+  sectionOwnerSide,
   stripMarkdownImages,
   type FileSection,
+  type SectionOwnerSide,
 } from "@/lib/contracts";
 import { FILES_COPY } from "./copy";
 
@@ -52,11 +58,22 @@ export function FileSections({ sections, documents }: FileSectionsProps) {
   // «توسيع الكل» waits for the screen.
   const [openedByHand, setOpenedByHand] = useState<ReadonlySet<number>>(() => new Set());
 
-  const runs = useMemo(
-    () => groupSectionsByDocument(sections, documents),
-    [sections, documents],
+  // seg-v5.2: whose words each section carries. The filter appears only when
+  // the file has sections from at least two owner classes.
+  const ownerGroups = useMemo(() => sectionOwnerGroups(sections), [sections]);
+  const [ownerKey, setOwnerKey] = useState<string | null>(null);
+  const activeOwner =
+    ownerKey && ownerGroups.some((g) => g.key === ownerKey) ? ownerKey : null;
+  const visible = useMemo(
+    () => filterSectionsByOwner(sections, activeOwner),
+    [sections, activeOwner],
   );
-  const allExpanded = sections.length > 0 && expanded.size === sections.length;
+
+  const runs = useMemo(
+    () => groupSectionsByDocument(visible, documents),
+    [visible, documents],
+  );
+  const allExpanded = visible.length > 0 && visible.every((s) => expanded.has(s.seq));
 
   const toggle = useCallback((seq: number) => {
     setExpanded((prev) => {
@@ -78,7 +95,7 @@ export function FileSections({ sections, documents }: FileSectionsProps) {
       setExpanded(new Set());
       setOpenedByHand(new Set());
     } else {
-      setExpanded(new Set(sections.map((s) => s.seq)));
+      setExpanded(new Set(visible.map((s) => s.seq)));
     }
   };
 
@@ -88,10 +105,10 @@ export function FileSections({ sections, documents }: FileSectionsProps) {
         <h2 id={`${idBase}-title`} className="text-sm font-semibold text-foreground">
           {FILES_COPY.sections}
           <span className="ms-1.5 text-xs font-normal tabular-nums text-muted-foreground">
-            {sections.length}
+            {visible.length}
           </span>
         </h2>
-        {sections.length > 1 && (
+        {visible.length > 1 && (
           <Button
             type="button"
             variant="ghost"
@@ -108,6 +125,30 @@ export function FileSections({ sections, documents }: FileSectionsProps) {
           </Button>
         )}
       </div>
+
+      {ownerGroups.length > 0 && (
+        <div
+          role="group"
+          aria-label={FILES_COPY.ownerFilterLabel}
+          className="-mx-1 mb-2.5 flex gap-1 overflow-x-auto px-1 pb-1"
+        >
+          <OwnerChip
+            label={FILES_COPY.allChip}
+            count={sections.length}
+            active={activeOwner === null}
+            onClick={() => setOwnerKey(null)}
+          />
+          {ownerGroups.map((group) => (
+            <OwnerChip
+              key={group.key}
+              label={group.label}
+              count={group.count}
+              active={activeOwner === group.key}
+              onClick={() => setOwnerKey(group.key)}
+            />
+          ))}
+        </div>
+      )}
 
       <div className="space-y-4">
         {runs.map((run, runIndex) => (
@@ -157,6 +198,8 @@ const SectionRow = memo(function SectionRow({
   const panelId = `${idBase}-p${section.seq}`;
   const pages = formatSectionPages(section.page_from, section.page_to);
   const title = section.what.trim() || `القسم ${section.seq}`;
+  const owner = sectionOwnerLabel(section);
+  const broughtBy = sectionBroughtBy(section);
 
   return (
     <li>
@@ -177,7 +220,28 @@ const SectionRow = memo(function SectionRow({
         ) : (
           <ChevronLeft className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         )}
-        <span className="min-w-0 flex-1 text-sm leading-6 text-foreground">{title}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm leading-6 text-foreground">{title}</span>
+          {(owner || broughtBy) && (
+            <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-5">
+              {owner && (
+                <span
+                  className={cn(
+                    "inline-flex max-w-full items-center rounded-full px-2 py-0.5 font-medium",
+                    OWNER_SIDE_TAG[sectionOwnerSide(section.owner_class)],
+                  )}
+                >
+                  <span className="min-w-0 truncate">{owner}</span>
+                </span>
+              )}
+              {broughtBy && (
+                <span className="text-muted-foreground">
+                  {FILES_COPY.broughtBy}: {broughtBy}
+                </span>
+              )}
+            </span>
+          )}
+        </span>
         {section.is_metadata && (
           <span className="mt-0.5 shrink-0 rounded-full border border-border/70 bg-muted/50 px-2 py-0.5 text-xs leading-4 text-muted-foreground">
             {FILES_COPY.metadataTag}
@@ -202,6 +266,51 @@ const SectionRow = memo(function SectionRow({
     </li>
   );
 });
+
+/**
+ * The owner tag's tint — the theme's existing families only (the ones the
+ * file-type tiles use): the claimant's side, the respondent's side, whoever
+ * decides or issues, and an outline for everyone else.
+ */
+const OWNER_SIDE_TAG: Record<SectionOwnerSide, string> = {
+  claimant: "bg-primary/10 text-primary",
+  respondent: "bg-info text-info-fg",
+  official: "bg-muted text-text-muted",
+  other: "border border-border bg-card text-muted-foreground",
+};
+
+function OwnerChip({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  // The same chip as the type filter on /files.
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors max-md:py-1.5",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active
+          ? "border-primary/60 bg-primary/5 text-foreground"
+          : "border-transparent text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+      )}
+    >
+      <span>{label}</span>
+      <span className={cn("tabular-nums", active ? "text-primary" : "text-muted-foreground/80")}>
+        {count}
+      </span>
+    </button>
+  );
+}
 
 /** Approximate rendered height of `chars` of Arabic text, for the placeholder. */
 function estimatedHeight(chars: number): number {

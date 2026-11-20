@@ -31,6 +31,23 @@ const TABLE = [
   "| ثانٍ | 45 | تجريبي |",
 ].join("\n");
 
+/**
+ * Invented owners in the seg-v5.2 shape, cycled over the generated sections so
+ * every tint, a «قدّمه: …» line, a class with no wording of its own, an unknown
+ * owner and a pre-v5.2 row (no fields at all) are all on screen.
+ */
+const OWNERS: Array<Pick<FileSection, "owner_class" | "owner" | "brought_by">> = [
+  { owner_class: "claimant", owner: "وكيل المدعي", brought_by: null },
+  { owner_class: "respondent", owner: "المدعى عليه الثاني", brought_by: null },
+  { owner_class: "court", owner: "الدائرة", brought_by: null },
+  { owner_class: "witness", owner: "الشاهد الأول", brought_by: "المدعي" },
+  { owner_class: "expert", owner: "الخبير", brought_by: "المدعى عليه" },
+  { owner_class: "authority", owner: null, brought_by: null },
+  { owner_class: "mixed", owner: "المدعي، الخبير", brought_by: null },
+  { owner_class: null, owner: null, brought_by: null },
+  {},
+];
+
 export function buildStressFile(): LibraryFileDetail {
   const sections: FileSection[] = Array.from({ length: 318 }, (_, i) => {
     const seq = i + 1;
@@ -46,6 +63,7 @@ export function buildStressFile(): LibraryFileDetail {
       page_to: i % 3 === 0 ? page + 1 : page,
       document_index: i < 160 ? 0 : 1,
       content_md: content,
+      ...OWNERS[i % OWNERS.length],
     };
   });
   const content_md = sections.map((s) => s.content_md).join("\n\n");

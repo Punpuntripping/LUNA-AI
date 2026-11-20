@@ -835,3 +835,30 @@ for such a file.
   newest copy is the one shown, so the advice disappears from the library card once the file is
   re-attached (it stays on the old item inside its conversation).
 - Mobile app: not done (the mobile attachment view does not read the new field yet).
+
+### Rebase, renumbering, and the section owner — 2026-11-20
+
+- **Rebased onto master `642cb6a`** (seg-v5.2 and the artifact editor change), no conflicts; 631
+  segmenter / delivery / helper / file tests pass on the rebased branch. A backup tag of the old tip
+  exists locally: `backup/my-files-before-rebase`.
+- **Migrations renumbered** because master took 220 (`220_attachment_segment_owner.sql`):
+  `221_user_files.sql` (APPLIED on prod 2026-11-19 under its old number 220; SQL unchanged),
+  `222_user_files_backfill_and_sync.sql`, `223_user_files_dependents.sql`; the contract step is 224.
+  **Everywhere this plan and `my_files_phase2.md` say 220 / 221 / 222 / 223 for the files migrations,
+  read 221 / 222 / 223 / 224.** The local migration test passes 108 of 108 with the new numbers.
+- **Section owner (owner 2026-11-20: "make sure to have its place in the frontend").** seg-v5.2 is live
+  on prod (3 maps, 63 sections with an owner, 4 with `brought_by`). `GET /files/{id}` now returns
+  `owner_class`, `owner`, `brought_by` per section (null on older maps and for `unknown`). In the opened
+  file each section shows, under its title, a tag with the document's own role words («المدعى عليه
+  الثاني», «الخبير»), tinted by side (claimant side · respondent side · whoever decides or issues ·
+  everyone else), and «قدّمه: …» when the map names who filed it. A filter by owner appears above the
+  sections when the file has two or more owner classes. «بيانات المستند» sections keep only their own
+  tag. Arabic names of the 20 owner classes are first drafts in `lib/contracts/files.ts`
+  (`SECTION_OWNER_CLASS_LABELS`) for the owner to approve.
+- Not verified on real documents here: the local model keys no longer work (see below), so the visual
+  check used the preview's generated file with invented owners. The 3 real seg-v5.2 maps on prod belong
+  to other users.
+- **Seen while testing, unrelated to this work:** the local Baseten key answers HTTP 402 ("check your
+  current payment status"). On prod, since 2026-11-20 11:02 Riyadh, the tier_2 flash agents (memory
+  writer, summarizer, responder, style profiler, compactor) are being served by the Alibaba fallback
+  (`deepseek-v4-flash-0731`, 38 calls by 14:30) instead of Baseten. Reported to the owner.
