@@ -902,3 +902,54 @@ turned on from Railway).
    conversation-items response (the owner's own data).
 7. The preview's client code is still bundled into a production build (synthetic data only): strip the
    two preview commits before merge if that matters.
+
+### Re-segmentation of every file (seg-v5.2) — checked 2026-11-20
+
+Another session re-segmented every eligible file on prod (284 jobs, 381 files, $1.27, no user charged).
+Verified read-only the same evening:
+
+- 854 live files, 651 with text. **All 243 files over 5,000 chars have an up-to-date seg-v5.2 map** (0
+  missing, 0 stale). Of the 408 smaller files with text, 138 have a map (the 41 bundles of small files
+  sent together); the other 270 are below the segmenter's threshold and open as full text, by design.
+- 8,801 sections; 6,044 are shown (the rest are letterheads and repeats); of the 5,045 shown
+  non-metadata sections 5,023 carry an owner (99.6%); 533 sections name who brought them; none lacks a
+  title. Every owner class present is one of the 20 the web has a name for.
+- 2 maps hold nothing but letterheads and repeats: they open as full text and, after the contract-review
+  fix, their cards do not claim sections. Largest map 263 sections, longest section 33,503 chars — inside
+  what the viewer was stress-tested with (318 / 32k).
+- The cost ledger has 0 segmenter rows in the run's window (158 other rows): no user was charged.
+- 5 seg-v5.1 maps remain, all on deleted files.
+- **The largest library through the backend's real code, with no local additions:** 120 files, all typed,
+  67 open by sections (was 1 two days ago), 754 shown non-metadata sections — every one with an owner —
+  56 with «قدّمه», 6 multi-document files. The owner tags, «قدّمه» and the owner filter were then checked
+  in the preview on real files (the earlier check had used invented owners only).
+- The local migration test's seed (80 maps / 2,682 sections) is now smaller than prod (386 / 8,800+).
+  222 does not copy maps or sections, and 223 only re-points their foreign keys, so the measured lock
+  times still hold; re-seed before running 223 for real if exact timings matter.
+
+### Real end-to-end turn through the branch code — 2026-11-20 (deploy blocker 1 cleared)
+
+Run in-process on the dev machine with the branch at `6c80af1`, as the main test account, against prod,
+with production's segmentation switches on and BOTH `USER_FILES_*` switches off (the first deploy's
+state); `MY_FILES_ENABLED` on for the process only. Two invented documents (a made-up judgment of about
+5,400 chars, a made-up one-page notice) uploaded by the real upload code — one single-request, one
+init → storage → finalize. Conversation `5253284b-76ea-4860-ad92-49add23d8712` (left on the test account).
+
+- Turn 1 («لخّص لي المرفقين في نقاط موجزة.», both attached): 67.5 s, no error event, a 1,710-char answer.
+- Judgment: 5,745 chars extracted from 4 pages (`ocr_chars` = text length), 4 page rows, summary written,
+  title replaced, type `judgment`, seg-v5.2 map made by the helper frame (31 sections, 29 shown, all with
+  an owner), WI-1, linked to the message. Notice: 592 chars, 1 page, summary, type `letter`, no map (a
+  small file sent with a large one — by design).
+- Same-file check: no proposal before the message was sent (nothing extracted yet); after it, the
+  judgment is proposed with `same_conversation: true`.
+- New routes through the real routers: status 200 `{enabled: true}`; list 200 (both files present, the
+  judgment's card: type, 4 pages, has sections, original available); opened file 200 with the full text
+  and 29 sections, every one with an owner and none carrying the internal label or rating; pane list 200
+  with `summary_preview` on the attachments; an unknown id 404.
+- Turn 2 (asks for the amount ruled, quoted verbatim): 11.9 s, no error, the answer names the invented
+  company and the exact amount — the agents read the file's text through the changed loaders.
+- Ledger: 7 rows for the conversation (OCR 2, attachment summarizer 2, router 2, segmenter 1), all ok.
+- `user_files` still has 0 rows; the log holds no warning from the new code.
+
+Not covered by this run: the browser → HTTP path against a deployed backend, scheduled jobs (retention
+sweep, upload reconciler), Redis, and the `USER_FILES_*` switches on (possible only after 222).
