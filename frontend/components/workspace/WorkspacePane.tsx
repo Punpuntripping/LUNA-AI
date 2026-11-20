@@ -10,9 +10,8 @@ import {
   useConversationWorkspace,
 } from "@/hooks/use-workspace";
 import { useConversationDetail } from "@/hooks/use-conversations";
-import { useLibraryFile } from "@/hooks/use-files";
+import { useFilesEnabled, useLibraryFile } from "@/hooks/use-files";
 import { isDemoConversation } from "@/hooks/use-demo-conversation";
-import { MY_FILES_ENABLED } from "@/lib/features";
 import { FileViewer } from "@/components/files/FileViewer";
 import { PaneFileList } from "@/components/files/PaneFileList";
 import { useFilesUi } from "@/components/files/files-ui";
@@ -57,7 +56,7 @@ interface WorkspacePaneProps {
  * | convo_context   | ConvoContextViewer    |
  * | references      | ReferencesRenderer    |
  *
- * «الملفات» (``MY_FILES_ENABLED``, my_files.md §3.1): the pane is titled
+ * «الملفات» (``useFilesEnabled()``, my_files.md §3.1): the pane is titled
  * «المخرجات» and list mode gets two tabs with counts — «العناصر» (every
  * non-attachment kind, grouped by ``WorkspaceList`` as before) and «الملفات»
  * (attachments as file cards, newest first). The tab follows the item the app
@@ -93,7 +92,9 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const isDemo = isDemoConversation(convData?.conversation);
 
   const inDetailMode = openItemId !== null;
-  const filesOn = MY_FILES_ENABLED;
+  // On for THIS user only (build flag + GET /files/status); loading or a
+  // failed status call keeps the pane exactly as it was.
+  const filesOn = useFilesEnabled();
   const { showUpcoming } = useFilesUi();
 
   // --- «العناصر» / «الملفات» (flag on) -------------------------------------
@@ -263,7 +264,7 @@ function PaneHeader({
   inDetailMode: boolean;
   onBack: () => void;
   onClose: () => void;
-  /** List-mode title: «العناصر», or «المخرجات» with ``MY_FILES_ENABLED``. */
+  /** List-mode title: «العناصر», or «المخرجات» when the feature is on. */
   title: string;
   closeLabel: string;
 }) {

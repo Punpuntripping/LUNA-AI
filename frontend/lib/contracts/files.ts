@@ -671,3 +671,112 @@ export function fileMatchQuestionText(
   const date = p.date ? ` · ${p.date}` : "";
   return `${p.lead} «${p.title}»${wi}${date} — ${p.ask}`;
 }
+
+// ------------------------------------------
+// Per-user switch — GET /files/status
+// ------------------------------------------
+
+/**
+ * `GET /files/status` — is «الملفات» on for the caller? Always 200 for a
+ * signed-in user (never 404), `private, no-store`, reads no file data. A build
+ * can carry the UI while the backend's `MY_FILES_USERS` limits the feature to
+ * some users; the web shows nothing of it unless this says `true`.
+ */
+export interface FilesStatusResponse {
+  enabled: boolean;
+}
+
+// ------------------------------------------
+// Same-file approval in the attach flow (plan §3.8, D12)
+// ------------------------------------------
+
+/**
+ * The `POST /files/match` body for a picked file — exactly the three values
+ * the upload's `/init` sends, plus the conversation. `null` when there is
+ * nothing to ask: no conversation yet (a brand-new chat holds no files), or a
+ * file without a name or type.
+ */
+export function fileMatchRequestFor(
+  file: { name: string; size: number; type: string },
+  conversationId: string | null | undefined,
+): FileMatchRequest | null {
+  if (!conversationId || !file.name || !file.type) return null;
+  return {
+    filename: file.name,
+    size_bytes: file.size,
+    mime_type: file.type,
+    conversation_id: conversationId,
+  };
+}
+
+/** Where the NEW upload stands when the answer is applied. */
+export type MatchedUploadStatus = "queued" | "uploading" | "completed" | "failed" | "cancelled";
+
+/**
+ * What to do with the new upload once the existing file is used instead:
+ * - `cancel_upload` — still uploading and its session id is known: cancel it.
+ * - `cancel_upload_once_started` — still starting (no session id yet): cancel
+ *   it the moment `/init` returns (cancelling earlier would leave the session
+ *   row that `/init` is about to create).
+ * - `delete_new_item` — it already finished: delete the new item.
+ * - `none` — it failed / was cancelled: nothing left behind.
+ */
+export type MatchedUploadCleanup =
+  | "none"
+  | "cancel_upload"
+  | "cancel_upload_once_started"
+  | "delete_new_item";
+
+export interface MatchedUploadPlan {
+  /** Point the chip (or the pane) at the existing item. */
+  useExisting: boolean;
+  cleanup: MatchedUploadCleanup;
+}
+
+const KEEP_NEW: MatchedUploadPlan = { useExisting: false, cleanup: "none" };
+
+/**
+ * The decision for ONE picked file, given the match, the user's answer and the
+ * new upload's state. Nothing changes without approval: no match, no answer
+ * (popup closed, message sent first) or «رفع نسخة جديدة» → the new upload
+ * stays exactly as today. Phase 1b attaches only a copy in the SAME
+ * conversation (`same_conversation`); a match that IS the new upload is
+ * ignored.
+ */
+export function planMatchedUpload(input: {
+  match: Pick<FileMatch, "item_id" | "same_conversation"> | null;
+  answer: FileMatchDecision | null;
+  upload: { status: MatchedUploadStatus; itemId: string | null };
+}): MatchedUploadPlan {
+  const { match, answer, upload } = input;
+  if (!match || !match.same_conversation) return KEEP_NEW;
+  if (answer !== "use_existing") return KEEP_NEW;
+  if (upload.itemId && upload.itemId === match.item_id) return KEEP_NEW;
+  switch (upload.status) {
+    case "completed":
+      return { useExisting: true, cleanup: upload.itemId ? "delete_new_item" : "none" };
+    case "queued":
+    case "uploading":
+      return {
+        useExisting: true,
+        cleanup: upload.itemId ? "cancel_upload" : "cancel_upload_once_started",
+      };
+    case "failed":
+    case "cancelled":
+      return { useExisting: true, cleanup: "none" };
+  }
+}
+
+/**
+ * A late event from an upload that was ALREADY replaced by the existing file:
+ * `/init` returning hands over the session id to cancel; a finalize that won
+ * the race against the cancel leaves an item to delete; anything else left
+ * nothing behind.
+ */
+export function replacedUploadCleanup(
+  event: "started" | "completed" | "failed" | "cancelled",
+): Exclude<MatchedUploadCleanup, "cancel_upload_once_started"> {
+  if (event === "started") return "cancel_upload";
+  if (event === "completed") return "delete_new_item";
+  return "none";
+}

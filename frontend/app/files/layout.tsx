@@ -9,9 +9,10 @@ import { SidebarPageShell } from "@/components/shell/SidebarPageShell";
  *
  * Private by default: `/files` is not in AuthGuard's PUBLIC_PREFIXES.
  *
- * Flag off → every /files URL is not-found. The check lives in this layout,
- * above `[itemId]/loading.tsx`, so it runs before that Suspense boundary starts
- * streaming.
+ * Build flag off → every /files URL is not-found. The check lives in this
+ * layout, above `[itemId]/loading.tsx`, so it runs before that Suspense
+ * boundary starts streaming. The per-user check (`GET /files/status`) is the
+ * client `FilesFeatureGate` in each page.
  */
 // Next.js App Router requires a default export for layout files
 // eslint-disable-next-line import/no-default-export

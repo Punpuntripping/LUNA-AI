@@ -54,6 +54,16 @@ import {
   runResumableUpload,
   type ImperativeUploadHandle,
 } from "@/hooks/use-resumable-upload";
+import { fileKeys, useFilesEnabled } from "@/hooks/use-files";
+import { useFileMatchQueue } from "@/hooks/use-file-match-queue";
+import { FileMatchDialog } from "@/components/files/FileMatchDialog";
+import {
+  fileMatchRequestFor,
+  planMatchedUpload,
+  replacedUploadCleanup,
+  type FileMatch,
+  type FileMatchDecision,
+} from "@/lib/contracts";
 import type {
   LibraryItemRef,
   PendingBlog,
@@ -138,6 +148,14 @@ export function ChatInput({
   // can abort the matching tus upload. The handle is dropped once the
   // upload terminates (completed/failed/cancelled).
   const uploadHandlesRef = useRef<Map<string, ImperativeUploadHandle>>(new Map());
+  // «الملفات» same-file approval (my_files.md §3.8, D12) — all of it inert
+  // unless the feature is on for this user. `replacedRef`: chips the user
+  // pointed at an EXISTING item («استخدام الموجود»), whose new upload must be
+  // cleaned up whenever its next event lands. `closedKeysRef`: chips already
+  // sent — a match answer landing after the send never opens the popup.
+  const filesEnabled = useFilesEnabled();
+  const replacedRef = useRef<Set<string>>(new Set());
+  const closedKeysRef = useRef<Set<string>>(new Set());
   const qc = useQueryClient();
   const router = useRouter();
   // The ONE shared demo conversation is read-only for everyone (D2). Every
@@ -181,6 +199,87 @@ export function ChatInput({
   );
   const pendingTemplate = useChatStore((s) => s.pendingTemplate);
   const setPendingTemplate = useChatStore((s) => s.setPendingTemplate);
+
+  // The new upload of a replaced chip left something behind: cancel its
+  // session, or delete its finished item. Then refresh the pane and «الملفات»
+  // so no orphan shows. Best-effort — a failure leaves what is there today.
+  const cleanUpReplacedUpload = useCallback(
+    (
+      pendingId: string,
+      cleanup: "none" | "cancel_upload" | "delete_new_item",
+      newItemId: string | null,
+    ) => {
+      const refresh = () => {
+        if (conversationId) {
+          void qc.invalidateQueries({
+            queryKey: workspaceKeys.byConversation(conversationId),
+          });
+        }
+        // The library list only — never the once-per-session status query.
+        void qc.invalidateQueries({ queryKey: fileKeys.list() });
+      };
+      if (cleanup === "cancel_upload") {
+        const handle = uploadHandlesRef.current.get(pendingId);
+        uploadHandlesRef.current.delete(pendingId);
+        if (handle) handle.cancel();
+        else if (newItemId) {
+          workspaceApi.cancelAttachment(newItemId).catch(() => undefined);
+        }
+        // The cancel call itself runs inside the handle; refresh once it has
+        // had time to land as well as now.
+        refresh();
+        window.setTimeout(refresh, 1500);
+      } else if (cleanup === "delete_new_item" && newItemId) {
+        workspaceApi.delete(newItemId).catch(() => undefined).finally(refresh);
+      }
+    },
+    [conversationId, qc],
+  );
+
+  // One answer from the approval popup, applied to one chip. The decision is
+  // `planMatchedUpload` (lib/contracts/files.ts, unit-tested); this only
+  // carries it out. «استخدام الموجود» re-points the chip at the existing item
+  // through the same field every ready attachment uses (`itemId` with
+  // `uploadStatus: "completed"` → `attachment_ids` in use-chat.ts).
+  const applyMatchDecision = useCallback(
+    (pendingId: string, match: FileMatch, decision: FileMatchDecision) => {
+      const pf = useChatStore.getState().pendingFiles.find((f) => f.id === pendingId);
+      if (!pf || closedKeysRef.current.has(pendingId)) return;
+      const plan = planMatchedUpload({
+        match,
+        answer: decision,
+        upload: { status: pf.uploadStatus, itemId: pf.itemId },
+      });
+      if (!plan.useExisting) return;
+
+      replacedRef.current.add(pendingId);
+      updatePendingFile(pendingId, {
+        itemId: match.item_id,
+        uploadStatus: "completed",
+        uploadProgress: 1,
+        errorMessage: null,
+        displayName: match.title,
+        // A reused file is not read again: no pages to count against OCR.
+        pageCount: undefined,
+      });
+      // `cancel_upload_once_started` waits for /init (see onInitialized).
+      if (plan.cleanup === "cancel_upload" || plan.cleanup === "delete_new_item") {
+        cleanUpReplacedUpload(pendingId, plan.cleanup, pf.itemId);
+      }
+    },
+    [updatePendingFile, cleanUpReplacedUpload],
+  );
+
+  const matchQueue = useFileMatchQueue({
+    enabled: filesEnabled,
+    isStillPending: (key) =>
+      !closedKeysRef.current.has(key) &&
+      useChatStore.getState().pendingFiles.some((f) => f.id === key),
+    onDecision: applyMatchDecision,
+  });
+  const checkForMatch = matchQueue.check;
+  const dismissMatchPopup = matchQueue.dismissAll;
+  const dropMatchQuestion = matchQueue.drop;
 
   // Block send while any attachment is still uploading (or a pasted blog is
   // still importing). Failed / cancelled entries don't block — the user can
@@ -239,6 +338,8 @@ export function ChatInput({
     clearPendingBlogs();
     clearPendingLibraryItems();
     setPendingTemplate(null);
+    // An open same-file popup belongs to the chips just cleared.
+    dismissMatchPopup();
     // A next-step chip pasted in another conversation must not attribute
     // this conversation's next send to it.
     useChatStore.getState().clearPastedNextStep();
@@ -248,6 +349,7 @@ export function ChatInput({
     clearPendingBlogs,
     clearPendingLibraryItems,
     setPendingTemplate,
+    dismissMatchPopup,
   ]);
 
   // Analytics `conversation_opened` (product_analytics §3b). The composer is
@@ -379,6 +481,12 @@ export function ChatInput({
 
     setValidationError(null);
 
+    // Sending never waits on the same-file popup: an open one counts as
+    // «رفع نسخة جديدة», and a match answer that lands later is ignored for
+    // every chip this send carries.
+    for (const f of useChatStore.getState().pendingFiles) closedKeysRef.current.add(f.id);
+    dismissMatchPopup();
+
     // `chat_send` — t₀ for the whole run, and USER SUBMIT ONLY (T14). Fired
     // here, BEFORE the POST, so a send the quota gate refuses is still
     // measured; and never from use-chat's SSE (re)connect path, or every
@@ -419,6 +527,7 @@ export function ChatInput({
     pendingBlogs.length,
     pendingLibraryItems.length,
     setPendingTemplate,
+    dismissMatchPopup,
   ]);
 
   // The free week was claimed from a refused send: finish that send through the
@@ -469,14 +578,22 @@ export function ChatInput({
    */
   const handleRemoveFile = useCallback(
     (id: string) => {
+      // A chip pointed at an existing file: its own upload is already being
+      // cleaned up (or will be, the moment /init returns) — removing the chip
+      // just un-attaches the existing file and never touches that item.
+      if (replacedRef.current.has(id)) {
+        removePendingFile(id);
+        return;
+      }
       const handle = uploadHandlesRef.current.get(id);
       if (handle) {
         handle.cancel();
         uploadHandlesRef.current.delete(id);
       }
       removePendingFile(id);
+      dropMatchQuestion(id);
     },
-    [removePendingFile],
+    [removePendingFile, dropMatchQuestion],
   );
 
   // The free week, offered the moment the attached PDFs run past the free plan
@@ -504,7 +621,7 @@ export function ChatInput({
   // new chat). Status flips through the chat-store via updatePendingFile so the
   // AttachmentUploadCard re-renders with live progress.
   const startUploads = useCallback(
-    (files: File[]) => {
+    (files: File[], options: { matchExisting?: boolean } = {}) => {
       if (!conversationId || files.length === 0) return;
 
       for (const file of files) {
@@ -526,19 +643,28 @@ export function ChatInput({
 
         addPendingFile(pendingFile);
 
+        // Every guard below is a no-op unless this chip was replaced by an
+        // existing file — always the case with «الملفات» off.
+        const replaced = () => replacedRef.current.has(pendingId);
         const handle = runResumableUpload(
           { kind: "attachment", conversationId },
           file,
           qc,
           {
             onInitialized: (itemId) => {
+              if (replaced()) {
+                cleanUpReplacedUpload(pendingId, replacedUploadCleanup("started"), itemId);
+                return;
+              }
               updatePendingFile(pendingId, { itemId, uploadStatus: "uploading" });
             },
             onPageCount: (pages) => {
+              if (replaced()) return;
               updatePendingFile(pendingId, { pageCount: pages });
               maybeOfferFreeWeek();
             },
             onProgress: (s) => {
+              if (replaced()) return;
               if (s.status === "uploading" || s.status === "finalizing") {
                 updatePendingFile(pendingId, {
                   uploadStatus: "uploading",
@@ -548,6 +674,15 @@ export function ChatInput({
             },
             onCompleted: (row) => {
               uploadHandlesRef.current.delete(pendingId);
+              if (replaced()) {
+                // Finalize won the race against the cancel: delete the copy.
+                cleanUpReplacedUpload(
+                  pendingId,
+                  replacedUploadCleanup("completed"),
+                  "item_id" in row ? row.item_id : null,
+                );
+                return;
+              }
               updatePendingFile(pendingId, {
                 uploadStatus: "completed",
                 uploadProgress: 1,
@@ -559,6 +694,7 @@ export function ChatInput({
             },
             onFailed: (error) => {
               uploadHandlesRef.current.delete(pendingId);
+              if (replaced()) return;
               updatePendingFile(pendingId, {
                 uploadStatus: "failed",
                 errorMessage: error,
@@ -572,9 +708,23 @@ export function ChatInput({
           },
         );
         uploadHandlesRef.current.set(pendingId, handle);
+
+        // Same file already here? Asked BESIDE the upload, never before it:
+        // the upload is not delayed, and a failed / slow answer is dropped.
+        if (options.matchExisting) {
+          checkForMatch(pendingId, fileMatchRequestFor(file, conversationId));
+        }
       }
     },
-    [conversationId, addPendingFile, updatePendingFile, maybeOfferFreeWeek, qc],
+    [
+      conversationId,
+      addPendingFile,
+      updatePendingFile,
+      maybeOfferFreeWeek,
+      qc,
+      cleanUpReplacedUpload,
+      checkForMatch,
+    ],
   );
 
   // New-chat handoff: when files were picked before a conversation existed, the
@@ -920,7 +1070,7 @@ export function ChatInput({
         return;
       }
 
-      startUploads(picked);
+      startUploads(picked, { matchExisting: true });
     },
     [pendingFiles.length, conversationId, onRequireConversation, content, startUploads],
   );
@@ -1176,6 +1326,9 @@ export function ChatInput({
         )}
       </div>
       </div>
+      {filesEnabled && (
+        <FileMatchDialog key={matchQueue.dialogKey} {...matchQueue.dialogProps} />
+      )}
       {pdfOfferPages !== null && (
         <QuotaUpgradeDialog
           open

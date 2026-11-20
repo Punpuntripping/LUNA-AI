@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { FilesPage } from "@/components/files/FilesPage";
+import { FilesFeatureGate } from "@/components/files/FilesFeatureGate";
 
 export const metadata: Metadata = {
   title: "الملفات — ريحان",
@@ -21,5 +22,10 @@ export const revalidate = 0;
 // Next.js App Router requires a default export for page files.
 // eslint-disable-next-line import/no-default-export
 export default function Page() {
-  return <FilesPage />;
+  // Per-user gate (GET /files/status); the build flag is checked in the layout.
+  return (
+    <FilesFeatureGate>
+      <FilesPage />
+    </FilesFeatureGate>
+  );
 }

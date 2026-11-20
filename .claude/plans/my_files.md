@@ -778,9 +778,25 @@ then 222. Rollback: flags off, redeploy, rollbacks 222 → 221 → 220.
   `USER_FILES_*` flags still read as off whatever their value.
 - **Local commits on `feat/my-files` (not pushed):** `0eeac93` Phase 1; `e24e22f` the dev-only preview
   page with the `AuthGuard` development exemption, kept separate so it can be dropped before merge.
-  Phase 2 is committed after the account-deletion fix lands in 221.
+  `403c81e` Phase 2 (code, migrations 220-222, spec), committed after the account-deletion fix landed in
+  221 and the local suite passed 108 of 108 from zero. The branch has no upstream set, so a plain
+  push cannot land on master by accident.
 - **Owner approved** fixing the `purge_user_data` / `task_state` order inside 221 (done by a second
   agent pass, re-tested locally).
 
 **Next gates:** 221 on prod (quiet window; dry run first; capture agent digests before and after), then
 code deploy with flags off, then the read flag, the write flag, and 222.
+
+### Finishing Phase 1 for release — 2026-11-20
+
+- **Per-user gate (closes §12 "Left" item 2).** New route `GET /api/v1/files/status` →
+  `200 { "enabled": boolean }` for any signed-in user (never 404, reads no file data). The web shows the
+  «الملفات» row, the page, the pane tabs and the same-file popup only when the build flag is on AND this
+  route answers `enabled: true`; while loading or on error the app looks as it does today. A staged
+  rollout (`MY_FILES_USERS` = the test account) therefore shows nothing to other users.
+  Contract addition to §11: `interface FilesStatusResponse { enabled: boolean }`.
+- **Same-file popup wired into the attach flow (Phase 1b, web half; closes item 3).** On a file pick in
+  an existing conversation the composer asks `POST /files/match`; the upload is never delayed; a match
+  opens the approval popup; «استخدام الموجود» cancels (or removes) the new upload and attaches the
+  existing item through the composer's existing attach-an-item path; «رفع نسخة جديدة», closing, or
+  sending without answering keeps today's behaviour.

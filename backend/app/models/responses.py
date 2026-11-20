@@ -472,6 +472,11 @@ class FileMatchResponse(BaseModel):
     match: Optional[FileMatch] = None
 
 
+class FilesStatusResponse(BaseModel):
+    """GET /api/v1/files/status — whether «الملفات» is on for the caller."""
+    enabled: bool
+
+
 # ── Preferences ──────────────────────────────────────────
 
 class PreferencesResponse(BaseModel):

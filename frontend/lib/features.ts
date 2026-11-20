@@ -31,3 +31,7 @@ export const CASES_ENABLED = false;
  * `/files` endpoints.
  */
 export const MY_FILES_ENABLED = process.env.NEXT_PUBLIC_MY_FILES_ENABLED === "true";
+// ⚠ This says only that the UI was SHIPPED. The backend may still limit the
+// feature to some users (`MY_FILES_USERS`), so nothing user-visible reads this
+// constant directly: components use `useFilesEnabled()` (hooks/use-files),
+// which adds `GET /files/status` and is false until that answers `true`.

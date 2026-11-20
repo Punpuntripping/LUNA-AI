@@ -37,7 +37,11 @@ export interface FileMatchDialogItem {
 
 export interface FileMatchDialogProps {
   open: boolean;
-  /** One question per matched file, in this order. At least one. */
+  /**
+   * One question per matched file, in this order. May GROW while the popup is
+   * open (a second file matched in quick succession joins as one more
+   * question) and may SHRINK (a file whose chip was removed leaves).
+   */
   items: FileMatchDialogItem[];
   /**
    * Fired once per showing, keyed by `FileMatchDialogItem.key`: on «تأكيد»
@@ -58,15 +62,15 @@ export interface FileMatchDialogProps {
  * and the answer is not a chat message. The upload keeps going while this is
  * open; the caller cancels it only for «استخدام الموجود».
  *
- * Mount it with a `key` per set of picked files so a new set starts clean.
+ * Mount it with a `key` per showing so a new set starts clean.
  * Centred dialog from `sm` up, bottom sheet on a phone.
  */
 export function FileMatchDialog({ open, items, onResolve }: FileMatchDialogProps) {
   const total = items.length;
-  const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<(FileMatchDecision | null)[]>(() =>
-    items.map(() => null),
-  );
+  const [stepState, setStep] = useState(0);
+  // Keyed by item, not by position, so the list can grow or shrink while open.
+  const [answers, setAnswers] = useState<Record<string, FileMatchDecision>>({});
+  const step = Math.min(stepState, Math.max(total - 1, 0));
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const advanceTimerRef = useRef<number | null>(null);
@@ -94,11 +98,11 @@ export function FileMatchDialog({ open, items, onResolve }: FileMatchDialogProps
 
   if (total === 0) return null;
 
-  const current = items[Math.min(step, total - 1)];
+  const current = items[step];
   const parts = fileMatchQuestionParts(current.match);
-  const selection = answers[step] ?? null;
+  const selection = answers[current.key] ?? null;
   const isLast = step === total - 1;
-  const answeredCount = answers.filter((a) => a !== null).length;
+  const answeredCount = items.filter((item) => answers[item.key] !== undefined).length;
   const allAnswered = answeredCount === total;
 
   const goTo = (next: number) => {
@@ -108,7 +112,8 @@ export function FileMatchDialog({ open, items, onResolve }: FileMatchDialogProps
 
   const pick = (value: FileMatchDecision) => {
     cancelAdvance();
-    setAnswers((prev) => prev.map((a, i) => (i === step ? value : a)));
+    const key = current.key;
+    setAnswers((prev) => ({ ...prev, [key]: value }));
     if (!isLast) {
       advanceTimerRef.current = window.setTimeout(() => {
         advanceTimerRef.current = null;
@@ -117,12 +122,10 @@ export function FileMatchDialog({ open, items, onResolve }: FileMatchDialogProps
     }
   };
 
-  const resolve = (decided: (FileMatchDecision | null)[]) => {
+  const resolve = (decided: Record<string, FileMatchDecision>) => {
     cancelAdvance();
     const out: Record<string, FileMatchDecision> = {};
-    items.forEach((item, i) => {
-      out[item.key] = decided[i] ?? "upload_new";
-    });
+    for (const item of items) out[item.key] = decided[item.key] ?? "upload_new";
     onResolve(out);
   };
 
@@ -147,7 +150,7 @@ export function FileMatchDialog({ open, items, onResolve }: FileMatchDialogProps
       open={open}
       onOpenChange={(next) => {
         // Closing without «تأكيد» = «رفع نسخة جديدة» for every file.
-        if (!next) resolve(items.map(() => null));
+        if (!next) resolve({});
       }}
     >
       <DialogContent
@@ -181,7 +184,7 @@ export function FileMatchDialog({ open, items, onResolve }: FileMatchDialogProps
                     key={item.key}
                     type="button"
                     onClick={() => goTo(i)}
-                    aria-label={`الملف ${i + 1}${answers[i] !== null ? " (تمت الإجابة)" : ""}`}
+                    aria-label={`الملف ${i + 1}${answers[item.key] !== undefined ? " (تمت الإجابة)" : ""}`}
                     aria-current={i === step ? "step" : undefined}
                     className="group flex-1 rounded-full py-2 focus-visible:outline-none"
                   >
@@ -189,7 +192,7 @@ export function FileMatchDialog({ open, items, onResolve }: FileMatchDialogProps
                       className={cn(
                         "block h-1.5 rounded-full transition-colors",
                         "group-focus-visible:ring-2 group-focus-visible:ring-ring group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
-                        answers[i] !== null
+                        answers[item.key] !== undefined
                           ? "bg-primary"
                           : i === step
                             ? "bg-primary/40"

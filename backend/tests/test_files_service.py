@@ -730,6 +730,21 @@ def test_routes_404_when_the_feature_is_off(client_for):
     assert sb.selects == [] and sb.updates == []
 
 
+def test_status_route_is_always_200_and_reads_no_file(client_for):
+    sb = FakeSupabase(workspace_items=[att()], conversations=conversations())
+    for kwargs, want in (
+        ({"enabled": False}, False),
+        ({"enabled": True}, True),
+        ({"enabled": True, "users": OTHER_USER}, False),
+        ({"enabled": True, "users": f"{OTHER_USER},{USER}"}, True),
+    ):
+        res = client_for(sb, **kwargs).get("/api/v1/files/status")
+        assert res.status_code == 200, res.text
+        assert res.json() == {"enabled": want}
+        assert res.headers["Cache-Control"] == "private, no-store"
+    assert sb.selects == [] and sb.updates == []
+
+
 def test_routes_list_detail_hide_and_match(client_for):
     mine = att(conv=CONV_A, wi_seq=2)
     theirs = att(user=OTHER_USER, conv=CONV_OTHER, filename="غيري.pdf")

@@ -23,8 +23,9 @@ import { CaseList } from "@/components/sidebar/CaseList";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { CASES_ENABLED, MY_FILES_ENABLED } from "@/lib/features";
+import { CASES_ENABLED } from "@/lib/features";
 import { useAppNavOverride } from "@/components/shell/app-nav-override";
+import { useFilesEnabled } from "@/hooks/use-files";
 
 interface NavItemProps {
   icon: LucideIcon;
@@ -67,8 +68,11 @@ export function Sidebar() {
   const routePathname = usePathname();
   const pathname = navOverride?.pathname ?? routePathname;
   // «الملفات» (my_files.md, owner 2026-11-19): two rows above the collections
-  // and the collections relabelled. Off → the nav exactly as before.
-  const filesNav = navOverride?.filesNav ?? MY_FILES_ENABLED;
+  // and the collections relabelled — only when the feature is on for THIS user
+  // (`useFilesEnabled`: build flag + `GET /files/status`). Off, loading or a
+  // failed status call → the nav exactly as before.
+  const filesEnabled = useFilesEnabled();
+  const filesNav = navOverride?.filesNav ?? filesEnabled;
   const { isOpen, activeTab, setActiveTab, setOpen, setSelectedConversation } =
     useSidebarStore();
   // Two readings of the same breakpoint, deliberately:

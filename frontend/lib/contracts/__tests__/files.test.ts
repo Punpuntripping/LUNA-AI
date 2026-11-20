@@ -25,6 +25,9 @@ import {
   groupSectionsByDocument,
   libraryFileCardModel,
   normalizeArabicSearchText,
+  fileMatchRequestFor,
+  planMatchedUpload,
+  replacedUploadCleanup,
   searchLibraryFiles,
   sortFilesNewestFirst,
   workspaceAttachmentCardModel,
@@ -435,4 +438,59 @@ test("same-file approval: two options, no «أخرى», the question text", () =
 
   const noDate = fileMatchQuestionText({ ...other, created_at: "?" });
   assert.equal(noDate, "وجدنا هذا الملف ضمن ملفاتك: «عقد» — هل نستخدمه؟");
+});
+
+// ---------------------------------------------------------------- attach flow (§3.8)
+
+test("fileMatchRequestFor: the init values + conversation; nothing to ask without a conversation", () => {
+  const file = { name: "scan.pdf", size: 1234, type: "application/pdf" };
+  assert.deepEqual(fileMatchRequestFor(file, "c1"), {
+    filename: "scan.pdf",
+    size_bytes: 1234,
+    mime_type: "application/pdf",
+    conversation_id: "c1",
+  });
+  assert.equal(fileMatchRequestFor(file, null), null, "brand-new chat: no id yet");
+  assert.equal(fileMatchRequestFor(file, ""), null);
+  assert.equal(fileMatchRequestFor({ ...file, type: "" }, "c1"), null);
+  assert.equal(fileMatchRequestFor({ ...file, name: "" }, "c1"), null);
+});
+
+const MATCH = { item_id: "old", same_conversation: true };
+
+test("planMatchedUpload: nothing changes without approval", () => {
+  const uploading = { status: "uploading" as const, itemId: "new" };
+  const keep = { useExisting: false, cleanup: "none" };
+  assert.deepEqual(planMatchedUpload({ match: null, answer: "use_existing", upload: uploading }), keep);
+  assert.deepEqual(planMatchedUpload({ match: MATCH, answer: null, upload: uploading }), keep, "closed / sent first");
+  assert.deepEqual(planMatchedUpload({ match: MATCH, answer: "upload_new", upload: uploading }), keep);
+  assert.deepEqual(
+    planMatchedUpload({ match: { ...MATCH, same_conversation: false }, answer: "use_existing", upload: uploading }),
+    keep,
+    "Phase 1b: only a copy in this conversation can be attached",
+  );
+  assert.deepEqual(
+    planMatchedUpload({ match: { ...MATCH, item_id: "new" }, answer: "use_existing", upload: uploading }),
+    keep,
+    "the match is the new upload itself",
+  );
+});
+
+test("planMatchedUpload: «استخدام الموجود» cleans the new upload by its state", () => {
+  const plan = (status: "queued" | "uploading" | "completed" | "failed" | "cancelled", itemId: string | null) =>
+    planMatchedUpload({ match: MATCH, answer: "use_existing", upload: { status, itemId } });
+  assert.deepEqual(plan("queued", null), { useExisting: true, cleanup: "cancel_upload_once_started" });
+  assert.deepEqual(plan("uploading", null), { useExisting: true, cleanup: "cancel_upload_once_started" });
+  assert.deepEqual(plan("uploading", "new"), { useExisting: true, cleanup: "cancel_upload" });
+  assert.deepEqual(plan("completed", "new"), { useExisting: true, cleanup: "delete_new_item" });
+  assert.deepEqual(plan("completed", null), { useExisting: true, cleanup: "none" });
+  assert.deepEqual(plan("failed", "new"), { useExisting: true, cleanup: "none" });
+  assert.deepEqual(plan("cancelled", null), { useExisting: true, cleanup: "none" });
+});
+
+test("replacedUploadCleanup: late events of an upload already replaced", () => {
+  assert.equal(replacedUploadCleanup("started"), "cancel_upload");
+  assert.equal(replacedUploadCleanup("completed"), "delete_new_item");
+  assert.equal(replacedUploadCleanup("failed"), "none");
+  assert.equal(replacedUploadCleanup("cancelled"), "none");
 });

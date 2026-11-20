@@ -150,7 +150,7 @@ export function AttachmentUploadCard({
       {/* Info strip: filename + size + status line. */}
       <div className="px-2.5 py-1.5 border-t bg-background/50 space-y-1">
         <p className="text-xs text-foreground truncate font-medium">
-          {file.name}
+          {file.displayName ?? file.name}
         </p>
 
         {isUploading && (

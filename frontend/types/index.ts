@@ -186,6 +186,13 @@ export interface PendingFile {
   itemId: string | null;
   /** Arabic-language error message when uploadStatus === 'failed'. */
   errorMessage: string | null;
+  /**
+   * «الملفات» same-file approval (my_files.md §3.8): set when the user chose
+   * «استخدام الموجود» — the chip then carries the EXISTING item (`itemId`) and
+   * shows its title. `name` keeps the picked file's name (its extension still
+   * labels the chip). Never set with the feature off.
+   */
+  displayName?: string;
 }
 
 /**

@@ -204,7 +204,7 @@ export function useSendMessage(): UseSendMessageReturn {
           : pf.mimeType.startsWith("image/")
             ? "image"
             : "file") as "pdf" | "image" | "file",
-        filename: pf.name,
+        filename: pf.displayName ?? pf.name,
         file_size: pf.size,
         kind: "attachment" as const,
       }));

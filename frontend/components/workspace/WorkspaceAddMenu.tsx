@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Plus,
   NotebookPen,
@@ -30,7 +31,19 @@ import {
   useCreateNote,
   useCreateReference,
   useUploadAttachment,
+  workspaceKeys,
 } from "@/hooks/use-workspace";
+import { fileKeys, useFilesEnabled } from "@/hooks/use-files";
+import { useFileMatchQueue } from "@/hooks/use-file-match-queue";
+import { FileMatchDialog } from "@/components/files/FileMatchDialog";
+import { workspaceApi } from "@/lib/api";
+import {
+  fileMatchRequestFor,
+  planMatchedUpload,
+  type FileMatch,
+  type FileMatchDecision,
+  type MatchedUploadStatus,
+} from "@/lib/contracts";
 import { useDocuments } from "@/hooks/use-documents";
 import { useChatStore } from "@/stores/chat-store";
 import { DEMO_DISABLED_HINT } from "@/hooks/use-demo-conversation";
@@ -90,6 +103,71 @@ export function WorkspaceAddMenu({
   const createReference = useCreateReference(conversationId);
   const uploadAttachment = useUploadAttachment(conversationId);
   const openWorkspaceItem = useChatStore((s) => s.openWorkspaceItem);
+  const qc = useQueryClient();
+
+  // «الملفات» same-file approval (my_files.md §3.8) for «رفع ملف» in the pane —
+  // inert unless the feature is on for this user. The pane's upload is one
+  // request (no session to cancel), so a file answered «استخدام الموجود» while
+  // it is still uploading is deleted the moment it lands; either way the pane
+  // opens the EXISTING item instead of the new copy.
+  const filesEnabled = useFilesEnabled();
+  // Per pick: the upload's state, the existing item that replaced it, and —
+  // while its question is open — whether the finished copy waits to be opened
+  // (opening it would switch the pane to detail mode and close this popup).
+  const paneUploadsRef = useRef<
+    Map<
+      string,
+      {
+        status: MatchedUploadStatus;
+        itemId: string | null;
+        replacedBy: string | null;
+        asking: boolean;
+      }
+    >
+  >(new Map());
+
+  const refreshAfterCleanup = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: workspaceKeys.byConversation(conversationId) });
+    // The library list only — never the once-per-session status query.
+    void qc.invalidateQueries({ queryKey: fileKeys.list() });
+  }, [qc, conversationId]);
+
+  const applyMatchDecision = useCallback(
+    (key: string, match: FileMatch, decision: FileMatchDecision) => {
+      const record = paneUploadsRef.current.get(key);
+      if (!record) return;
+      record.asking = false;
+      const plan = planMatchedUpload({
+        match,
+        answer: decision,
+        upload: { status: record.status, itemId: record.itemId },
+      });
+      if (!plan.useExisting) {
+        // The new copy stays — open it now if it finished while we asked.
+        if (record.status === "completed" && record.itemId) {
+          openWorkspaceItem(conversationId, record.itemId);
+        }
+        return;
+      }
+      record.replacedBy = match.item_id;
+      if (plan.cleanup === "delete_new_item" && record.itemId) {
+        workspaceApi.delete(record.itemId).catch(() => undefined).finally(refreshAfterCleanup);
+      }
+      // Still uploading: `onSuccess` below deletes the copy when it lands.
+      openWorkspaceItem(conversationId, match.item_id);
+    },
+    [conversationId, openWorkspaceItem, refreshAfterCleanup],
+  );
+
+  const matchQueue = useFileMatchQueue({
+    enabled: filesEnabled,
+    isStillPending: (key) => paneUploadsRef.current.has(key),
+    onDecision: applyMatchDecision,
+    onAsk: (key) => {
+      const record = paneUploadsRef.current.get(key);
+      if (record) record.asking = true;
+    },
+  });
 
   const isPending =
     createNote.isPending ||
@@ -121,9 +199,49 @@ export function WorkspaceAddMenu({
   function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    uploadAttachment.mutate(file, {
-      onSuccess: (item) => openWorkspaceItem(conversationId, item.item_id),
+    if (!filesEnabled) {
+      // «الملفات» off for this user: exactly as before.
+      uploadAttachment.mutate(file, {
+        onSuccess: (item) => openWorkspaceItem(conversationId, item.item_id),
+      });
+      e.target.value = "";
+      return;
+    }
+    const key = `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    paneUploadsRef.current.set(key, {
+      status: "uploading",
+      itemId: null,
+      replacedBy: null,
+      asking: false,
     });
+    // `mutateAsync`, not `mutate(…, { onSuccess })`: opening the existing item
+    // switches the pane to detail mode and unmounts this menu, and TanStack
+    // drops per-call callbacks of an unmounted observer — the copy that lands
+    // afterwards must still be deleted. The promise settles regardless.
+    uploadAttachment
+      .mutateAsync(file)
+      .then((item) => {
+        const record = paneUploadsRef.current.get(key);
+        if (record?.replacedBy) {
+          // Answered «استخدام الموجود» while this copy was uploading.
+          paneUploadsRef.current.delete(key);
+          workspaceApi.delete(item.item_id).catch(() => undefined).finally(refreshAfterCleanup);
+          return;
+        }
+        if (record) {
+          record.status = "completed";
+          record.itemId = item.item_id;
+          // Its question is open: the answer decides which item opens.
+          if (record.asking) return;
+        }
+        openWorkspaceItem(conversationId, item.item_id);
+      })
+      .catch(() => {
+        const record = paneUploadsRef.current.get(key);
+        if (record) record.status = "failed";
+      });
+    // Beside the upload, never before it; a failed or slow answer is dropped.
+    matchQueue.check(key, fileMatchRequestFor(file, conversationId));
     e.target.value = "";
   }
 
@@ -211,6 +329,10 @@ export function WorkspaceAddMenu({
           onChange={handleFileSelected}
         />
       </div>
+
+      {filesEnabled && (
+        <FileMatchDialog key={matchQueue.dialogKey} {...matchQueue.dialogProps} />
+      )}
 
       {caseId && (
         <CaseDocumentPicker

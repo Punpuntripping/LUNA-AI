@@ -2,6 +2,7 @@
 «ملفاتي» API routes -- /api/v1/files (.claude/plans/my_files.md §5, §11).
 
 Endpoints (Phase 1 + 1b):
+    GET    /files/status           is the feature on for the caller? (always 200)
     GET    /files                  the user's library (light rows)
     GET    /files/{item_id}        one file: text, full summary, sections
     DELETE /files/{item_id}        «حذف من ملفاتي» — a stamp, never a delete (204)
@@ -26,6 +27,7 @@ from backend.app.models.requests import FileMatchRequest
 from backend.app.models.responses import (
     FileMatch,
     FileMatchResponse,
+    FilesStatusResponse,
     LibraryFileDetail,
     LibraryFileListResponse,
 )
@@ -70,6 +72,23 @@ def _not_found() -> LunaHTTPException:
         detail=MSG_FILE_NOT_FOUND,
         headers={"Cache-Control": _NO_STORE},
     )
+
+
+@router.get("/files/status", response_model=FilesStatusResponse)
+async def files_status(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Is «الملفات» on for the caller? Always 200 — this is the one route that
+    never answers 404 for a signed-in user, so the web can decide whether to
+    show the sidebar row, the page and the pane tabs BEFORE calling anything
+    else (a build can carry the UI while ``MY_FILES_USERS`` limits the feature
+    to some users). Reads no file data. Declared before ``/files/{item_id}``
+    so the literal path wins."""
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    response.headers["Cache-Control"] = _NO_STORE
+    return FilesStatusResponse(enabled=files_service.my_files_enabled(user_id))
 
 
 @router.get("/files", response_model=LibraryFileListResponse)

@@ -63,6 +63,7 @@ import type {
   AnnouncementsResponse,
   FileMatchRequest,
   FileMatchResponse,
+  FilesStatusResponse,
   LibraryFileDetail,
   LibraryFileListResponse,
   OtpRequestResponse,
@@ -985,6 +986,12 @@ export const workspaceApi = {
 // -----------------------------------------------
 
 export const filesApi = {
+  /**
+   * Is «الملفات» on for the caller? Always 200 for a signed-in user. Asked once
+   * per session (`useFilesStatus`) before anything else of the feature shows.
+   */
+  status: () => api.get<FilesStatusResponse>("/files/status"),
+
   /** The library: light rows only (never `content_md`), newest first, ≤ 500. */
   list: () => api.get<LibraryFileListResponse>("/files"),
 

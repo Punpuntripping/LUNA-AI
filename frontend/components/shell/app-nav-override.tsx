@@ -6,7 +6,7 @@ import { createContext, useContext, type ReactNode } from "react";
  * A seam for rendering the REAL sidebar outside its real routes. The app never
  * provides it — `useAppNavOverride()` is `null` everywhere in production, and
  * the sidebar then reads `usePathname()`, pushes with the router and follows
- * `MY_FILES_ENABLED`, exactly as before.
+ * `useFilesEnabled()` (build flag + `GET /files/status`).
  *
  * Only the dev preview (`app/dev-preview/my-files`) provides it, to show a row
  * as active, keep the «الملفات» / «المحادثات» rows inside the preview, and draw
@@ -17,7 +17,7 @@ export interface AppNavOverride {
   pathname?: string;
   /** Replaces `router.push` for the rows («محادثة جديدة» included). */
   navigate?: (href: string) => void;
-  /** Replaces `MY_FILES_ENABLED` for the sidebar rows only. */
+  /** Replaces `useFilesEnabled()` for the sidebar rows only. */
   filesNav?: boolean;
 }
 

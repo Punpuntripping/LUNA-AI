@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { filesApi } from "@/lib/api";
+import { MY_FILES_ENABLED } from "@/lib/features";
+import { useAuthStore } from "@/stores/auth-store";
 import type {
   FileMatchRequest,
   LibraryFileListResponse,
@@ -13,9 +15,50 @@ import type {
  */
 export const fileKeys = {
   all: ["files"] as const,
+  status: (userId: string | null) => [...fileKeys.all, "status", userId] as const,
   list: () => [...fileKeys.all, "list"] as const,
   detail: (itemId: string) => [...fileKeys.all, "detail", itemId] as const,
 };
+
+/**
+ * Is «الملفات» on for THIS user? The build flag (`MY_FILES_ENABLED`) only says
+ * the UI was shipped; the backend may still limit the feature to some users
+ * (`MY_FILES_USERS`). Every user-visible part of the feature keys off this.
+ *
+ * - Build flag off → `enabled: false` at once, and NO request is made.
+ * - Otherwise `GET /files/status` once per session per account: never stale,
+ *   no refetch on focus / reconnect / mount, one retry at most.
+ * - `enabled` is `true` only on an explicit `{ enabled: true }`. Loading, an
+ *   error, or a signed-out visitor (the request is refused) all read `false`,
+ *   so the feature never flashes on and then away, and a failed call leaves
+ *   the app exactly as it was before the feature.
+ * - `settled` tells a page "the answer is in" (to choose between the page and
+ *   not-found without flashing either).
+ */
+export function useFilesStatus(): { enabled: boolean; settled: boolean } {
+  const userId = useAuthStore((s) => s.user?.user_id ?? null);
+  const query = useQuery({
+    queryKey: fileKeys.status(userId),
+    queryFn: () => filesApi.status(),
+    enabled: MY_FILES_ENABLED,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+    retry: 1,
+  });
+  if (!MY_FILES_ENABLED) return { enabled: false, settled: true };
+  return {
+    enabled: query.data?.enabled === true,
+    settled: query.isSuccess || query.isError,
+  };
+}
+
+/** `useFilesStatus().enabled` — the one switch for every visible part. */
+export function useFilesEnabled(): boolean {
+  return useFilesStatus().enabled;
+}
 
 export function useLibraryFiles(options: { enabled?: boolean } = {}) {
   return useQuery({
