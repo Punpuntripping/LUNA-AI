@@ -180,9 +180,15 @@ def test_sql_mode_prints_ids_only_and_runs_read_only(capsys, monkeypatch):
 
     class _Conn:
         closed = False
+        rolled_back = False
+        read_only = False          # psycopg 3: set BEFORE the first statement
 
         def cursor(self):
+            assert self.read_only is True, "the session must be read-only before any statement"
             return _Cur()
+
+        def rollback(self):
+            _Conn.rolled_back = True
 
         def close(self):
             _Conn.closed = True
@@ -195,6 +201,9 @@ def test_sql_mode_prints_ids_only_and_runs_read_only(capsys, monkeypatch):
     printed = capsys.readouterr().out
     assert "counts  1 row(s)" in printed and USER in printed and "fields  0 row(s) — ok" in printed
     assert "postgresql://x" not in printed
-    assert executed[0] == "BEGIN" and executed[-1] == "ROLLBACK" and _Conn.closed
+    # read-only by the driver's own switch (a "BEGIN READ ONLY" sent as SQL is a no-op once
+    # the driver has opened its transaction), SELECTs only, rolled back, closed
+    assert executed and all(word in ("SELECT", "WITH") for word in executed)
+    assert _Conn.rolled_back and _Conn.closed
     assert parity.run_sql(print_only=True) == 0
     assert "user_files" in capsys.readouterr().out

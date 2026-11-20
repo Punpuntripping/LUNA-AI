@@ -29,6 +29,7 @@ export type ErrorCode =
   | "CONV_ACCESS_DENIED"
   // Documents
   | "DOC_NOT_FOUND"
+  | "FEATURE_OFF"
   | "DOC_TOO_LARGE"
   | "DOC_INVALID_TYPE"
   | "DOC_EMPTY"

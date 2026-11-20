@@ -26,10 +26,15 @@ COPY . .
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+# «الملفات» (.claude/plans/my_files.md): the UI ships only when this is exactly
+# "true" at BUILD time. Unset = the app as it was. The backend still decides
+# per user (GET /files/status).
+ARG NEXT_PUBLIC_MY_FILES_ENABLED
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_MY_FILES_ENABLED=$NEXT_PUBLIC_MY_FILES_ENABLED
 
 # ⚠ THE PRERENDER PASS IS A REAL API CLIENT, AND IT NEEDS TO SAY WHO IT IS.
 # `RUN npm run build` below fetches the backend for every prerendered hub and

@@ -24,11 +24,21 @@ function notFound(): NextResponse {
   );
 }
 
+/** The fixtures can be a real user's documents: answer the local machine only. */
+function isLocalHost(request: Request): boolean {
+  const host = (request.headers.get("host") ?? "").toLowerCase().replace(/:\d+$/, "");
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+}
+
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ name: string }> },
 ): Promise<NextResponse> {
   if (process.env.NODE_ENV !== "development") return notFound();
+  // Not reachable from another machine on the network, nor by a page that
+  // re-binds a foreign name to this address. Run the server with
+  // `next dev -H 127.0.0.1` as well.
+  if (!isLocalHost(request)) return notFound();
   const dir = process.env.MY_FILES_FIXTURE_DIR;
   const { name } = await params;
   if (!dir || !NAME_RE.test(name)) return notFound();

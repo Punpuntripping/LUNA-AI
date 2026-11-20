@@ -586,7 +586,7 @@ browser). `FileMatchDialog` exists but is NOT wired into the composer yet.
 ### How to look at it
 
 Start, from `C:\Programming\LUNA_AI_my_files\frontend`, in its own terminal window:
-`set "MY_FILES_FIXTURE_DIR=<fixture folder>" && set "NEXT_PUBLIC_MY_FILES_ENABLED=true" && npx next dev -p 3100`
+`set "MY_FILES_FIXTURE_DIR=<fixture folder>" && set "NEXT_PUBLIC_MY_FILES_ENABLED=true" && npx next dev -H 127.0.0.1 -p 3100`
 then open `http://localhost:3100/dev-preview/my-files`. Screens (`?screen=`): `library`, `library-3`,
 `library-empty`, `file-sections`, `file-plain`, `file-stress` (generated, 318 sections), `pane`, `match`,
 `states`. The fixture folder holds a real user's documents and must stay outside the repo; regenerate it
@@ -862,3 +862,43 @@ for such a file.
   current payment status"). On prod, since 2026-11-20 11:02 Riyadh, the tier_2 flash agents (memory
   writer, summarizer, responder, style profiler, compactor) are being served by the Alibaba fallback
   (`deepseek-v4-flash-0731`, 38 calls by 14:30) instead of Baseten. Reported to the owner.
+
+### Pre-deploy reviews — 2026-11-20
+
+**Readiness checks on the final branch:** the exact CI list passes locally (3,475 backend and agent
+tests); web `tsc` clean, lint adds no warning, 105 tests; mobile `tsc` clean against the changed shared
+types. Branch up to date with master.
+
+**@integration-lead (contracts):** no break for shipped mobile builds, nothing that fails at runtime.
+Fixed: a separate `FEATURE_OFF` error code and the web turning the feature off on the first such
+answer (was: sidebar row and an error page with a retry that never works, when the feature is turned
+off for a user with an open tab); `original_purged` so the retention line shows only when true;
+«مقسّم إلى أقسام» on a card now agrees with what the file opens as; header count from the library total;
+`file_id` in the web contract; own-key lookups for owner classes; the old «ملفاتي» wording in two error
+texts. Left: two chips when the same existing file is picked twice in one message (cosmetic; after a
+reload it is one); the mobile app does not show the re-attach advice.
+
+**@security-reviewer:** no critical or high finding in the feature; no way for one user to reach
+another's file, section, summary or file name; migrations, grants, RLS and account purge found sound;
+the dev preview is inert in a production build. Fixed: the preview's data route answers the local
+machine only and the server is run with `-H 127.0.0.1` (it had been listening on all interfaces while
+serving a real user's documents — corrected the moment it was reported); bounds on `/files/match`
+inputs; images stripped from the rendered summary; the parity script's session is really read-only;
+`NEXT_PUBLIC_MY_FILES_ENABLED` declared as a Docker build argument (without it the UI could never be
+turned on from Railway).
+
+**Open, for the owner:**
+1. **Logfire records every route's arguments** (`shared/observability.py`, default FastAPI
+   instrumentation): the file name sent to `/files/match`, and — outside this feature — the full text of
+   every chat message and upload file names. Export is failing today (token 401), so nothing flows yet;
+   it starts the moment the token is fixed. Fix: a `request_attributes_mapper` that drops the values.
+2. The preview fixture is a real user's documents on local disk (session scratchpad): delete after the
+   review, or rebuild it from a demo account.
+3. `/files/{id}` gets its own rate-limit bucket per id (as `/workspace/{id}` already does): cost only.
+4. Runbook rule for 222: turn no `USER_FILES_*` flag on unless the run printed both `222 OK` lines (a
+   half-applied 222 would pass the code's readiness probe).
+5. Defence in depth for 223: a composite foreign key (id + owner) from maps and pages to the file.
+6. With every flag off, `summary_preview` and `reattach_advised` are still added to attachments on the
+   conversation-items response (the owner's own data).
+7. The preview's client code is still bundled into a production build (synthetic data only): strip the
+   two preview commits before merge if that matters.

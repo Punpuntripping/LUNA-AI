@@ -421,9 +421,11 @@ class FileMatchRequest(BaseModel):
     advisory — it must never be the reason a pick fails).
     """
     filename: str = Field(..., min_length=1, max_length=500)
-    size_bytes: int = Field(..., ge=0)
+    # Bounded like any id / size that ends up in a query: the documents bucket
+    # takes 250 MB at most (migration 217), and a conversation id is a uuid.
+    size_bytes: int = Field(..., ge=0, le=250 * 1024 * 1024)
     mime_type: str = Field(..., min_length=1, max_length=100)
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = Field(default=None, max_length=36)
 
     @field_validator("filename", mode="before")
     @classmethod

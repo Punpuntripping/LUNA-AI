@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { filesApi } from "@/lib/api";
+import { useCallback } from "react";
+import { ApiClientError, filesApi } from "@/lib/api";
 import { MY_FILES_ENABLED } from "@/lib/features";
 import { useAuthStore } from "@/stores/auth-store";
 import type {
@@ -60,19 +61,46 @@ export function useFilesEnabled(): boolean {
   return useFilesStatus().enabled;
 }
 
+/**
+ * The backend can turn the feature off for a user while their tab is open (a
+ * rollback, or removal from `MY_FILES_USERS`). Every `/files` call then answers
+ * `FEATURE_OFF`; on the first one the cached status flips to off, so the sidebar
+ * row, the page and the pane tabs leave at once instead of showing an error
+ * with a retry that can never work.
+ */
+function useFeatureOffGuard() {
+  const qc = useQueryClient();
+  const userId = useAuthStore((s) => s.user?.user_id ?? null);
+  return useCallback(
+    async <T,>(call: () => Promise<T>): Promise<T> => {
+      try {
+        return await call();
+      } catch (err) {
+        if (err instanceof ApiClientError && err.code === "FEATURE_OFF") {
+          qc.setQueryData(fileKeys.status(userId), { enabled: false });
+        }
+        throw err;
+      }
+    },
+    [qc, userId],
+  );
+}
+
 export function useLibraryFiles(options: { enabled?: boolean } = {}) {
+  const guard = useFeatureOffGuard();
   return useQuery({
     queryKey: fileKeys.list(),
-    queryFn: () => filesApi.list(),
+    queryFn: () => guard(() => filesApi.list()),
     enabled: options.enabled ?? true,
   });
 }
 
 /** Everything the opened file needs; also what the pane's file viewer reads. */
 export function useLibraryFile(itemId: string | undefined) {
+  const guard = useFeatureOffGuard();
   return useQuery({
     queryKey: fileKeys.detail(itemId ?? ""),
-    queryFn: () => filesApi.get(itemId!),
+    queryFn: () => guard(() => filesApi.get(itemId!)),
     enabled: !!itemId,
   });
 }
@@ -85,8 +113,9 @@ export function useLibraryFile(itemId: string | undefined) {
  */
 export function useHideLibraryFile() {
   const qc = useQueryClient();
+  const guard = useFeatureOffGuard();
   return useMutation({
-    mutationFn: (itemId: string) => filesApi.hide(itemId),
+    mutationFn: (itemId: string) => guard(() => filesApi.hide(itemId)),
     onMutate: async (itemId) => {
       await qc.cancelQueries({ queryKey: fileKeys.list() });
       const prev = qc.getQueryData<LibraryFileListResponse>(fileKeys.list());
@@ -113,8 +142,8 @@ export function useHideLibraryFile() {
 }
 
 /**
- * Phase 1b — asked by the app the moment a file is picked, before the upload
- * session opens. Not wired into the composer in this pass.
+ * Phase 1b — asked by the app the moment a file is picked (the composer and the
+ * pane call it through `use-file-match-queue`).
  */
 export function useFileMatch() {
   return useMutation({

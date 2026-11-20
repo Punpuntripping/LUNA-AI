@@ -188,8 +188,13 @@ def run_sql(*, print_only: bool = False, connect: Any = None) -> int:
     conn = (connect or _connect)(url)
     bad = 0
     try:
+        # Really read-only: the drivers open their own transaction before the first
+        # statement, so a "BEGIN READ ONLY" sent as SQL would be a no-op warning.
+        if hasattr(conn, "set_session"):           # psycopg2
+            conn.set_session(readonly=True)
+        else:                                       # psycopg 3
+            conn.read_only = True
         cur = conn.cursor()
-        cur.execute("BEGIN READ ONLY")
         for name, sql in QUERIES:
             cur.execute(sql)
             rows = cur.fetchall()
@@ -197,7 +202,7 @@ def run_sql(*, print_only: bool = False, connect: Any = None) -> int:
             print(f"{name:7s} {len(rows)} row(s){'' if rows else ' — ok'}")
             for row in rows[:50]:
                 print("   ", "  ".join("" if v is None else str(v) for v in row))   # ids and counts only
-        cur.execute("ROLLBACK")
+        conn.rollback()
     finally:
         conn.close()
     return 0 if bad == 0 else 1

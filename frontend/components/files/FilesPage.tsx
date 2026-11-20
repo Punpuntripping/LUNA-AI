@@ -104,7 +104,7 @@ export function FilesPage() {
             ) : (
               <p className="text-sm text-muted-foreground tabular-nums">
                 {files.length > 0
-                  ? `${formatFileCount(files.length)} ${FILES_COPY.pageSubtitleSuffix}`
+                  ? `${formatFileCount(Math.max(data?.total ?? 0, files.length))} ${FILES_COPY.pageSubtitleSuffix}`
                   : FILES_COPY.pageSubtitleEmpty}
               </p>
             )}

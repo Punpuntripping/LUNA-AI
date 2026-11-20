@@ -61,6 +61,10 @@ export interface LibraryFile {
    * than the file. The UI advises and gives no reason. Absent on an older backend.
    */
   reattach_advised?: boolean;
+  /** The retention sweep removed the original (the only case the viewer says so). */
+  original_purged?: boolean;
+  /** Phase 2: the `user_files` row behind this item; present only while that read switch is on. */
+  file_id?: string;
 }
 
 /** `GET /files`. */
@@ -621,6 +625,14 @@ export const SECTION_OWNER_CLASS_LABELS: Record<string, string> = {
   mixed: "أكثر من طرف",
 };
 
+/** The class name, or null for a key the app does not know (own keys only — never an inherited one). */
+function ownerClassLabel(ownerClass: string | null | undefined): string | null {
+  const key = ownerClass ?? "";
+  return Object.prototype.hasOwnProperty.call(SECTION_OWNER_CLASS_LABELS, key)
+    ? SECTION_OWNER_CLASS_LABELS[key]
+    : null;
+}
+
 /** How an owner tag is tinted: the two sides of the case, whoever decides or issues, everyone else. */
 export type SectionOwnerSide = "claimant" | "respondent" | "official" | "other";
 
@@ -640,7 +652,8 @@ const SECTION_OWNER_SIDES: Record<string, SectionOwnerSide> = {
 };
 
 export function sectionOwnerSide(ownerClass: string | null | undefined): SectionOwnerSide {
-  return SECTION_OWNER_SIDES[ownerClass ?? ""] ?? "other";
+  const key = ownerClass ?? "";
+  return Object.prototype.hasOwnProperty.call(SECTION_OWNER_SIDES, key) ? SECTION_OWNER_SIDES[key] : "other";
 }
 
 type OwnedSection = Pick<FileSection, "owner_class" | "owner" | "brought_by" | "is_metadata">;
@@ -654,7 +667,7 @@ export function sectionOwnerLabel(section: OwnedSection): string | null {
   if (section.is_metadata) return null;
   const own = (section.owner ?? "").trim();
   if (own) return own;
-  return SECTION_OWNER_CLASS_LABELS[section.owner_class ?? ""] ?? null;
+  return ownerClassLabel(section.owner_class);
 }
 
 /** «قدّمه: …» — the party that filed the section, when the map names one. */
@@ -681,7 +694,7 @@ export function sectionOwnerGroups(sections: readonly OwnedSection[]): SectionOw
   for (const section of sections) {
     if (section.is_metadata) continue;
     const key = section.owner_class ?? "";
-    if (!(key in SECTION_OWNER_CLASS_LABELS)) continue;
+    if (ownerClassLabel(key) === null) continue;
     if (!counts.has(key)) order.push(key);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }

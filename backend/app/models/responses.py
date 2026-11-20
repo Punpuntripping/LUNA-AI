@@ -418,6 +418,7 @@ class LibraryFile(BaseModel):
     copies: int = 1                          # identical files folded into this row
     created_at: str
     reattach_advised: bool = False           # «ننصح بإعادة إرفاق هذا الملف» (no reason shown)
+    original_purged: bool = False            # the retention sweep removed the original
     # Phase 2 (my_files_phase2.md §D): the user_files row behind this item. Set
     # only while the files read switch is on; absent from the JSON otherwise,
     # so the response is byte-identical to Phase 1 with the switch off.

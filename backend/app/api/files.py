@@ -59,7 +59,7 @@ async def files_user(
     if not files_service.my_files_enabled(user_id):
         raise LunaHTTPException(
             status_code=404,
-            code=ErrorCode.DOC_NOT_FOUND,
+            code=ErrorCode.FEATURE_OFF,
             detail=MSG_FEATURE_OFF,
         )
     return user_id

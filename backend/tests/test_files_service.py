@@ -243,7 +243,7 @@ def test_list_never_selects_content_md_nor_returns_text_or_full_summary(data_pat
     assert set(f) == {
         "item_id", "title", "filename", "mime_type", "doc_type", "summary_preview", "page_count",
         "chars", "has_sections", "original_available", "conversation_id", "wi_seq", "copies",
-        "created_at", "reattach_advised",
+        "created_at", "reattach_advised", "original_purged",
     } | ({"file_id"} if _on_files(data_path) else set())
     if _on_files(data_path):
         assert f["file_id"] == a["item_id"] and f["item_id"] == a["item_id"]
@@ -311,12 +311,28 @@ def test_list_has_sections_only_for_a_fresh_map():
     fresh = att(filename="1.pdf")
     stale = att(filename="2.pdf")
     none = att(filename="3.pdf")
-    maps = [smap(fresh["item_id"], len(SAMPLE_TEXT)), smap(stale["item_id"], len(SAMPLE_TEXT) + 7)]
-    out = _list(FakeSupabase(
-        workspace_items=[fresh, stale, none], conversations=conversations(), attachment_segment_maps=maps,
-    ))
+    furniture = att(filename="4.pdf")          # a fresh map, but nothing the viewer would show
+    maps = [smap(fresh["item_id"], len(SAMPLE_TEXT)), smap(stale["item_id"], len(SAMPLE_TEXT) + 7),
+            smap(furniture["item_id"], len(SAMPLE_TEXT))]
+    segments = [
+        seg(fresh["item_id"], 1, "boilerplate"), seg(fresh["item_id"], 2, "core"),
+        seg(stale["item_id"], 1, "core"),
+        seg(furniture["item_id"], 1, "boilerplate"), seg(furniture["item_id"], 2, "repeat"),
+    ]
+    sb = FakeSupabase(
+        workspace_items=[fresh, stale, none, furniture], conversations=conversations(),
+        attachment_segment_maps=maps, attachment_segments=segments,
+    )
+    out = _list(sb)
     flags = {f["item_id"]: f["has_sections"] for f in out["files"]}
-    assert flags == {fresh["item_id"]: True, stale["item_id"]: False, none["item_id"]: False}
+    assert flags == {fresh["item_id"]: True, stale["item_id"]: False, none["item_id"]: False,
+                     furniture["item_id"]: False}
+    # the card and the opened file agree: the furniture-only file opens as plain text
+    assert fs.get_library_file(sb, USER, furniture["item_id"])["sections"] is None
+    # the list reads section VALUES only, never their text
+    for table, cols in sb.selects:
+        if table == "attachment_segments" and "seq" not in cols:
+            assert "content_md" not in cols and "what" not in cols
 
 
 def test_list_map_read_failure_lists_without_sections():
@@ -729,6 +745,8 @@ def test_routes_404_when_the_feature_is_off(client_for):
         for res in responses:
             assert res.status_code == 404, res.text
             assert res.json()["detail"] == "هذه الميزة غير متاحة"
+            # its own code, so the web can hide the feature instead of showing "not found"
+            assert res.json()["error"]["code"] == "FEATURE_OFF"
     assert sb.selects == [] and sb.updates == []
 
 
@@ -884,6 +902,30 @@ def test_sections_carry_the_owner_fields_and_hide_unknown():
     assert (s[1]["owner_class"], s[1]["owner"], s[1]["brought_by"]) == ("witness", "الشاهد الأول", "المدعي")
     for row in s[2:]:
         assert (row["owner_class"], row["owner"], row["brought_by"]) == (None, None, None)
+
+
+def test_original_purged_is_true_only_after_the_retention_sweep():
+    purged = att(filename="أ.pdf", storage_path=None, original_purged_at="2026-11-01T00:00:00+00:00")
+    no_source = att(filename="ب.pdf", storage_path=None)            # never had a stored original
+    whole = att(filename="ج.pdf")
+    sb = FakeSupabase(workspace_items=[purged, no_source, whole], conversations=conversations())
+    by_id = {f["item_id"]: f for f in fs.list_library_files(sb, USER)["files"]}
+    assert (by_id[purged["item_id"]]["original_available"], by_id[purged["item_id"]]["original_purged"]) == (False, True)
+    assert (by_id[no_source["item_id"]]["original_available"], by_id[no_source["item_id"]]["original_purged"]) == (False, False)
+    assert (by_id[whole["item_id"]]["original_available"], by_id[whole["item_id"]]["original_purged"]) == (True, False)
+
+
+def test_match_request_bounds():
+    from pydantic import ValidationError
+
+    from backend.app.models.requests import FileMatchRequest
+
+    ok = FileMatchRequest(filename="عقد.pdf", size_bytes=250 * 1024 * 1024, mime_type="application/pdf",
+                          conversation_id=CONV_A)
+    assert ok.size_bytes == 250 * 1024 * 1024
+    for bad in ({"size_bytes": 10**30}, {"conversation_id": "x" * 37}):
+        with pytest.raises(ValidationError):
+            FileMatchRequest(**{"filename": "عقد.pdf", "size_bytes": 1, "mime_type": "application/pdf", **bad})
 
 
 # ===========================================================================

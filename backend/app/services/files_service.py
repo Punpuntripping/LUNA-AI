@@ -390,6 +390,10 @@ def _file_dict(row: dict, *, chars: int, has_sections: bool, copies: int) -> dic
         "copies": max(1, copies),
         "created_at": str(row.get("created_at") or ""),
         "reattach_advised": reattach_advised(meta),
+        # True only when the retention sweep removed the original — the one case
+        # the viewer may say so. (original_available is also false for a file
+        # with no stored original or an unfinished upload.)
+        "original_purged": bool(meta.get("original_purged_at")),
     }
 
 
@@ -680,7 +684,7 @@ def _hide_with_files(supabase: SupabaseClient, user_id: str, item_id: str) -> An
         raise LunaHTTPException(
             status_code=500,
             code=ErrorCode.INTERNAL_ERROR,
-            detail="حدث خطأ أثناء حذف الملف من ملفاتي",
+            detail="حدث خطأ أثناء حذف الملف",
         )
     try:
         files_store.hide_files(supabase, user_id, targets)
@@ -689,7 +693,7 @@ def _hide_with_files(supabase: SupabaseClient, user_id: str, item_id: str) -> An
         raise LunaHTTPException(
             status_code=500,
             code=ErrorCode.INTERNAL_ERROR,
-            detail="حدث خطأ أثناء حذف الملف من ملفاتي",
+            detail="حدث خطأ أثناء حذف الملف",
         )
     logger.info("files: hid %s (%d row(s) in its group)", item_id, len(targets))
     return True
@@ -774,7 +778,34 @@ def _fresh_map_ids(supabase: SupabaseClient, user_id: str, expected: dict[str, i
         iid = str(r.get("item_id") or "")
         if iid in expected and _int_or_none(r.get("content_chars")) == expected[iid]:
             fresh.add(iid)
-    return fresh
+    return _with_shown_sections(supabase, fresh)
+
+
+def _with_shown_sections(supabase: SupabaseClient, ids: set[str]) -> set[str]:
+    """Of ``ids`` (fresh maps), those with at least one section the viewer shows.
+    A map whose every section is a letterhead or a repeat opens as plain text
+    (``_sections`` returns None), so its card must not say «مقسّم إلى أقسام».
+    Reads ``item_id, value`` only. Fail-soft: on a failed read the ids stay."""
+    if not ids:
+        return ids
+    shown: set[str] = set()
+    ordered = sorted(ids)
+    try:
+        for i in range(0, len(ordered), 50):
+            chunk = ordered[i:i + 50]
+            rows = _fetch_all(
+                lambda chunk=chunk: supabase.table(SEGMENTS_TABLE)
+                .select("item_id, value")
+                .in_("item_id", chunk)
+                .order("item_id")
+            )
+            for r in rows:
+                if r.get("value") not in HIDDEN_SECTION_VALUES:
+                    shown.add(str(r.get("item_id") or ""))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("files: section-value read failed (%s) — keeping the map list", type(exc).__name__)
+        return ids
+    return ids & shown
 
 
 def list_library_files(supabase: SupabaseClient, user_id: str) -> dict:
@@ -1065,7 +1096,7 @@ def hide_library_file(supabase: SupabaseClient, user_id: str, item_id: str) -> b
         raise LunaHTTPException(
             status_code=500,
             code=ErrorCode.INTERNAL_ERROR,
-            detail="حدث خطأ أثناء حذف الملف من ملفاتي",
+            detail="حدث خطأ أثناء حذف الملف",
         )
 
     stamp = datetime.now(timezone.utc).isoformat()
@@ -1093,7 +1124,7 @@ def hide_library_file(supabase: SupabaseClient, user_id: str, item_id: str) -> b
         raise LunaHTTPException(
             status_code=500,
             code=ErrorCode.INTERNAL_ERROR,
-            detail="حدث خطأ أثناء حذف الملف من ملفاتي",
+            detail="حدث خطأ أثناء حذف الملف",
         )
     logger.info("files: hid %s (%d row(s) in its group)", item_id, len(targets))
     return True

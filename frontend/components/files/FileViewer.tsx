@@ -23,7 +23,7 @@ import { ReattachAdvice } from "./ReattachAdvice";
 interface FileViewerProps {
   file: LibraryFileDetail;
   /**
-   * `page` — `/chats/files/[itemId]`: renders the title as the page heading.
+   * `page` — `/files/[itemId]`: renders the title as the page heading.
    * `pane` — the conversation pane's detail mode, whose header already shows
    * the title and the WI badge, so the viewer starts at the meta line.
    */
@@ -109,9 +109,12 @@ export function FileViewer({ file, variant = "page", notice }: FileViewerProps) 
               <FileText className="h-3.5 w-3.5" />
               {FILES_COPY.original}
             </Button>
-          ) : (
+          ) : (file.original_purged ?? true) ? (
+            // Said only when the retention sweep removed the original; a file whose
+            // original is unavailable for another reason shows nothing here. (An older
+            // backend does not send the field: keep its old meaning.)
             <span className="px-2 text-xs text-muted-foreground">{FILES_COPY.purged}</span>
-          )}
+          ) : null}
           <CopyMenu variant="bar" text={text} label={FILES_COPY.copyText} />
         </div>
 
@@ -184,7 +187,9 @@ function SummaryBlock({ summary }: { summary: string }) {
       </button>
       {open && (
         <div id={bodyId} className="border-t border-border/60 px-4 py-3">
-          <MarkdownRenderer content={summary} />
+          {/* Model output over an untrusted document: an image in it would be
+              fetched by the reader's browser, so images are dropped as in the text. */}
+          <MarkdownRenderer content={stripMarkdownImages(summary)} />
         </div>
       )}
     </section>
