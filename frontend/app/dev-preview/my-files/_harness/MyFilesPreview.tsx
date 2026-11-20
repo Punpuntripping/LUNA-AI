@@ -27,6 +27,7 @@ import { ChatsPage } from "@/components/chats/ChatsPage";
 import { WorkspacePane } from "@/components/workspace/WorkspacePane";
 import { FilesPage } from "@/components/files/FilesPage";
 import { LibraryFilePage } from "@/components/files/LibraryFilePage";
+import { FilesFeatureGate } from "@/components/files/FilesFeatureGate";
 import { FileCard } from "@/components/files/FileCard";
 import { FileDocCard } from "@/components/files/FileDocCard";
 import {
@@ -55,6 +56,7 @@ import {
   type LibraryVariant,
 } from "./preview-api";
 import { STRESS_FILE_ID } from "./synthetic";
+import { ComposerScreen } from "./ComposerScreen";
 
 /**
  * DEV ONLY — the «الملفات» preview (`/dev-preview/my-files`).
@@ -87,6 +89,7 @@ const SCREENS = [
   { id: "chats", label: "المحادثات" },
   { id: "sidebar-compare", label: "مقارنة الشريط" },
   { id: "pane", label: "لوحة المحادثة" },
+  { id: "composer", label: "إرفاق ملف موجود" },
   { id: "match", label: "نافذة التطابق" },
   { id: "states", label: "البطاقات والأنواع" },
 ] as const;
@@ -134,6 +137,9 @@ export function MyFilesPreview() {
   const screen = parseScreen(searchParams.get("screen"));
   const fileId = searchParams.get("id");
   const upcoming = searchParams.get("upcoming") !== "0";
+  // `?status=off`: GET /files/status answers { enabled: false } — the build
+  // flag on, the feature off for this user.
+  const statusOff = searchParams.get("status") === "off";
 
   const href = useMemo(() => {
     return (patch: Record<string, string | null>) => {
@@ -229,7 +235,11 @@ export function MyFilesPreview() {
         ) : (
           <FilesUiProvider value={filesUi}>
             <AppNavOverrideProvider value={{ pathname: sidebarPath ?? "/chat/preview", navigate }}>
-              <ScreenHost key={`${screen}|${resolvedFileId ?? ""}`} variant={variantFor(screen)}>
+              <ScreenHost
+                key={`${screen}|${resolvedFileId ?? ""}|${statusOff ? "off" : "on"}`}
+                variant={variantFor(screen)}
+                statusOff={statusOff}
+              >
                 <ScreenView
                   screen={screen}
                   fileId={resolvedFileId}
@@ -241,7 +251,7 @@ export function MyFilesPreview() {
           </FilesUiProvider>
         )}
       </div>
-      <PreviewBar screen={screen} upcoming={upcoming} href={href} />
+      <PreviewBar screen={screen} upcoming={upcoming} statusOff={statusOff} href={href} />
     </div>
   );
 }
@@ -251,9 +261,18 @@ export function MyFilesPreview() {
  * cached by another screen. The fixture variant is set here, during the first
  * render, before any query below it runs.
  */
-function ScreenHost({ variant, children }: { variant: LibraryVariant; children: ReactNode }) {
+function ScreenHost({
+  variant,
+  statusOff,
+  children,
+}: {
+  variant: LibraryVariant;
+  statusOff: boolean;
+  children: ReactNode;
+}) {
   const [client] = useState(() => {
     previewState.variant = variant;
+    previewState.statusOff = statusOff;
     return new QueryClient({
       defaultOptions: {
         queries: { staleTime: 30_000, retry: false, refetchOnWindowFocus: false },
@@ -280,7 +299,10 @@ function ScreenView({
     case "files-empty":
       return (
         <Shell>
-          <FilesPage />
+          {/* As app/files/page.tsx renders it: behind the per-user gate. */}
+          <FilesFeatureGate>
+            <FilesPage />
+          </FilesFeatureGate>
         </Shell>
       );
     case "file":
@@ -290,7 +312,9 @@ function ScreenView({
       return (
         <Shell>
           {fileId ? (
-            <LibraryFilePage itemId={fileId} />
+            <FilesFeatureGate>
+              <LibraryFilePage itemId={fileId} />
+            </FilesFeatureGate>
           ) : (
             <Notice>لا يوجد في المعاينة ملف من هذا النوع.</Notice>
           )}
@@ -307,6 +331,9 @@ function ScreenView({
     case "pane":
       if (!pane) return <Notice>جارٍ تحميل المعاينة…</Notice>;
       return <PaneScreen items={pane} />;
+    case "composer":
+      if (!pane) return <Notice>جارٍ تحميل المعاينة…</Notice>;
+      return <ComposerScreen items={pane} />;
     case "match":
       return <MatchScreen files={files ?? []} />;
     case "states":
@@ -625,10 +652,12 @@ function CardsScreen({ files }: { files: LibraryFile[] }) {
 function PreviewBar({
   screen,
   upcoming,
+  statusOff,
   href,
 }: {
   screen: ScreenId;
   upcoming: boolean;
+  statusOff: boolean;
   href: (patch: Record<string, string | null>) => string;
 }) {
   const { resolvedTheme, setTheme } = useTheme();
@@ -672,6 +701,16 @@ function PreviewBar({
           className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
         >
           {upcoming ? "إخفاء ميزات المرحلة 3" : "إظهار ميزات المرحلة 3"}
+        </Link>
+        <Link
+          href={href({ status: statusOff ? null : "off" })}
+          className={cn(
+            "shrink-0 rounded-md px-2 py-1 text-xs hover:text-foreground",
+            statusOff ? "text-destructive" : "text-muted-foreground",
+          )}
+          data-testid="preview-status-toggle"
+        >
+          {statusOff ? "الميزة لهذا المستخدم: مطفأة" : "الميزة لهذا المستخدم: تعمل"}
         </Link>
       </div>
       {!MY_FILES_ENABLED && (
