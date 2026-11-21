@@ -1271,8 +1271,9 @@ export type PaymentMethodRevokeResponse = Partial<PaymentMethodState>;
  * on the authed subscription read, and the two are independent (a seat holder
  * keeps their price for their seat's months after the campaign closes).
  *
- * `promo` maps `plans.plan_id` → the GENERAL promotional amount right now (the
- * active batch's price; Pro's personal tier-1 price is never here) as a 2-dp
+ * `promo` maps `plans.plan_id` (`basic` / `pro` / `pro_plus` / `max`) → the
+ * GENERAL promotional amount right now (the active batch's price; Pro's
+ * personal tier-1 price is never here) as a 2-dp
  * LATIN string ("59.90"), exactly like every other money field on the wire.
  * Render it through `formatSar`, never by hand. A plan missing from the map has
  * no promo — list price, no strike-through, no «المقاعد محدودة»; an
@@ -1379,4 +1380,74 @@ export interface SubscriptionState {
    * a `returnable` intro-offer member, that they may come back at it.
    */
   early_adopter?: EarlyAdopterState | null;
+  // ── Scheduled downgrade (.claude/plans/pro_plus_tier_and_downgrade.md §4, §8)
+  // Every field below is ABSENT on a backend from before the feature, and
+  // absent must read exactly like null / [] — no banner, no «تغيير الباقة».
+  /**
+   * The plan the NEXT renewal switches to; null = renews on `plan_id` as usual.
+   * Cleared server-side by a cancel, a reactivate, an upgrade or a re-purchase.
+   */
+  pending_plan_id?: string | null;
+  pending_plan_name_ar?: string | null;
+  /**
+   * The PROMISE (owner rule 2026-11-20): the price shown when the switch was
+   * scheduled, stored server-side. The renewal charges it — or the renewal-day
+   * price if that is lower — even if the offer runs out or the plan stops
+   * being sold. Never null while a switch is pending (a null is treated
+   * defensively: the banner names no price). 2-dp LATIN string.
+   */
+  pending_price_sar?: string | null;
+  /** Set ⇒ `pending_price_sar` is an offer lasting this many 30-day terms. */
+  pending_promo_months?: number | null;
+  /**
+   * The plans a «تغيير الباقة» may schedule. EMPTY unless: source `payment`,
+   * term running, not store-managed, renewal not cancelled. Only renewable
+   * plans ranked below the current one — never `basic` (one-time 7 days; the
+   * way down to it is cancelling).
+   */
+  downgrade_options?: DowngradeOption[];
+  /**
+   * Why a switch cannot be scheduled right now even though `downgrade_options`
+   * lists plans. `"no_payment_method"` = no stored card, so nothing renews at
+   * all (and a card can only be saved by completing a payment): «تغيير الباقة»
+   * stays visible, but its dialog and the cancel flow's retention card say the
+   * term ends without renewal and the lower plan can be bought afterwards, with
+   * a single «حسناً». ABSENT on an older backend = null. An unknown value is
+   * read as null by `downgradeBlockedReason()` and the POST answers for itself.
+   */
+  downgrade_blocked_reason?: DowngradeBlockedReason | null;
+}
+
+/** See `SubscriptionState.downgrade_blocked_reason`. */
+export type DowngradeBlockedReason = "no_payment_method";
+
+/**
+ * `POST /payments/subscription/downgrade` body — built ONLY by
+ * `scheduleDowngradeBody()` from the option the confirm sheet showed. The two
+ * `expected_*` fields are what the user saw: the renewal price (offer when
+ * shown, else list) as the exact wire string, and the offer's months (null
+ * when no offer is shown). Any mismatch with the server's quote → 409
+ * `SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED`, never a silently different promise.
+ */
+export interface ScheduleDowngradeRequest {
+  plan_id: string;
+  expected_price_sar: string;
+  expected_promo_months: number | null;
+}
+
+/**
+ * One entry of `SubscriptionState.downgrade_options` — quoted as a fresh buyer
+ * of `plan_id` NOW. Scheduling the switch turns this quote into the promise
+ * (`pending_price_sar` / `pending_promo_months`): the renewal charges it, or
+ * the renewal-day price if lower. Money fields are 2-dp LATIN strings.
+ */
+export interface DowngradeOption {
+  plan_id: string;
+  name_ar: string;
+  /** The plan's LIST price. */
+  price_sar: string;
+  /** The offer the switch would be charged at, or null for the list price. */
+  promo_price_sar: string | null;
+  /** How many 30-day terms `promo_price_sar` lasts; null when no offer. */
+  promo_months: number | null;
 }

@@ -15,7 +15,8 @@ import {
 
 export const metadata: Metadata = {
   title: "الباقات والأسعار — ريحان",
-  description: "باقات اشتراك ريحان: الأساسية والاحترافية والقصوى.",
+  description:
+    "باقات اشتراك ريحان: الأساسية والاحترافية والاحترافية بلس والقصوى.",
   alternates: {
     canonical: "/pricing",
   },
@@ -59,7 +60,8 @@ export default async function PricingPage() {
 
   return (
     <SitePageShell>
-      <main className="mx-auto max-w-5xl px-4 py-12">
+      {/* max-w-6xl, not 5xl: four cards across at xl need ~260px each. */}
+      <main className="mx-auto max-w-6xl px-4 py-12">
         {/* Page title */}
         <header className="mb-10 flex flex-col items-center gap-4 text-center">
           <h1 className="text-3xl font-bold tracking-tight text-foreground">
@@ -82,8 +84,10 @@ export default async function PricingPage() {
           </p>
         </header>
 
-        {/* Plan cards */}
-        <div className="grid gap-6 md:grid-cols-3">
+        {/* Plan cards — four since pro_plus: one column on a phone, 2×2 from
+            sm, four across from xl. Four across at md/lg would squeeze each
+            card under ~230px and wrap every price row; 3 + 1 would orphan max. */}
+        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
           {cards.map(({ plan, pricing }) => (
             <div
               key={plan.id}

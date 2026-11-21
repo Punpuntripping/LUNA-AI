@@ -13,22 +13,27 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
  * 189.90 (VAT-inclusive) in the Moyasar Wave 1 commit, and `max` was raised to
  * 289.90 by migration 147 (2026-08-29), `pro` to 94.90 by migration 168
  * (2026-09-29), and `basic` to a flat 29.90 with no promo by migration 174
- * (2026-10-08), then to 39.90 by migration 191 (2026-10-27) — a price
- * migration and this file must always move as one. These are the LIST prices
- * only; no promotional amount is written down in this file any more (see the
- * المشتركون الأوائل block below).
+ * (2026-10-08), then to 39.90 by migration 191 (2026-10-27). `max` was CUT to
+ * 219.90 by migration 224, and `pro_plus` (149.90, between pro and max) was
+ * added by migration 225 (.claude/plans/pro_plus_tier_and_downgrade.md) — a
+ * price migration and this file must always move as one. These are the LIST
+ * prices only; no promotional amount is written down in this file any more
+ * (see the المشتركون الأوائل block below).
  *
  * Billing model (owner, 2026-08-10 — see .claude/plans/subscription_auto_renewal.md):
  *   - basic — a ONE-TIME 7-day purchase that ends without any further charge.
  *     Its card is the ONLY one that states a renewal position, and it states
  *     «بدون تجديد تلقائي», because a term that simply stops is the thing a buyer
  *     has to be told before paying.
- *   - pro / max — 30-day terms that AUTO-RENEW. That is the owner's model and it
- *     is what /terms §5.2 has promised publicly since 2026-08-10.
+ *   - pro / pro_plus / max — 30-day terms that AUTO-RENEW. That is the owner's
+ *     model and it is what /terms §5.2 has promised publicly since 2026-08-10.
+ *     A move DOWN between them (max → pro_plus / pro, pro_plus → pro) is never a
+ *     purchase: it is scheduled from Settings and takes effect at the next
+ *     renewal (pro_plus_tier_and_downgrade.md §4).
  *   - An early re-purchase of the same plan STACKS (extends the term) rather
  *     than resetting it.
  *
- * ⚠ WHY pro/max SAY NOTHING ABOUT RENEWAL HERE. The engine does not exist yet —
+ * ⚠ WHY pro/pro_plus/max SAY NOTHING ABOUT RENEWAL HERE. The engine does not exist yet —
  * no card tokenization, no renewal job, `plans.billing_cycle` still `one_time`.
  * Silence is the only wording true both today and after Wave 2 ships:
  *   - «بدون تجديد تلقائي» (what these two cards used to say) contradicts the
@@ -74,14 +79,18 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
  * §1.10), not a stylistic one, and it holds even if the API ever grows a count.
  *
  * ⚠ THE PROMO CHANGES THE PRICE, NOT THE BILLING MODEL. `promoBillingNoteFor()`
- * exists so pro/max can state the step-up honestly («لأول شهرين، ثم يعود إلى
- * السعر المعتاد»), and it still says NOTHING about renewal for the reasons in
- * the block above. «ادفع مرة واحدة — بدون تجديد تلقائي» is always true for
- * `basic`, even at its offer price, and must never be copied onto pro/max.
+ * exists so pro/pro_plus/max can state the step-up honestly («لأول شهرين، ثم
+ * يعود إلى السعر المعتاد»), and it still says NOTHING about renewal for the
+ * reasons in the block above. «ادفع مرة واحدة — بدون تجديد تلقائي» is always
+ * true for `basic`, even at its offer price, and must never be copied onto the
+ * renewing plans.
  */
 export interface PricingPlan {
-  /** Matches plans.plan_id in the DB. */
-  id: "basic" | "pro" | "max";
+  /**
+   * Matches plans.plan_id in the DB. «الاحترافية بلس» is spelled with the word
+   * «بلس», never a "+": the symbol jumps to the wrong side in RTL text.
+   */
+  id: "basic" | "pro" | "pro_plus" | "max";
   nameAr: string;
   tagline: string;
   /**
@@ -95,7 +104,7 @@ export interface PricingPlan {
   /**
    * Small muted line under the price. Carries the TERM always, and the renewal
    * position only on `basic` — see the ⚠ block in this file's header for why
-   * pro/max are deliberately silent on renewal.
+   * pro/pro_plus/max are deliberately silent on renewal.
    */
   billingNote: string;
   /**
@@ -105,7 +114,7 @@ export interface PricingPlan {
    * «بدون تجديد تلقائي» meets. While the promo is on screen the card's note is
    * built by `promoBillingNoteFor()` from the server's month count.
    *
-   * pro/max ONLY. `basic` does not step up: its offer is one payment with
+   * pro/pro_plus/max ONLY. `basic` does not step up: its offer is one payment with
    * nothing after it, which is `promoOncePerUser` below.
    */
   promoStepsUp?: boolean;
@@ -161,11 +170,35 @@ export const PRICING_PLANS: PricingPlan[] = [
     ],
   },
   {
+    id: "pro_plus",
+    nameAr: "الاحترافية بلس",
+    tagline: "لمن يستخدم الأدوات المتقدمة بانتظام",
+    // List price (migration 225; NULL in the DB until the launch switch, which
+    // is why this card must not deploy before it). Same rule as pro: promo +
+    // months come from the endpoint, never from here.
+    price: "149.90",
+    period: "شهرياً",
+    billingNote: "فترة الاشتراك 30 يوماً",
+    promoStepsUp: true,
+    // Same five lines as pro, in the same order. Its library-unlock allowance
+    // (500) and its single parallel run are deliberately NOT bullets: no other
+    // card states either (max states parallel runs only because it has more
+    // than one), and /learn/usage-limits carries the unlock numbers per plan.
+    features: [
+      "250 نقطة استخدام أسبوعياً",
+      "50 نقطة لكل جلسة (5 ساعات)",
+      "500 صفحة استخراج نص شهرياً",
+      "تقارير الباحث ومسودات الكاتب كاملة مع مشاركتها وتصديرها",
+      "الوصول الكامل للمكتبة القانونية",
+    ],
+  },
+  {
     id: "max",
     nameAr: "القصوى",
     tagline: "أقصى سعة للقضايا المكثّفة",
-    // List price. Same rule as pro: promo + months come from the endpoint.
-    price: "289.90",
+    // List price (migration 224 cut it from 289.90). Same rule as pro: promo +
+    // months come from the endpoint.
+    price: "219.90",
     period: "شهرياً",
     billingNote: "فترة الاشتراك 30 يوماً",
     promoStepsUp: true,
@@ -237,12 +270,17 @@ export function cheapestPricingPlan(
  * subscriber a "step up" to Pro, which the server's downgrade guard refuses at
  * checkout. The list order is the plan rank itself, so it can never drift.
  *
- * The cards still render in the same order today: the live tiers preserve the
- * catalog's rank — basic 39.90 < pro 59.90 (tier 2) < pro 94.90, and max
- * 149.90 / 189.90 < 289.90, every max price above every pro price. The personal
- * Pro tier-1 price (19.90) sits below basic's list price, but it is never on
- * the public payload and never enters this ranking (`components/promo/`
- * renders it).
+ * The cards still render in the same order today: the public offers preserve
+ * the catalog's rank — basic 39.90 < pro 59.90 (offer) < pro 94.90 <
+ * pro_plus 99.90 (offer) < pro_plus 149.90 < max 169.90 (offer) < max 219.90,
+ * every offer above the list price of the plan below it. The personal Pro
+ * tier-1 price (19.90) sits below basic's list price, but it is never on the
+ * public payload and never enters this ranking (`components/promo/` renders
+ * it). Max's retired tier-1 batch (149.90) would TIE pro_plus's list price,
+ * which is one more reason the ranking reads list prices only.
+ *
+ * pro_plus slots in with no special case: 149.90 sits between pro (94.90) and
+ * max (219.90), so pro gets [pro_plus, max] and pro_plus gets [max].
  */
 export function pricingPlansAbove(
   planId: string | null | undefined,
@@ -698,9 +736,9 @@ export function formatFeeSar(value: number | string): string {
  * Split a price string on the decimal separator so the fractional part can be
  * rendered smaller than the integer part.
  *
- * Purely a layout concern, and a real one: at `text-5xl`, «289.90» is materially
- * wider than «289» and reflows the three-card grid at the md breakpoint. Shared
- * by /pricing and the landing teaser so they can never diverge.
+ * Purely a layout concern, and a real one: at `text-5xl`, «219.90» is materially
+ * wider than «219» and reflows a narrow card grid. Shared by /pricing and the
+ * landing teaser so they can never diverge.
  */
 export function splitPrice(price: string): {
   whole: string;

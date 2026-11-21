@@ -56,6 +56,7 @@ import type {
   PaymentMethodRevokeResponse,
   SubscriptionState,
   CancelSubscriptionReason,
+  ScheduleDowngradeRequest,
   EarlyAdopterCampaign,
   IntroOfferState,
 } from "@/types";
@@ -1328,6 +1329,40 @@ export const paymentsApi = {
    */
   reactivateSubscription: () =>
     api.post<SubscriptionState>("/payments/subscription/reactivate"),
+
+  /**
+   * Schedule a move DOWN at the next renewal («تغيير الباقة» —
+   * `.claude/plans/pro_plus_tier_and_downgrade.md` §4/§8). Nothing is charged,
+   * refunded or shortened now: the current term runs out untouched and the
+   * renewal then charges the price quoted in `downgrade_options` at the moment
+   * of scheduling (kept as `pending_price_sar`), or the renewal-day price if
+   * that is lower. Returns the refreshed `SubscriptionState` (with
+   * `pending_plan_id` set).
+   *
+   * `body` comes from `scheduleDowngradeBody()` and is sent as is:
+   * `{plan_id, expected_price_sar, expected_promo_months}` — the renewal price
+   * the confirm sheet showed (the option's `promo_price_sar` when shown, else
+   * `price_sar`, as the exact wire string) and the offer months it showed (null
+   * for a list price). The server stores a promise only for what the user saw:
+   * if its quote has moved — price or months — it refuses rather than silently
+   * storing a different one.
+   *
+   * Errors arrive as `ApiClientError` with the backend's Arabic message:
+   * `SUBSCRIPTION_DOWNGRADE_INVALID` (not lower / not renewable / not allowed),
+   * `SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED` (the quote moved — re-read, show the
+   * new price, confirm again), `SUBSCRIPTION_DOWNGRADE_NO_METHOD` (no stored
+   * card), `SUBSCRIPTION_NOT_CANCELLABLE` (no running paid term),
+   * `SUBSCRIPTION_ALREADY_CANCELLED` (undo the cancel first) — all 409.
+   */
+  scheduleDowngrade: (body: ScheduleDowngradeRequest) =>
+    api.post<SubscriptionState>("/payments/subscription/downgrade", body),
+
+  /**
+   * Undo a scheduled downgrade («تراجع»). A no-op 200 when nothing is pending,
+   * so a double click is harmless. Returns the refreshed `SubscriptionState`.
+   */
+  cancelScheduledDowngrade: () =>
+    api.delete<SubscriptionState>("/payments/subscription/downgrade"),
 };
 
 export const templatesApi = {

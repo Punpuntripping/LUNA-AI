@@ -76,6 +76,10 @@ export type ErrorCode =
   // Subscription lifecycle
   | "SUBSCRIPTION_NOT_CANCELLABLE"
   | "SUBSCRIPTION_ALREADY_CANCELLED"
+  // Scheduled downgrade («تغيير الباقة» — pro_plus_tier_and_downgrade.md §4/§8), all 409
+  | "SUBSCRIPTION_DOWNGRADE_INVALID" // target not lower / not renewable / not allowed
+  | "SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED" // `expected_price_sar` no longer matches the quote — re-read and re-confirm
+  | "SUBSCRIPTION_DOWNGRADE_NO_METHOD" // no stored card, so the renewal could not charge the new plan
   // Library entitlement (HTTP 402)
   | "LIBRARY_QUOTA_EXCEEDED"
   | "LIBRARY_FROZEN"

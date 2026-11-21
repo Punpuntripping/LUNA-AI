@@ -42,7 +42,7 @@ export async function PricingSection() {
 
   return (
     <section id="pricing" className="scroll-mt-20 bg-muted/30 py-16 sm:py-20">
-      <div className="mx-auto max-w-5xl px-4">
+      <div className="mx-auto max-w-6xl px-4">
         {/* Section header */}
         <div className="mx-auto max-w-2xl text-center">
           <span className="text-sm font-semibold text-primary">الباقات والأسعار</span>
@@ -66,8 +66,8 @@ export async function PricingSection() {
           </p>
         </div>
 
-        {/* Plan cards */}
-        <div className="mt-10 grid gap-6 md:grid-cols-3">
+        {/* Plan cards — same grid as /pricing: 1 → 2×2 (sm) → 4 across (xl). */}
+        <div className="mt-10 grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
           {cards.map(({ plan, pricing }) => (
             <div
               key={plan.id}

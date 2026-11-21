@@ -369,20 +369,26 @@ export function QuotaUpgradeDialog({
     !showFreeTrial && cards.some((card) => card.pricing.isPromo);
 
   // One card in a 4xl modal under a 3-column grid looks broken. Both the shell
-  // and the grid follow the count.
+  // and the grid follow the count. Four (the whole catalog since pro_plus — a
+  // free user's wall) go 2×2 below xl and four across from it, the same steps
+  // as /pricing: under a 3-column grid the fourth card (max) sat alone.
   const cardCount = cards.length + (showFreeTrial ? 1 : 0);
   const widthClass =
-    cardCount >= 3
-      ? "max-w-4xl"
-      : cardCount === 2
-        ? "max-w-2xl"
-        : "max-w-md";
+    cardCount >= 4
+      ? "max-w-6xl"
+      : cardCount === 3
+        ? "max-w-4xl"
+        : cardCount === 2
+          ? "max-w-2xl"
+          : "max-w-md";
   const gridClass =
-    cardCount >= 3
-      ? "md:grid-cols-3"
-      : cardCount === 2
-        ? "md:grid-cols-2"
-        : "md:grid-cols-1";
+    cardCount >= 4
+      ? "sm:grid-cols-2 xl:grid-cols-4"
+      : cardCount === 3
+        ? "md:grid-cols-3"
+        : cardCount === 2
+          ? "md:grid-cols-2"
+          : "md:grid-cols-1";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

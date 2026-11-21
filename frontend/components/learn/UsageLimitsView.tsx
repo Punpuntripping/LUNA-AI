@@ -28,7 +28,8 @@ import { cn } from "@/lib/utils";
  *
  * The per-plan counts are the caps divided by that 5–10 band, floored on both
  * ends, against `plans.points_session` / `points_weekly` (live values: basic
- * 15/75 · pro 20/100 · max 100/500 — migrations 187 + 188, 2026-10-26).
+ * 15/75 · pro 20/100 · max 100/500 — migrations 187 + 188, 2026-10-26;
+ * pro_plus 50/250 — migration 225, pro_plus_tier_and_downgrade.md §0).
  *
  * `free` is deliberately NOT in that table any more (migration 129): it has no
  * session and no weekly limit at all, just 5 points per rolling 30 days. Its
@@ -131,6 +132,13 @@ const PLAN_ROWS: readonly PlanRow[] = [
     weekly: "100",
     weeklyRuns: "10–20",
     highlighted: true,
+  },
+  {
+    plan: "الاحترافية بلس",
+    session: "50",
+    sessionRuns: "5–10",
+    weekly: "250",
+    weeklyRuns: "25–50",
   },
   {
     plan: "القصوى",
@@ -440,9 +448,10 @@ export function UsageLimitsView() {
             <p className="rounded-xl border border-border bg-muted/30 p-4 text-sm leading-relaxed text-muted-foreground">
               <b className="text-foreground">حدّان مستقلان</b> — لا يمسّان
               نقاطك: <b className="text-foreground">فتح المصادر</b> من المكتبة
-              (100 للأساسية · 200 للاحترافية · 1000 للقصوى)، و
+              (100 للأساسية · 200 للاحترافية · 500 للاحترافية بلس · 1000
+              للقصوى)، و
               <b className="text-foreground"> استخراج النص</b> من الملفات
-              بالصفحات (50 · 150 · 1000 شهرياً).
+              بالصفحات (50 · 150 · 500 · 1000 شهرياً).
             </p>
             {/* The «سقف شهري احتياطي (300 / 1000)» line that stood here was
                 removed with migration 129: those numbers were set to NULL so

@@ -23,7 +23,10 @@ interface PlanPriceProps {
  * The price renders as ONE piece at a uniform size (owner, 2026-08-04): the
  * earlier big-integer/small-fraction split read as «90.» colliding with the
  * riyal symbol in RTL — ugly and ambiguous on a payment surface. `text-4xl`
- * (not 5xl) keeps «289.90» from reflowing the three-card grid at md.
+ * (not 5xl) keeps the widest price («219.90», or «169.90» beside a struck
+ * «219.90» during an offer) inside a four-across card at xl; the row is
+ * `flex-wrap`, so a narrower card wraps the period/list price rather than
+ * overflowing.
  *
  * ⚠ `listPrice` is a SIBLING element, never a re-split of the number. It sits
  * after the riyal symbol at `text-base`, so the amount the user will actually be

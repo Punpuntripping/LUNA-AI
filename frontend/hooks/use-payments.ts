@@ -10,12 +10,15 @@ import type {
   PaymentMethodState,
   PaymentRefundResponse,
   PaymentVerifyResponse,
+  ScheduleDowngradeRequest,
+  SubscriptionState,
 } from "@/types";
 
 export const paymentKeys = {
   all: ["payments"] as const,
   history: () => [...paymentKeys.all, "history"] as const,
   method: () => [...paymentKeys.all, "method"] as const,
+  subscription: () => [...paymentKeys.all, "subscription"] as const,
 };
 
 /** What "no card on file" looks like — the shape `DELETE` leaves behind, and
@@ -203,6 +206,103 @@ export function useRefundPayment() {
     retry: false,
     onSuccess: async () => {
       await refreshEntitlements(queryClient);
+    },
+  });
+}
+
+// -----------------------------------------------
+// الاشتراك — the subscription read + scheduled downgrade
+// (.claude/plans/pro_plus_tier_and_downgrade.md §4.4 + §8)
+// -----------------------------------------------
+
+/**
+ * `GET /payments/subscription` for إعدادات الحساب — fetched only while the
+ * dialog is open, and re-read on EVERY opening (`staleTime: 0`): the term end,
+ * a cancellation or a pending downgrade may have changed from another device.
+ *
+ * Fails QUIET, like the card read above: the dialog renders no subscription
+ * section while `data` is undefined, so a first read that fails blocks nothing
+ * (passwords, sessions and account deletion live in the same dialog). A later
+ * re-read that fails keeps the last good answer on screen instead of blanking
+ * a section the user is looking at. `retry: false` for the same reason as
+ * `usePaymentMethod`.
+ */
+export function useSubscription(enabled: boolean) {
+  return useQuery<SubscriptionState>({
+    queryKey: paymentKeys.subscription(),
+    queryFn: paymentsApi.getSubscription,
+    enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+}
+
+/**
+ * Every subscription verb (cancel, reactivate, schedule/undo a downgrade)
+ * answers with the GET shape, so the answer is written straight into the
+ * cache — the section re-renders from the server's own state without a blank
+ * in between — and the query is then invalidated for a confirming re-read.
+ *
+ * A body that is not a subscription object (a proxy's empty 200, say) is NOT
+ * written: `{}` in the cache would read as "no plan" and hide the section.
+ */
+export function useWriteSubscription() {
+  const queryClient = useQueryClient();
+  return (next: SubscriptionState | null | undefined) => {
+    if (next && typeof next === "object" && "plan_id" in next) {
+      queryClient.setQueryData<SubscriptionState>(
+        paymentKeys.subscription(),
+        next,
+      );
+    }
+    void queryClient.invalidateQueries({
+      queryKey: paymentKeys.subscription(),
+    });
+  };
+}
+
+/**
+ * Schedule a downgrade for the next renewal (`POST /subscription/downgrade`).
+ * Never retried: the 409s it can return are answers, not hiccups — and each
+ * carries the backend's Arabic message, which the caller renders as is. On an
+ * error the subscription is re-read too: a 409 usually means the state on
+ * screen is stale — cancelled or upgraded from another device, no stored card
+ * any more (`SUBSCRIPTION_DOWNGRADE_NO_METHOD`), or a quote that moved
+ * (`SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED`, after which the confirm step shows
+ * the re-read price and waits for a new confirm — never a silent retry at the
+ * new price).
+ */
+export function useScheduleDowngrade() {
+  const queryClient = useQueryClient();
+  const writeSubscription = useWriteSubscription();
+  // The variable IS the request body, built by `scheduleDowngradeBody()` from
+  // the option on screen (plan id + the price and offer months shown).
+  return useMutation<SubscriptionState, ApiClientError, ScheduleDowngradeRequest>({
+    mutationFn: (body: ScheduleDowngradeRequest) =>
+      paymentsApi.scheduleDowngrade(body),
+    retry: false,
+    onSuccess: (state) => writeSubscription(state),
+    onError: () => {
+      void queryClient.invalidateQueries({
+        queryKey: paymentKeys.subscription(),
+      });
+    },
+  });
+}
+
+/** Undo the scheduled downgrade («تراجع») — `DELETE /subscription/downgrade`. */
+export function useCancelScheduledDowngrade() {
+  const queryClient = useQueryClient();
+  const writeSubscription = useWriteSubscription();
+  return useMutation<SubscriptionState, ApiClientError, void>({
+    mutationFn: () => paymentsApi.cancelScheduledDowngrade(),
+    retry: false,
+    onSuccess: (state) => writeSubscription(state),
+    onError: () => {
+      void queryClient.invalidateQueries({
+        queryKey: paymentKeys.subscription(),
+      });
     },
   });
 }

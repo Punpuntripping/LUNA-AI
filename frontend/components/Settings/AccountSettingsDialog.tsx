@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, CreditCard, Loader2 } from "lucide-react";
 import {
@@ -31,11 +31,39 @@ import { ApiClientError, paymentsApi } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
 import { DeleteAccountDialog } from "@/components/Settings/DeleteAccountDialog";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
-import { formatSar, pricingPlansAbove } from "@/lib/pricing";
+import { findPricingPlan, formatSar, pricingPlansAbove } from "@/lib/pricing";
 import { useEarlyAdopterStore } from "@/stores/early-adopter-store";
-import { usePaymentMethod, useRemovePaymentMethod } from "@/hooks/use-payments";
-import type { CancelSubscriptionReason, SubscriptionState } from "@/types";
+import {
+  useCancelScheduledDowngrade,
+  usePaymentMethod,
+  useRemovePaymentMethod,
+  useScheduleDowngrade,
+  useSubscription,
+  useWriteSubscription,
+} from "@/hooks/use-payments";
+import type { CancelSubscriptionReason } from "@/types";
 import { PromoTermsLink } from "@/components/pricing/PromoTermsLink";
+import { PlanChangeDialog } from "@/components/Settings/PlanChangeDialog";
+import {
+  DOWNGRADE_NO_METHOD_CODE,
+  DOWNGRADE_NO_METHOD_DISMISS,
+  DOWNGRADE_PRICE_CHANGED_FALLBACK,
+  DOWNGRADE_PRICE_PROMISE,
+  cancelDropsPendingSentence,
+  cheapestDowngrade,
+  downgradeBlockedReason,
+  downgradeNoMethodNote,
+  errorCodeOf,
+  isPriceChangedError,
+  pendingDowngradeSentence,
+  pendingPricePhrase,
+  planChangeErrorMessage,
+  readDowngradeOptions,
+  retentionButtonLabel,
+  retentionOfferSentence,
+  retentionTimingSentence,
+  scheduleDowngradeBody,
+} from "@/components/Settings/plan-change-content";
 
 // ── الاشتراك ─────────────────────────────────────────────────────────────────
 // `.claude/plans/subscription_cancellation.md` §4.
@@ -164,7 +192,7 @@ function CardMask({
  *  `payment_method_service.RENEWABLE_PLAN_IDS`, which stays authoritative; this
  *  decides display only. `basic` is a one-time 7-day term that ends without a
  *  further charge, so it must never be warned about a renewal it never had. */
-const RENEWING_PLAN_IDS = new Set(["pro", "max"]);
+const RENEWING_PLAN_IDS = new Set(["pro", "pro_plus", "max"]);
 
 /**
  * «أغسطس 2027» from `exp_month` + `exp_year`, or null for anything unusable.
@@ -241,11 +269,27 @@ export function AccountSettingsDialog({
 
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const [subscription, setSubscription] = useState<SubscriptionState | null>(
-    null,
-  );
+  // The subscription read (TanStack, `paymentKeys.subscription()`), re-read on
+  // every opening. Silent about failure on purpose: this dialog's job is
+  // passwords, sessions and account deletion, and none of those may be blocked
+  // because the subscription read hiccuped. No state → no section.
+  const { data: subscriptionData, isFetching: subscriptionFetching } =
+    useSubscription(open);
+  const subscription = subscriptionData ?? null;
+  // Every subscription verb answers with the GET shape: write it into the
+  // cache (the section re-renders from it at once) and re-read to confirm.
+  const writeSubscription = useWriteSubscription();
   const [cancelOpen, setCancelOpen] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  // «تغيير الباقة» — the scheduled downgrade (pro_plus_tier_and_downgrade §4).
+  const [planChangeOpen, setPlanChangeOpen] = useState(false);
+  const undoDowngrade = useCancelScheduledDowngrade();
+  // The cancel flow's retention offer schedules through its own mutation, so
+  // its pending/error state renders inside the cancel dialog and nowhere else.
+  const retentionDowngrade = useScheduleDowngrade();
+  // «حسناً» on the no-card retention note hides that note (the cancel form
+  // itself stays usable); reset with the rest of the cancel form.
+  const [retentionDismissed, setRetentionDismissed] = useState(false);
   const [cancelReason, setCancelReason] =
     useState<CancelSubscriptionReason | null>(null);
   const [cancelComment, setCancelComment] = useState("");
@@ -284,25 +328,6 @@ export function AccountSettingsDialog({
     setNameInput(callName ?? "");
   }, [open, callName]);
 
-  // The subscription section is silent about failure on purpose: this dialog's
-  // job is passwords, sessions and account deletion, and none of those may be
-  // blocked because the subscription read hiccuped. No state → no section.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const state = await paymentsApi.getSubscription();
-        if (!cancelled) setSubscription(state);
-      } catch {
-        if (!cancelled) setSubscription(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
   const resetPasswordForm = () => {
     setPasswordFormKey((k) => k + 1);
     setPasswordSaved(null);
@@ -312,6 +337,8 @@ export function AccountSettingsDialog({
     setCancelReason(null);
     setCancelComment("");
     setCancelError(null);
+    retentionDowngrade.reset();
+    setRetentionDismissed(false);
   };
 
   const handleOpenChange = (next: boolean) => {
@@ -326,6 +353,8 @@ export function AccountSettingsDialog({
       setRemoveCardOpen(false);
       setRemoveCardError(null);
       removeCard.reset();
+      setPlanChangeOpen(false);
+      undoDowngrade.reset();
     }
     onOpenChange(next);
   };
@@ -374,7 +403,7 @@ export function AccountSettingsDialog({
       });
       // The response IS the new state — render the cancelled copy inline
       // instead of re-fetching and leaving the section blank in between.
-      setSubscription(next);
+      writeSubscription(next);
       setCancelOpen(false);
       resetCancelForm();
     } catch (err) {
@@ -392,7 +421,7 @@ export function AccountSettingsDialog({
     setReactivateError(null);
     setIsReactivating(true);
     try {
-      setSubscription(await paymentsApi.reactivateSubscription());
+      writeSubscription(await paymentsApi.reactivateSubscription());
     } catch (err) {
       setReactivateError(
         err instanceof ApiClientError && err.message
@@ -488,6 +517,77 @@ export function AccountSettingsDialog({
   const isReturnable = subscription?.early_adopter?.returnable === true;
   const returnPromoPrice =
     campaign.promo[subscription?.plan_id ?? ""] ?? campaign.promo.pro ?? null;
+
+  // ── تغيير الباقة (pro_plus_tier_and_downgrade.md §4.1, §8) ──────────────────
+  // The plans a switch may target — the server's list, parsed defensively.
+  // Empty on an older backend, a store-billed or cancelled subscription, or
+  // the lowest renewable plan (pro): then there is no «تغيير الباقة» at all.
+  const downgradeOptions = useMemo(
+    () => readDowngradeOptions(subscription),
+    [subscription],
+  );
+  const currentPlanName =
+    subscription?.plan_name_ar ??
+    findPricingPlan(subscription?.plan_id ?? "")?.nameAr ??
+    subscription?.plan_id ??
+    "";
+  // A switch already scheduled for the next renewal. The name falls back to the
+  // catalog card, then to the raw id — never to nothing, since the banner is
+  // the only place the user can see (and undo) what they scheduled.
+  const pendingPlanId = subscription?.pending_plan_id ?? null;
+  const pendingPlanName = pendingPlanId
+    ? (subscription?.pending_plan_name_ar ??
+      findPricingPlan(pendingPlanId)?.nameAr ??
+      pendingPlanId)
+    : null;
+  const pendingPrice =
+    subscription && pendingPlanId
+      ? pendingPricePhrase(subscription, downgradeOptions)
+      : null;
+  // Mid-retry the renewal is happening now, not on a future date — so the
+  // banner drops the date rather than naming one already in the past.
+  const renewsOn = inRenewalGrace ? null : termEndsAt;
+  // Retention (cancel flow, reason «السعر مرتفع»): a user leaving because of
+  // the price is offered the cheapest step down instead. Only while nothing is
+  // pending — a pending switch is already on screen, and the cancel would clear
+  // it anyway.
+  const retentionOption =
+    !pendingPlanId && !inRenewalGrace
+      ? cheapestDowngrade(downgradeOptions)
+      : null;
+  const showRetention =
+    cancelReason === "expensive" && retentionOption !== null;
+
+  // No stored card → nothing renews at all (a card can only be saved by
+  // completing a payment). «تغيير الباقة» stays, but its dialog and the
+  // retention card say so instead of offering a switch.
+  const downgradeBlocked =
+    downgradeBlockedReason(subscription) === "no_payment_method";
+  // The retention quote moved (`SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED`): the
+  // card re-renders from the re-read with the new price and says it changed;
+  // nothing is scheduled until the button is pressed again.
+  const retentionPriceChanged =
+    retentionDowngrade.isError && isPriceChangedError(retentionDowngrade.error);
+  const showRetentionError =
+    retentionDowngrade.isError &&
+    !retentionPriceChanged &&
+    !(
+      downgradeBlocked &&
+      errorCodeOf(retentionDowngrade.error) === DOWNGRADE_NO_METHOD_CODE
+    );
+
+  const handleRetentionDowngrade = () => {
+    if (!retentionOption) return;
+    // Plan id + the price and offer months the card just showed.
+    retentionDowngrade.mutate(scheduleDowngradeBody(retentionOption), {
+      onSuccess: () => {
+        // The switch is scheduled, so nothing was cancelled: close the cancel
+        // dialog; the settings dialog behind it now shows the pending banner.
+        setCancelOpen(false);
+        resetCancelForm();
+      },
+    });
+  };
 
   // The stored-card surface. Shown on `has_method` ALONE — never gated on a
   // running subscription: a credential the user cannot see is a credential they
@@ -787,6 +887,54 @@ export function AccountSettingsDialog({
                           تنتهي في {termEndsAt}
                         </p>
                       )}
+                      {/* A switch scheduled for the next renewal — stated with
+                          its date and price, and undoable right here until the
+                          renewal runs (plan §4.1). Same primary tint as the
+                          early-adopter note: information about their standing,
+                          not an alarm. */}
+                      {pendingPlanName && (
+                        <div
+                          className="flex flex-col gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5"
+                          data-testid="subscription-pending-downgrade"
+                        >
+                          <p className="text-sm leading-relaxed text-foreground">
+                            {/* The price is the stored promise, never null
+                                while a switch is pending; a payload missing it
+                                (defensive) gets the same sentence without a
+                                price rather than a guessed one. */}
+                            {pendingDowngradeSentence(
+                              pendingPlanName,
+                              renewsOn,
+                              pendingPrice,
+                            )}
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-fit bg-background"
+                            onClick={() => undoDowngrade.mutate()}
+                            disabled={undoDowngrade.isPending}
+                            data-testid="subscription-pending-downgrade-undo"
+                          >
+                            {undoDowngrade.isPending && (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            )}
+                            تراجع
+                          </Button>
+                          {undoDowngrade.isError && (
+                            <p
+                              className="text-sm text-destructive"
+                              role="alert"
+                              data-testid="subscription-pending-downgrade-error"
+                            >
+                              {planChangeErrorMessage(
+                                undoDowngrade.error,
+                                "تعذّر التراجع عن تغيير الباقة. حاول مجددًا.",
+                              )}
+                            </p>
+                          )}
+                        </div>
+                      )}
                       <div className="flex flex-wrap items-center gap-3">
                         {upgradePlans.length > 0 && (
                           <Button
@@ -796,6 +944,18 @@ export function AccountSettingsDialog({
                             data-testid="subscription-upgrade-open"
                           >
                             ترقية الباقة
+                          </Button>
+                        )}
+                        {/* Hidden while a switch is pending: the banner above
+                            owns it, and «تراجع» then «تغيير الباقة» re-picks. */}
+                        {downgradeOptions.length > 0 && !pendingPlanId && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setPlanChangeOpen(true)}
+                            data-testid="subscription-change-plan-open"
+                          >
+                            تغيير الباقة
                           </Button>
                         )}
                         {/* Subdued: cancelling is allowed, not encouraged, and
@@ -989,7 +1149,7 @@ export function AccountSettingsDialog({
       <AlertDialog
         open={cancelOpen}
         onOpenChange={(next) => {
-          if (!next && !isCancelling) {
+          if (!next && !isCancelling && !retentionDowngrade.isPending) {
             setCancelOpen(false);
             resetCancelForm();
           }
@@ -1015,6 +1175,18 @@ export function AccountSettingsDialog({
                     تبقى باقتك فعّالة
                     {termEndsAt ? ` حتى ${termEndsAt}` : ""} ثم تنتقل إلى الباقة
                     المجانية. يمكنك التراجع في أي وقت قبل ذلك.
+                  </span>
+                )}
+
+                {/* Cancel wins over a scheduled switch (plan §4.1): the server
+                    clears it, so say so before the user confirms — otherwise
+                    an undo of the cancel would silently not bring it back. */}
+                {pendingPlanName && (
+                  <span
+                    className="text-sm text-muted-foreground"
+                    data-testid="cancel-drops-pending-downgrade"
+                  >
+                    {cancelDropsPendingSentence(pendingPlanName)}
                   </span>
                 )}
 
@@ -1120,7 +1292,7 @@ export function AccountSettingsDialog({
                         value={option.key}
                         checked={cancelReason === option.key}
                         onChange={() => setCancelReason(option.key)}
-                        disabled={isCancelling}
+                        disabled={isCancelling || retentionDowngrade.isPending}
                         className="h-4 w-4 accent-primary"
                         data-testid={`cancel-reason-${option.key}`}
                       />
@@ -1128,6 +1300,103 @@ export function AccountSettingsDialog({
                     </label>
                   ))}
                 </div>
+
+                {/* Retention (plan §4.1): «السعر مرتفع» with a cheaper renewable
+                    plan available → offer the switch BEFORE the cancel is
+                    confirmed. One click schedules it, so the card carries the
+                    whole disclosure the confirm sheet would: target, price,
+                    and that the current plan runs to its date. Same primary
+                    tint and tone as the notes above — an option, not a
+                    pressure tactic; «تأكيد الإلغاء» stays fully available. */}
+                {/* No stored card: nothing would renew, so no offer — the
+                    same truthful note as «تغيير الباقة», and «حسناً» hides it
+                    (the cancel itself stays available below). */}
+                {showRetention && downgradeBlocked && !retentionDismissed && (
+                  <span
+                    className="flex flex-col gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm leading-relaxed text-foreground"
+                    data-testid="cancel-retention-no-method"
+                  >
+                    <span>{downgradeNoMethodNote(termEndsAt)}</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-fit bg-background"
+                      onClick={() => setRetentionDismissed(true)}
+                      data-testid="cancel-retention-no-method-dismiss"
+                    >
+                      {DOWNGRADE_NO_METHOD_DISMISS}
+                    </Button>
+                  </span>
+                )}
+                {showRetention && !downgradeBlocked && retentionOption && (
+                  <span
+                    className="flex flex-col gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm leading-relaxed text-foreground"
+                    data-testid="cancel-retention-downgrade"
+                  >
+                    <span className="font-medium">
+                      {retentionOfferSentence(retentionOption)}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {retentionTimingSentence(termEndsAt)}
+                    </span>
+                    {/* The quote moved: the sentence above is already the
+                        re-read price; this says why it differs. */}
+                    {retentionPriceChanged && (
+                      <span
+                        className="text-foreground"
+                        role="status"
+                        data-testid="cancel-retention-price-changed"
+                      >
+                        {planChangeErrorMessage(
+                          retentionDowngrade.error,
+                          DOWNGRADE_PRICE_CHANGED_FALLBACK,
+                        )}
+                      </span>
+                    )}
+                    {/* Same promise line as the confirm sheet: the price
+                        in the sentence above is reserved for the renewal. */}
+                    <span
+                      className="text-xs text-muted-foreground"
+                      data-testid="cancel-retention-price-promise"
+                    >
+                      {DOWNGRADE_PRICE_PROMISE}
+                      {retentionOption.promo_price_sar !== null && (
+                        <PromoTermsLink className="mt-1 block" />
+                      )}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-fit bg-background"
+                      onClick={handleRetentionDowngrade}
+                      // Disabled during a re-read too, so a click after a
+                      // price change sends the NEW price, never the old.
+                      disabled={
+                        retentionDowngrade.isPending ||
+                        isCancelling ||
+                        subscriptionFetching
+                      }
+                      data-testid="cancel-retention-downgrade-confirm"
+                    >
+                      {retentionDowngrade.isPending && (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      )}
+                      {retentionButtonLabel(retentionOption)}
+                    </Button>
+                    {showRetentionError && (
+                      <span
+                        className="text-sm text-destructive"
+                        role="alert"
+                        data-testid="cancel-retention-downgrade-error"
+                      >
+                        {planChangeErrorMessage(
+                          retentionDowngrade.error,
+                          "تعذّر تغيير الباقة. حاول مجددًا.",
+                        )}
+                      </span>
+                    )}
+                  </span>
+                )}
 
                 <textarea
                   value={cancelComment}
@@ -1153,7 +1422,9 @@ export function AccountSettingsDialog({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isCancelling}>
+            <AlertDialogCancel
+              disabled={isCancelling || retentionDowngrade.isPending}
+            >
               تراجع
             </AlertDialogCancel>
             <AlertDialogAction
@@ -1166,7 +1437,9 @@ export function AccountSettingsDialog({
               }}
               // A survey with no answer is the one thing this flow exists to
               // collect, so the confirm stays closed until a reason is picked.
-              disabled={!cancelReason || isCancelling}
+              disabled={
+                !cancelReason || isCancelling || retentionDowngrade.isPending
+              }
               data-testid="cancel-subscription-confirm"
             >
               {isCancelling && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -1249,6 +1522,20 @@ export function AccountSettingsDialog({
         onOpenChange={setDeleteOpen}
         hasPasswordIdentity={hasPassword}
       />
+
+      {/* «تغيير الباقة» — a sibling like the dialogs above, so it stacks over
+          the settings dialog. Mounted only while there is something to pick. */}
+      {downgradeOptions.length > 0 && (
+        <PlanChangeDialog
+          open={planChangeOpen}
+          onOpenChange={setPlanChangeOpen}
+          currentPlanName={currentPlanName}
+          termEndsAt={termEndsAt}
+          options={downgradeOptions}
+          blockedReason={downgradeBlockedReason(subscription)}
+          refreshing={subscriptionFetching}
+        />
+      )}
 
       {/* Same dialog the quota block opens, minus the block: no `info`, because
           nothing has been exceeded here and a fabricated quota event would put
