@@ -80,14 +80,19 @@ HTTP_TIMEOUT_S = 15.0
 
 # ``plans.billing_cycle`` for a plan that renews. Trap 6 in the plan: this
 # column has been decorative since 076 — 132 sets it to this value for pro/max
-# and THIS constant is the branch that finally reads it.
+# (and 225 for pro_plus) and THIS constant is the branch that finally reads it.
 RECURRING_CYCLE = "recurring_30d"
 
-# Belt AND braces. A plan renews only if it is one of these two AND its
+# Belt AND braces. A plan renews only if it is one of these three AND its
 # billing_cycle says so. Either half alone is one typo away from charging a
 # `basic` buyer (who was told, on the card they were looking at, that their plan
 # does not renew) or from silently renewing nothing.
-RENEWABLE_PLAN_IDS = frozenset({"pro", "max"})
+#
+# `pro_plus` (الاحترافية بلس, pro_plus_tier_and_downgrade.md §3) ranks between
+# pro and max. The renewal job's selection reads this set, and so does the
+# scheduled-downgrade target check (subscription_service): a downgrade can only
+# ever land on a plan that renews.
+RENEWABLE_PLAN_IDS = frozenset({"pro", "pro_plus", "max"})
 
 # ── Instrument provenance (migration 163) ────────────────────────────────────
 #

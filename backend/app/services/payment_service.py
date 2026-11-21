@@ -138,6 +138,24 @@ Additive keys appear whatever the flag (``promo: null``, ``offer_*: null``,
 ``reason: null``, ``months``), a credited row stamps ``credit_basis = 'price'``
 with the flag off, and ``promo_checkout_price`` is asked on every checkout, so
 an RPC failure is a 503 even with the flag off.
+
+Migrations ``225_pro_plus_plan.sql`` / ``226_scheduled_downgrade.sql``
+(`.claude/plans/pro_plus_tier_and_downgrade.md`): ``pro_plus`` joins
+``PLAN_RANK`` between pro and max, and ``user_subscriptions.renewal_plan_id``
+schedules a move to a LOWER plan at the next renewal (checkout still refuses a
+lower plan while a higher one runs). This module's dealings with it, all beside
+``grant_plan`` and never raising:
+
+* ``fresh_purchase_quote`` prices the target (``p_as_new => true``) for both the
+  settings dialog and the renewal job;
+* ``_mark_paid_and_grant`` clears ``renewal_plan_id`` after a user-initiated
+  purchase or after the downgrade renewal itself, lets a batch-priced downgrade
+  renewal claim its seat, and then (226's grant → claim → release order)
+  releases the left plan's seat ``'downgraded'``.
+
+⚠ APPLY 226 BEFORE DEPLOYING: ``subscription_service`` and ``renewal_service``
+name ``renewal_plan_id`` in their selects (this module's own reads go through
+``select("*")`` helpers and degrade to "nothing pending").
 """
 from __future__ import annotations
 
@@ -224,7 +242,7 @@ def _refund_fee_halalas(row: dict) -> int:
 
     The provider fee is read from the stored ``raw_payload`` — the value
     Moyasar itself reported for the original charge — so mada vs Visa and
-    49.90 vs 289.90 are each recovered exactly, with no rate table to drift.
+    49.90 vs 219.90 are each recovered exactly, with no rate table to drift.
     """
     payload = row.get("raw_payload") or {}
     provider_fee = payload.get("fee") if isinstance(payload, dict) else None
@@ -276,10 +294,16 @@ STATUS_EXPIRED = "expired"           # superseded / stale checkout (migration 11
 CREDIT_QUOTE_TTL = timedelta(hours=24)
 CREDIT_EPSILON_SAR = Decimal("0.02")
 
-# Purchasable-plan ordering. Only these three participate in the downgrade
+# Purchasable-plan ordering. Only these four participate in the downgrade
 # guard and in proration; free / marketing_* / dev are rank-less, so a user on a
 # promo or dev plan can buy anything (and earns no credit — see create_checkout).
-PLAN_RANK: dict[str, int] = {"basic": 1, "pro": 2, "max": 3}
+#
+# `pro_plus` (الاحترافية بلس, pro_plus_tier_and_downgrade.md §0) sits between
+# pro and max, so pro → pro_plus and pro_plus → max are upgrades (credited by
+# _upgrade_credit) and max → pro_plus is refused here while max runs. A move
+# DOWN is a scheduled change at the next renewal instead
+# (subscription_service.schedule_downgrade), which reads this same ranking.
+PLAN_RANK: dict[str, int] = {"basic": 1, "pro": 2, "pro_plus": 3, "max": 4}
 
 # Webhook events we act on. Everything else (payment_authorized,
 # payment_captured, payment_voided, payment_verified) is answered 200 + logged:
@@ -294,7 +318,10 @@ HANDLED_EVENTS = frozenset({EVENT_PAID, EVENT_FAILED, EVENT_ABANDONED, EVENT_REF
 
 PAYMENTS_UNAVAILABLE_AR = "خدمة الدفع غير متاحة حالياً، حاول لاحقاً"
 PLAN_NOT_PURCHASABLE_AR = "هذه الباقة غير متاحة للشراء"
-DOWNGRADE_BLOCKED_AR = "لديك باقة أعلى فعّالة حالياً. يمكنك شراء باقة أقل بعد انتهاء باقتك الحالية."
+DOWNGRADE_BLOCKED_AR = (
+    "لديك باقة أعلى فعّالة حالياً. يمكنك التحويل إلى باقة أقل من إعدادات الحساب، "
+    "ويبدأ التحويل عند التجديد."
+)
 PAYMENT_NOT_FOUND_AR = "لم يتم العثور على عملية الدفع"
 PAYMENT_MISMATCH_AR = "بيانات عملية الدفع غير مطابقة"
 PROVIDER_ERROR_AR = "تعذّر إتمام العملية مع مزوّد الدفع، حاول مجدداً"
@@ -480,7 +507,7 @@ def vat_split(charge_sar: Decimal) -> tuple[Decimal, Decimal]:
 
     Stamped once at initiation and stored (plan trap 8): displays read the
     stored numbers forever, so a future rate change cannot rewrite old rows.
-    49.90 → (43.39, 6.51) · 89.90 → (78.17, 11.73) · 289.90 → (252.09, 37.81).
+    49.90 → (43.39, 6.51) · 89.90 → (78.17, 11.73) · 219.90 → (191.22, 28.68).
     """
     charge = q2(charge_sar)
     net = q2(charge / (Decimal("1") + VAT_RATE))
@@ -870,7 +897,12 @@ def _effective_price(
 # what are the promo prices. Never a remaining count, never a seat total, never
 # a closing date (§1.10, §7). After the campaign closes a visitor simply sees
 # the list price, with no explanation.
-PROMO_PLAN_IDS: tuple[str, ...] = ("basic", "pro", "max")
+#
+# `pro_plus` (pro_plus_tier_and_downgrade.md §3.1): promo_public_quote() gains a
+# pro_plus row once `pro_plus_t1_a` is enabled, and this whitelist is what lets
+# it through to the public `promo` / `months` maps. Until then it simply has no
+# row and no key appears.
+PROMO_PLAN_IDS: tuple[str, ...] = ("basic", "pro", "pro_plus", "max")
 
 # An anonymous marketing page polls this. 30s is short enough that the window in
 # which /pricing can show a stale promo is bounded by the frontend's own
@@ -921,7 +953,11 @@ def _quote_months(value: Any) -> Optional[int]:
 
 
 def _checkout_price(
-    supabase: SupabaseClient, user_id: Optional[str], plan_id: str
+    supabase: SupabaseClient,
+    user_id: Optional[str],
+    plan_id: str,
+    *,
+    as_new: bool = False,
 ) -> dict:
     """``promo_checkout_price(user, plan)`` → ``{"ladder_v2": bool, "price_sar":
     Decimal | None, "batch": {batch_id, price_tier, price_sar, months} | None,
@@ -931,12 +967,22 @@ def _checkout_price(
     With it true the row IS the sale — the price is charged as-is, the batch and
     the group are stamped as-is. Raises ``PricingUnavailable`` on an RPC error
     or on a row that cannot be charged (no price, a batch without months, …).
+
+    ``as_new`` (migration 226, pro_plus_tier_and_downgrade.md §8 item 2) asks
+    for the price this user would pay as a FRESH buyer once the running term
+    ends: ``p_as_new => true`` skips promo_quote's "on this plan now" / "lower
+    than the current plan" guard and its live-seat block. Only the scheduled
+    downgrade passes it (``fresh_purchase_quote``); every checkout leaves it
+    off, so the checkout's wire call is byte-identical to the pre-226 one.
     """
+    params: dict[str, Any] = {
+        "p_user_id": str(user_id) if user_id else None,
+        "p_plan_id": str(plan_id),
+    }
+    if as_new:
+        params["p_as_new"] = True
     try:
-        res = supabase.rpc(
-            "promo_checkout_price",
-            {"p_user_id": str(user_id) if user_id else None, "p_plan_id": str(plan_id)},
-        ).execute()
+        res = supabase.rpc("promo_checkout_price", params).execute()
         data = getattr(res, "data", None)
     except Exception as exc:  # noqa: BLE001 — includes 192 not being applied
         raise PricingUnavailable(f"promo_checkout_price failed: {exc}") from exc
@@ -964,6 +1010,49 @@ def _checkout_price(
     intro_group = data.get("intro_group") or None
     return {"ladder_v2": True, "price_sar": q2(price), "batch": batch,
             "intro_group": str(intro_group) if intro_group else None}
+
+
+def fresh_purchase_quote(
+    supabase: SupabaseClient, user_id: Optional[str], plan: Optional[dict]
+) -> dict:
+    """What a SCHEDULED DOWNGRADE to ``plan`` charges: the price of buying that
+    plan fresh on the day the current term ends (D7,
+    pro_plus_tier_and_downgrade.md §1). Sync — call through ``run_db``.
+
+    → ``{"price_sar": Decimal, "list_sar": Decimal, "batch": dict | None,
+    "intro_group": str | None}`` — ``batch`` / ``intro_group`` exactly as
+    ``_checkout_price`` parses them, so the renewal job stamps a downgrade's
+    ledger row the way checkout stamps a purchase (the batch claim then seats
+    it, and a Pro Tier 1 offer stays non-refundable).
+
+    ONE helper for every reader on purpose: the settings dialog prices the
+    options with it, ``schedule_downgrade`` stores its answer as the PROMISE,
+    and the renewal job asks it again at the charge and takes the lower of the
+    two (owner 2026-11-20) — so the number the user confirmed is a ceiling.
+
+    * ``ladder_v2`` ON → ``promo_checkout_price(user, plan, p_as_new => true)``:
+      the offer if they are eligible for it as a fresh buyer, else list.
+    * ``ladder_v2`` OFF (a rollback state) → the LIST price. The flag-off
+      purchase price can be a legacy campaign price, and a renewal charge never
+      claims a legacy seat — so it would buy one discounted month and then step
+      up unannounced. List is the conservative answer, and it is what a fresh
+      buyer gets once the legacy campaign is closed (it is, since 192).
+
+    Raises ``PricingUnavailable`` when the plan is not purchasable
+    (``price_sar`` NULL — e.g. pro_plus while it ships dark) or the RPC cannot
+    price it. Scheduling then answers 503 (no promise it cannot state); the
+    renewal job charges the stored promise instead. Neither ever falls back to
+    the CURRENT plan's price, which is the one the user asked to stop paying.
+    """
+    if not plan or plan.get("price_sar") is None or not plan.get("plan_id"):
+        raise PricingUnavailable(f"plan not purchasable: {(plan or {}).get('plan_id')!r}")
+    list_price = q2(plan["price_sar"])
+    pricing = _checkout_price(supabase, user_id, str(plan["plan_id"]), as_new=True)
+    if not pricing["ladder_v2"]:
+        return {"price_sar": list_price, "list_sar": list_price, "batch": None,
+                "intro_group": None}
+    return {"price_sar": pricing["price_sar"], "list_sar": list_price,
+            "batch": pricing["batch"], "intro_group": pricing["intro_group"]}
 
 
 def _fetch_public_quote(supabase: SupabaseClient) -> tuple[dict[str, str], dict[str, int]]:
@@ -1679,7 +1768,8 @@ def _is_superseded(row: dict, siblings: list[dict]) -> bool:
     there would eat a plan the user still pays for. Correct in isolation, and
     the whole exploit: buy basic → upgrade pro (credit 49.90) → upgrade max
     (credit 89.90) = 289.90 paid, then refund the basic and the pro. Both
-    no-op, 85.90 comes back, and a 289.90 `max` term stands for 204.00.
+    no-op, 85.90 comes back, and a 289.90 `max` term stands for 204.00. (The
+    2026-08 catalog — basic 49.90, pro 89.90, max 289.90 — kept as found.)
 
     The credit only ever came from a term an EARLIER payment funded, so the
     ladder is a stack and it has to unwind from the top. This predicate names
@@ -2013,9 +2103,11 @@ def _upgrade_credit(
 
     # Never negative, and never so large that the charge falls under Moyasar's
     # 1.00 SAR minimum. With the ratio clamped and downgrades blocked the
-    # ceiling cannot bind on today's catalog (max credit 89.90 < 289.90) — but
-    # it BOUND before the clamp existed (that is the 1.00 SAR `max` above), so
-    # it stays as the second wall rather than as a comment claiming it is idle.
+    # ceiling cannot bind on today's catalog (the largest credit is one period
+    # of the plan just below: pro 94.90 < pro_plus 149.90, pro_plus 149.90 <
+    # max 219.90) — but it BOUND before the clamp existed (that is the 1.00 SAR
+    # `max` above), so it stays as the second wall rather than as a comment
+    # claiming it is idle.
     ceiling = new_price - MIN_CHARGE_SAR
     return max(Decimal("0.00"), min(credit, ceiling if ceiling > 0 else Decimal("0.00")))
 
@@ -2755,6 +2847,19 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
     if not verdict["ok"]:
         return await _hold_for_review(supabase, state, verdict)
 
+    # The scheduled plan change (226), read BEFORE the grant rewrites plan_id:
+    # whether this payment IS that change decides the seat release below.
+    # Never raises; None in the common case (nothing pending).
+    pending = await run_db(
+        subscription_service.read_pending_downgrade, supabase, row["user_id"]
+    )
+    is_renewal = str(row.get("initiated_by") or INITIATED_BY_USER) == INITIATED_BY_RENEWAL
+    is_scheduled_downgrade = bool(
+        pending
+        and pending.get("renewal_plan_id") == row.get("plan_id")
+        and pending.get("plan_id") != row.get("plan_id")
+    )
+
     # ORDER IS LOAD-BEARING: paid → snapshot → grant → usage reset. grant_plan
     # overwrites the subscription row, so the "what were they on before" snapshot
     # has to be taken while it still exists (migration 113 owns that write; we
@@ -2788,6 +2893,19 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
         subscription_service.reset_renewal_ladder, supabase, row["user_id"]
     )
 
+    # ── the scheduled downgrade (pro_plus_tier_and_downgrade.md §4) ────────
+    # `renewal_plan_id` is cleared HERE, in Python, never inside grant_plan —
+    # the same rule as renewal_cancelled_at above. Two payments clear it:
+    #   * any USER-initiated purchase — an upgrade or a re-purchase is a newer
+    #     decision than the pending change, and supersedes it (§4.1);
+    #   * the downgrade renewal itself — the change has now happened.
+    # An ordinary same-plan renewal does NOT: a change scheduled while that
+    # charge was in flight is still wanted for the NEXT renewal.
+    if pending and (not is_renewal or is_scheduled_downgrade):
+        await run_db(
+            subscription_service.clear_scheduled_downgrade, supabase, row["user_id"]
+        )
+
     # ── المشتركون الأوائل: claim the seat (early_adopters.md §1.1, §4) ─────
     # BESIDE grant_plan, never inside it — 113/119/120's rule, the same one the
     # call above is written to — and after the usage reset, because a side
@@ -2808,7 +2926,14 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
     #
     # `initiated_by` is 132's column; a row from before it (or any browser
     # purchase) reads as 'user', which is the branch that claims.
-    if str(row.get("initiated_by") or INITIATED_BY_USER) != INITIATED_BY_RENEWAL:
+    #
+    # ONE renewal does claim: a scheduled downgrade priced from a batch
+    # (`promo_batch_id` stamped by renewal_service). It is a decision the user
+    # made — they picked the plan and were shown the offer price — and it was
+    # charged that offer, so without the seat the next month would step up to
+    # list and the tier would read as unused. An ordinary renewal never carries
+    # a batch, so it still never claims.
+    if not is_renewal or state.get("promo_batch_id"):
         claim = await run_db(
             subscription_service.claim_early_adopter_seat,
             supabase,
@@ -2831,6 +2956,24 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
         batch_id = state.get("promo_batch_id")
         if batch_id and (claim or {}).get("action") == subscription_service.CLAIM_ACTION_CLAIMED:
             await run_db(_alert_if_batch_near_full, supabase, batch_id)
+
+    if is_scheduled_downgrade:
+        # The seat on the plan being LEFT ends at the switch, released
+        # 'downgraded' (that tier counts as used, D12). AFTER grant_plan and the
+        # claim — 226's order (S2): a promo-priced downgrade's claim has already
+        # released the old seat 'downgraded' WITH this payment's id (so a refund
+        # gives it back, V5), and the live seat left is the new term's own,
+        # which the wrapper and the RPC both leave alone. A list-priced
+        # downgrade claims nothing, so this is what ends the old seat. Never
+        # raises.
+        await run_db(
+            subscription_service.release_seat_for_downgrade,
+            supabase,
+            row["user_id"],
+            from_plan_id=pending.get("plan_id"),
+            to_plan_id=row.get("plan_id"),
+            payment_id=payment_id,
+        )
 
     # ── tokenize (auto-renewal plan §6) ────────────────────────────────────
     # BOTH confirmation paths run this function, which is precisely why the
@@ -2940,9 +3083,13 @@ async def _mark_refunded(supabase: SupabaseClient, row: dict, fetched: dict) -> 
     """Provider-side refund (webhook path — the self-serve route stamps its own
     fee columns first, so this then finds the row already refunded)."""
     payment_id = row["payment_id"]
+    # Already 'refunded' on arrival = the self-serve route (refund_payment) got
+    # here first and has ALREADY released the seat — or this is a webhook retry
+    # after the first delivery did. Read before the stamp below rewrites it.
+    already_refunded = row.get("status") == "refunded"
     # status='refunded' MUST be stamped before the RPC — revoke_plan_grant
     # raises 'payment_not_refunded' on a row that still says paid.
-    if row.get("status") != "refunded":
+    if not already_refunded:
         await run_db(
             _update_transaction,
             supabase,
@@ -2956,13 +3103,26 @@ async def _mark_refunded(supabase: SupabaseClient, row: dict, fetched: dict) -> 
     # refund_payment because a refund issued from the Moyasar dashboard only ever
     # reaches us as this event, and a refunded buyer who kept the seat would keep
     # the promo price and hold capacity nobody can see.
-    await run_db(
-        subscription_service.release_early_adopter_seat,
-        supabase,
-        row.get("user_id"),
-        reason=subscription_service.RELEASE_REASON_REFUND,
-        plan_id=row.get("plan_id"),
-    )
+    #
+    # ONCE per refund, never twice: the release is not idempotent. Refunding a
+    # switch releases the switch's seat AND gives back the seat it superseded
+    # (192 V5); a second release would then take THAT seat — live again, its own
+    # purchase still 'paid', so no give-back follows and its tier reads as used.
+    # So it runs only when this event is the first to see the refund (a refund
+    # from the Moyasar dashboard); after the self-serve route it is skipped.
+    if already_refunded:
+        logger.info(
+            "payment_refunded for an already-refunded payment=%s — seat release "
+            "skipped (the self-serve refund already ran it)", payment_id,
+        )
+    else:
+        await run_db(
+            subscription_service.release_early_adopter_seat,
+            supabase,
+            row.get("user_id"),
+            reason=subscription_service.RELEASE_REASON_REFUND,
+            plan_id=row.get("plan_id"),
+        )
 
     # إيصال استرداد — self-claiming, so if the self-serve route already sent
     # it this is a no-op. Never raises.

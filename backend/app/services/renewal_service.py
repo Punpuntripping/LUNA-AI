@@ -1,4 +1,4 @@
-"""The auto-renewal job — charge stored cards for pro/max terms coming due.
+"""The auto-renewal job — charge stored cards for pro/pro_plus/max terms coming due.
 
 Implements `.claude/plans/subscription_auto_renewal.md` §7 (the job) and
 `.claude/plans/renewal_retry_grace.md` (the ladder, which supersedes that plan's
@@ -106,7 +106,37 @@ sweep logs a 42703 every tick and charges nobody). Columns this module names:
   ``renewal_failed_count`` (int, default 0) — 132; ``renewal_grace_until``
   (timestamptz, NULL) — 196, written by this module and nothing else except the
   cancel / re-purchase paths that END a grace;
-* ``plans.billing_cycle`` = 'recurring_30d' for pro and max.
+* ``plans.billing_cycle`` = 'recurring_30d' for pro, pro_plus and max.
+
+THE SCHEDULED DOWNGRADE (migration ``226_scheduled_downgrade.sql``,
+`.claude/plans/pro_plus_tier_and_downgrade.md` §4) ──────────────────────────
+When ``user_subscriptions.renewal_plan_id`` names a LOWER renewable plan
+(``subscription_service.pending_downgrade_of``), the renewal charges and grants
+THAT plan instead of the current one, never at the current plan's 'current'
+price. It charges the LOWER of the price PROMISED when the change was scheduled
+(``renewal_plan_price_sar`` / ``_batch_id`` / ``_promo_months``, owner
+2026-11-20) and a fresh-purchase quote taken now
+(``payment_service.fresh_purchase_quote``, D7) — see ``_price_downgrade``. The
+promise holds even if the target has lost its list price or its offer batch
+has filled or closed: the change is never skipped for that.
+
+* the ledger row is for the target plan, stamped ``promo_batch_id`` +
+  ``intro_offer_terms`` when the price came from a batch (today's or the
+  promised one), so the shared fulfilment claims that seat — over capacity or
+  switched off included — then releases the left plan's seat ``'downgraded'``
+  and clears the change;
+* the period key is unchanged (the old ``expires_at``), and the pre-filter
+  looks at EVERY plan's rows for that period, so a change scheduled or undone
+  mid-ladder can never open a second charge for one period;
+* ``plan_changed_mid_charge`` still compares against the subscription's
+  ORIGINAL plan — the one selected — never the target;
+* every retry rung on the grace ladder charges what rung 0 chose, verbatim;
+* ``_keep_the_billing_date`` puts the new plan's term at old expiry +
+  ``duration_days`` (grant_plan opens a plan change from ``now()``).
+
+⚠ APPLY 226 BEFORE DEPLOYING: the selection names ``renewal_plan_id`` and
+``renewal_plan_set_at``; ahead of it every tick 42703s and charges nobody
+(196's trap, same rule).
 """
 from __future__ import annotations
 
@@ -119,6 +149,7 @@ from supabase import Client as SupabaseClient
 
 from backend.app.services import payment_method_service as pm
 from backend.app.services import payment_service as ps
+from backend.app.services import subscription_service as ss
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.receipt_service import (
     send_payment_receipt,
@@ -195,7 +226,12 @@ SLOT_RELEASING_STATUS = "failed"
 
 _SUBSCRIPTION_COLUMNS = (
     "user_id, plan_id, source, started_at, expires_at, renewal_cancelled_at, "
-    "renewal_attempt_at, renewal_failed_count, renewal_grace_until"
+    "renewal_attempt_at, renewal_failed_count, renewal_grace_until, "
+    # 226 — the scheduled downgrade AND its promise (all five pending columns:
+    # ss.promise_of reads the last three — without them the promise would never
+    # be honoured). ⚠ 226 strictly before deploy.
+    "renewal_plan_id, renewal_plan_set_at, renewal_plan_price_sar, "
+    "renewal_plan_batch_id, renewal_plan_promo_months"
 )
 
 # "Leave this column alone" for _write_renewal_bookkeeping — None means "clear".
@@ -266,7 +302,9 @@ def _select_due_first_attempt(supabase: SupabaseClient, now: datetime) -> list[d
 
     Every filter here is load-bearing and every one of them is in the plan:
 
-    * ``plan_id IN ('pro','max')`` — basic does not renew and says so on the card;
+    * ``plan_id IN pm.RENEWABLE_PLAN_IDS`` (pro, pro_plus, max) — basic does
+      not renew and says so on the card. It is the CURRENT plan that is
+      selected; a scheduled downgrade's target is resolved in ``_renew_one``;
     * ``source = 'payment'`` — a code / marketing / manual / signup grant has no
       card behind it and must never be touched (plan §1 rule 1, the same
       visibility rule the cancel feature uses);
@@ -368,21 +406,38 @@ def _retry_is_due(row: dict, now: datetime) -> bool:
 
 
 def _existing_renewal_rows(
-    supabase: SupabaseClient, user_id: str, plan_id: str, period_start: str
+    supabase: SupabaseClient, user_id: str, plan_id: Optional[str], period_start: str
 ) -> list[dict]:
-    """Every renewal row already written for THIS user + plan + period.
+    """Every renewal row already written for THIS user + period (+ plan, when
+    ``plan_id`` is given).
 
     ⚠ This is NOT the idempotency guard — the partial unique index is (rule 1).
     It is a cheap pre-filter that (a) skips work before a provider call, and
     (b) is the ONLY thing standing between an ambiguous ``initiated`` row and a
     second charge, because an ambiguous row is not a constraint violation for
     the NEXT attempt number. Both walls are needed; neither replaces the other.
+
+    ``_renew_one`` passes ``plan_id=None`` since 226: the unique index is per
+    (user, PLAN, period), and a scheduled downgrade means one period can be
+    attempted under two plans — the target, then the current one after an undo
+    (or the reverse). An ambiguous row under EITHER plan must block the period,
+    so the pre-filter reads them all. For a term that never changes plan this is
+    the same set as before: a period key is one term boundary.
     """
-    res = (
+    query = (
         supabase.table("payment_transactions")
-        .select("payment_id, status, renewal_attempt, period_start, created_at")
+        .select(
+            "payment_id, plan_id, status, renewal_attempt, period_start, created_at, "
+            # a downgrade's retry rung repeats rung 0's price + stamps
+            # (_price_downgrade) — every column here predates 226 (132/183/192)
+            "amount_sar, promo_batch_id, intro_offer_terms, intro_offer_group"
+        )
         .eq("user_id", user_id)
-        .eq("plan_id", plan_id)
+    )
+    if plan_id is not None:
+        query = query.eq("plan_id", plan_id)
+    res = (
+        query
         .eq("initiated_by", ps.INITIATED_BY_RENEWAL)
         .eq("period_start", period_start)
         .execute()
@@ -491,6 +546,7 @@ async def _keep_the_billing_date(
     subscription: dict,
     plan: dict,
     granted_expires_at: Optional[str],
+    plan_id: Optional[str] = None,
 ) -> Optional[str]:
     """A success inside the grace keeps the billing date (renewal_retry_grace.md §3, B2).
 
@@ -518,16 +574,27 @@ async def _keep_the_billing_date(
     Never raises: the money is in and the plan IS granted; the worst a failure
     here leaves is the more generous fresh window. Returns the expiry that now
     stands.
+
+    ``plan_id`` (226) — the plan just GRANTED, when a scheduled downgrade made
+    it differ from ``subscription['plan_id']``. grant_plan never stacks across
+    plans: it opened the new plan from ``now()``, so even an ON-TIME downgrade
+    (charged up to 15 min before the boundary) lands a few minutes short of the
+    billing date. A plan change is therefore put at old expiry +
+    ``duration_days`` in BOTH directions — the period this charge bought — and
+    ``started_at`` is left as grant_plan stamped it (a new plan began; the old
+    plan's start is not this one's).
     """
     user_id = str(subscription.get("user_id"))
-    plan_id = str(subscription.get("plan_id"))
+    old_plan_id = str(subscription.get("plan_id"))
+    plan_id = str(plan_id or old_plan_id)
+    plan_changed = plan_id != old_plan_id
     old_expiry = _parse_ts(subscription.get("expires_at"))
     granted = _parse_ts(granted_expires_at)
     days = plan.get("duration_days")
     if old_expiry is None or granted is None or not days:
         return granted_expires_at
     target = old_expiry + timedelta(days=int(days))
-    if granted <= target:
+    if granted == target or (granted < target and not plan_changed):
         return granted_expires_at          # stacked already — the on-time case
     try:
         moved = await run_db(
@@ -537,7 +604,7 @@ async def _keep_the_billing_date(
             plan_id,
             granted_expires_at=str(granted_expires_at),
             expires_at=_iso(target),
-            started_at=subscription.get("started_at"),
+            started_at=None if plan_changed else subscription.get("started_at"),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
@@ -591,6 +658,224 @@ def _charge_definitely_did_not_happen(exc: ps.MoyasarError) -> bool:
     return 400 <= status < 500
 
 
+async def _current_price(
+    supabase: SupabaseClient,
+    user_id: str,
+    plan_id: str,
+    plan: dict,
+    expires_at: Optional[datetime],
+) -> Decimal:
+    """What an ORDINARY renewal (same plan, no scheduled change) charges.
+
+    `plans.price_sar` is the LIST price and this job charges what THIS user's
+    RUNNING TERM costs — context 'current', which is the live-seat branch only.
+
+    Both halves are load-bearing:
+      * a seat holder inside their 90 days is charged the promo rate, and the
+        first period that BEGINS after the window is full price (§1.3). This is
+        the line that keeps the 90-day promise: the job re-reads the price at
+        every charge, so quoting the catalog would step an early adopter up the
+        moment the campaign closed, on a saved card, with no warning;
+      * 'purchase' here would be worse in the other direction — while the
+        campaign is open it would hand every renewing NON-member an automatic
+        discount they never asked for, on a charge they did not choose to make.
+        A renewal is not a purchase decision, so it can neither win the promo
+        price nor enrol anybody (see the claim in payment_service, which is
+        skipped for `initiated_by='renewal'`). The ONE exception is a scheduled
+        downgrade, which IS a decision and is priced as one
+        (``ps.fresh_purchase_quote``) — never through here.
+
+    A failed lookup falls back to the catalog inside ``_effective_price`` — the
+    pre-campaign behaviour, and the only fallback that keeps this job charging
+    at all when 138 is missing.
+
+    `at=expires_at` (migration 182): the seat is tested at the START of the
+    period being bought, not at now(). The first attempt runs just before that
+    boundary (up to 24h before it until 196) and a retry runs after it, so
+    testing at now() would price the period by when the tick happened — the
+    24h case billed the period beginning on day 90 at the promo rate, a fourth
+    promo charge for every seat holder.
+    """
+    return await run_db(
+        ps._effective_price,
+        supabase,
+        user_id,
+        plan_id,
+        plan.get("price_sar"),
+        context=ps.PRICE_CONTEXT_CURRENT,
+        at=expires_at,
+    )
+
+
+_STAMP_COLUMNS: tuple[str, ...] = ("promo_batch_id", "intro_offer_terms", "intro_offer_group")
+
+
+def _row_stamp(row: dict) -> dict:
+    """The batch stamps an earlier renewal row carried, verbatim."""
+    return {k: row[k] for k in _STAMP_COLUMNS if row.get(k)}
+
+
+def _fresh_stamp(quote: dict, plan: dict) -> dict:
+    """Stamps for a fresh quote — what checkout writes for the same quote."""
+    stamp: dict[str, Any] = {}
+    batch = quote.get("batch")
+    if batch:
+        stamp["promo_batch_id"] = batch["batch_id"]
+        stamp["intro_offer_terms"] = ps._batch_terms(batch, plan)
+    if quote.get("intro_group"):
+        stamp["intro_offer_group"] = quote["intro_group"]
+    return stamp
+
+
+def _promise_stamp(
+    supabase: SupabaseClient, user_id: str, plan: dict, promise: dict
+) -> dict:
+    """Stamps for charging the PROMISED price. Sync — through ``run_db``.
+
+    A promise from a batch stamps that batch and the promised terms (price +
+    months as stored), so the claim seats it even if the batch has since
+    filled (over_capacity) or been switched off — 192's claim never reads
+    ``enabled``.
+
+    No ``intro_offer_group``, ever: a promise is a fresh quote taken with
+    ``p_as_new``, and a downgrade never gets Pro Tier 1 (the profession offer —
+    owner 2026-11-20, 225's promo_quote), so a promised batch is never one
+    whose first payment is non-refundable. Never raises.
+    """
+    batch_id = promise.get("batch_id")
+    if not batch_id:
+        return {}
+    months = promise.get("months")
+    if not months:
+        # Defensive only: 226's CHECK stores months whenever a batch is stored.
+        try:
+            res = (
+                supabase.table("promo_batches")
+                .select("batch_id, months")
+                .eq("batch_id", batch_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(res, "data", None) or []
+            if rows:
+                months = ps._quote_months(rows[0].get("months"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("promised batch %s unreadable for user=%s: %s", batch_id, user_id, exc)
+    stamp: dict[str, Any] = {"promo_batch_id": batch_id}
+    if months:
+        stamp["intro_offer_terms"] = ps._batch_terms(
+            {"price_sar": promise["price_sar"], "months": int(months)}, plan
+        )
+    return stamp
+
+
+def _fresh_beats_promise(fresh: dict, promise: dict, plan: dict) -> bool:
+    """Is today's fresh quote STRICTLY cheaper than the promise, in total?
+
+    Comparing only the first charge loses months: a promised 19.90 × 2 against
+    a fresh 19.90 × 1 is a tie on the first charge and 75.00 dearer over two
+    months. So both are costed over the same horizon H = the longer of the two
+    offers (at least one month), each paying its offer price for its own months
+    and the target's LIST price for the rest:
+
+        total = price × months + list × (H − months)
+
+    A quote without a batch counts as one month at its price. The fresh quote
+    wins only when its total is strictly lower — a tie keeps the promise (its
+    batch, its months). A target with no list price has no fresh quote at all
+    (``fresh_purchase_quote`` refuses it), so this is never asked then; the
+    guard below says the same thing defensively.
+
+    AND the first charge never exceeds the promise: ``pending_price_sar`` is
+    shown as the most the next renewal will charge, so a fresh quote whose
+    first charge is ABOVE the promised one loses whatever its total (promise
+    79.90 × 1 vs fresh 99.90 × 2 → the promise, though the offer would be
+    cheaper over two months).
+    """
+    list_price = plan.get("price_sar")
+    if list_price is None:
+        return False
+    if ps.q2(fresh["price_sar"]) > ps.q2(promise["price_sar"]):
+        return False
+    lst = ps.q2(list_price)
+    fresh_months = int((fresh.get("batch") or {}).get("months") or 1)
+    promise_months = int(promise.get("months") or 1)
+    horizon = max(fresh_months, promise_months, 1)
+
+    def total(price: Any, months: int) -> Decimal:
+        return ps.q2(price) * months + lst * (horizon - months)
+
+    return total(fresh["price_sar"], fresh_months) < total(promise["price_sar"], promise_months)
+
+
+async def _price_downgrade(
+    supabase: SupabaseClient,
+    *,
+    subscription: dict,
+    current_plan: Optional[dict],
+    plan: dict,
+    attempt: int,
+    period_start: str,
+) -> Optional[dict]:
+    """What a scheduled downgrade's renewal charges → ``{"price": Decimal,
+    "stamp": dict, "source": "first_rung" | "fresh" | "promise"}``, or None
+    when there is neither a promise nor a fresh quote.
+
+    THE RULE (owner 2026-11-20), in order:
+
+    1. **A retry rung repeats rung 0.** On the grace ladder (attempt ≥ 1) the
+       price and stamps of the earliest renewal row for this period AND this
+       target plan are charged again, verbatim. Simplest correct rule: the
+       first dunning email already told the user that amount, and re-deciding
+       could RAISE it between rungs (a fresh offer that filled after rung 0).
+       If the user changed the target mid-ladder, no such row exists and the
+       decision is taken fresh.
+    2. **The cheaper of the promise and a fresh quote, over the offer's
+       horizon** (``_fresh_beats_promise``). The fresh quote is taken only while
+       the target is still a renewable, purchasable lower plan
+       (``fresh_purchase_quote``; an error reads as "no quote"). It wins — and
+       is charged with ITS batch — only when its first charge is no higher
+       than the promised one AND it is STRICTLY cheaper in total;
+       otherwise the PROMISE is charged with the promised batch
+       (``_promise_stamp``), even when the target has no list price any more,
+       its batch is full, or it is switched off. The promise is a ceiling,
+       never a floor.
+    """
+    user_id = str(subscription.get("user_id"))
+    plan_id = str(plan.get("plan_id"))
+
+    if attempt > 0:
+        rows = await run_db(_existing_renewal_rows, supabase, user_id, plan_id, period_start)
+        earlier = [
+            r for r in rows
+            if int(r.get("renewal_attempt") or 0) < attempt and r.get("amount_sar") is not None
+        ]
+        if earlier:
+            first = min(earlier, key=lambda r: int(r.get("renewal_attempt") or 0))
+            return {"price": ps.q2(first["amount_sar"]), "stamp": _row_stamp(first),
+                    "source": "first_rung"}
+
+    promise = ss.promise_of(subscription)
+    fresh: Optional[dict] = None
+    if ss._is_downgrade_target(current_plan, plan):
+        try:
+            fresh = await run_db(ps.fresh_purchase_quote, supabase, user_id, plan)
+        except ps.PricingUnavailable as exc:
+            logger.warning(
+                "downgrade renewal: no fresh quote for user=%s plan=%s (%s) — "
+                "charging the promise", user_id, plan_id, exc,
+            )
+            fresh = None
+
+    if fresh is not None and (promise is None or _fresh_beats_promise(fresh, promise, plan)):
+        return {"price": fresh["price_sar"], "stamp": _fresh_stamp(fresh, plan),
+                "source": "fresh"}
+    if promise is not None:
+        stamp = await run_db(_promise_stamp, supabase, user_id, plan, promise)
+        return {"price": promise["price_sar"], "stamp": stamp, "source": "promise"}
+    return None
+
+
 async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
     """Attempt one renewal. Returns a short outcome tag for the sweep's stats.
 
@@ -600,7 +885,13 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
     ``error``.
     """
     user_id = str(subscription.get("user_id"))
-    plan_id = str(subscription.get("plan_id"))
+    # The plan the term is ON (what selection matched, and what the
+    # mid-charge guard compares against) vs the plan this renewal CHARGES and
+    # GRANTS — the same one unless a downgrade is scheduled (226).
+    current_plan_id = str(subscription.get("plan_id"))
+    target_plan_id = ss.pending_downgrade_of(subscription)
+    downgrade = target_plan_id is not None
+    plan_id = target_plan_id or current_plan_id
     expires_at = _parse_ts(subscription.get("expires_at"))
     failed_count = int(subscription.get("renewal_failed_count") or 0)
     attempt = failed_count                      # 0 = first try, 1..n = retries
@@ -628,51 +919,62 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         return "skipped_unconfigured"
 
     # ── the EFFECTIVE price is the price (plan trap 2) ─────────────────────
-    plans = await run_db(ps._fetch_plans, supabase, [plan_id])
-    plan = plans.get(plan_id)
-    if not pm.plan_renews(plan):
-        # Either the plan is not pro/max, or `plans.billing_cycle` does not say
-        # 'recurring_30d'. Trap 6: the column is finally READ, and it is a gate.
+    plans = await run_db(
+        ps._fetch_plans, supabase,
+        [current_plan_id, plan_id] if downgrade else [plan_id],
+    )
+    current_plan = plans.get(current_plan_id)
+    if not pm.plan_renews(current_plan):
+        # Either the plan is not pro/pro_plus/max, or `plans.billing_cycle` does
+        # not say 'recurring_30d'. Trap 6: the column is finally READ, and it is
+        # a gate. (The CURRENT plan: a term that does not renew renews into
+        # nothing, scheduled change or not.)
         _log_once(
             logging.INFO, ("not_recurring", user_id, period_start),
-            "renewal skipped: plan=%s does not renew (billing_cycle)", plan_id,
+            "renewal skipped: plan=%s does not renew (billing_cycle)", current_plan_id,
         )
         return "skipped_plan_not_recurring"
-    # `plans.price_sar` is the LIST price and this job charges what THIS user's
-    # RUNNING TERM costs — context 'current', which is the live-seat branch only.
-    #
-    # Both halves are load-bearing:
-    #   * a seat holder inside their 90 days is charged the promo rate, and the
-    #     first period that BEGINS after the window is full price (§1.3). This is
-    #     the line that keeps the 90-day promise: the job re-reads the price at
-    #     every charge, so quoting the catalog would step an early adopter up the
-    #     moment the campaign closed, on a saved card, with no warning;
-    #   * 'purchase' here would be worse in the other direction — while the
-    #     campaign is open it would hand every renewing NON-member an automatic
-    #     discount they never asked for, on a charge they did not choose to make.
-    #     A renewal is not a purchase decision, so it can neither win the promo
-    #     price nor enrol anybody (see the claim in payment_service, which is
-    #     skipped for `initiated_by='renewal'`).
-    #
-    # A failed lookup falls back to the catalog inside ``_effective_price`` — the
-    # pre-campaign behaviour, and the only fallback that keeps this job charging
-    # at all when 138 is missing.
-    #
-    # `at=expires_at` (migration 182): the seat is tested at the START of the
-    # period being bought, not at now(). The first attempt runs just before that
-    # boundary (up to 24h before it until 196) and a retry runs after it, so
-    # testing at now() would price the period by when the tick happened — the
-    # 24h case billed the period beginning on day 90 at the promo rate, a fourth
-    # promo charge for every seat holder.
-    price = await run_db(
-        ps._effective_price,
-        supabase,
-        user_id,
-        plan_id,
-        plan.get("price_sar"),
-        context=ps.PRICE_CONTEXT_CURRENT,
-        at=expires_at,
-    )
+    plan = plans.get(plan_id)
+
+    # ── a scheduled downgrade: the TARGET, at the price PROMISED or less ────
+    # (owner 2026-11-20, see _price_downgrade). Never swapped back to the
+    # current plan, and never skipped because the target lost its list price or
+    # its offer since — the promise was made and it is kept.
+    stamp: dict[str, Any] = {}
+    pricing_source: Optional[str] = None
+    if downgrade:
+        if not plan or not plan.get("duration_days"):
+            # The catalog row itself is gone or term-less: there is nothing to
+            # grant. Unreachable while plans(plan_id) is the FK target.
+            _log_once(
+                logging.ERROR, ("downgrade_no_plan", user_id, period_start),
+                "renewal skipped: user=%s is scheduled to move %s → %s and that "
+                "plan has no catalog row / duration — resolve by hand",
+                user_id, current_plan_id, plan_id,
+            )
+            return "skipped_downgrade_unavailable"
+        decided = await _price_downgrade(
+            supabase,
+            subscription=subscription,
+            current_plan=current_plan,
+            plan=plan,
+            attempt=attempt,
+            period_start=period_start,
+        )
+        if decided is None:
+            # No promise on the row (a pre-promise row) AND no fresh quote.
+            # Checked BEFORE the ledger row: it burns no rung; the next tick
+            # re-asks.
+            _log_once(
+                logging.ERROR, ("downgrade_unpriced", user_id, period_start),
+                "renewal skipped: the scheduled %s → %s for user=%s has no stored "
+                "promise and could not be priced fresh", current_plan_id, plan_id,
+                user_id,
+            )
+            return "skipped_pricing_unavailable"
+        price, stamp, pricing_source = decided["price"], decided["stamp"], decided["source"]
+    else:
+        price = await _current_price(supabase, user_id, plan_id, plan, expires_at)
     if price < ps.MIN_CHARGE_SAR:
         _log_once(
             logging.ERROR, ("bad_price", user_id, period_start),
@@ -691,8 +993,11 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         return "skipped_no_method"
 
     # ── pre-filter: is this period already spoken for? (rule 3) ────────────
+    # Across EVERY plan (plan_id=None): a scheduled downgrade set or undone
+    # mid-ladder moves the charged plan, and an ambiguous row under the other
+    # plan must still block this period.
     existing = await run_db(
-        _existing_renewal_rows, supabase, user_id, plan_id, period_start
+        _existing_renewal_rows, supabase, user_id, None, period_start
     )
     blocking = [
         r for r in existing if str(r.get("status")) != SLOT_RELEASING_STATUS
@@ -744,13 +1049,26 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         "period_start": period_start,
         "payment_method_id": method.get("payment_method_id"),
     }
+    # A scheduled downgrade priced from a batch (today's, or the promised one)
+    # is stamped EXACTLY as checkout stamps a batch sale: the batch (the
+    # fulfilment claims the seat from it — even if it is now full, stamped
+    # over_capacity, or switched off), the quoted terms (the claim freezes
+    # price + months from them, not from a batch row an operator may edit) and,
+    # for Pro Tier 1, the group (its first payment is non-refundable, as for any
+    # fresh buyer). An ordinary renewal writes none of these — its INSERT is
+    # unchanged.
+    payload.update(stamp)
     try:
         row = await run_db(ps._insert_transaction, supabase, payload)
     except Exception as exc:  # noqa: BLE001
         if ps._is_unique_violation(exc):
             # THE EXPECTED "already renewed" PATH (rule 1). Another tick, another
             # worker, or a redeploy mid-run got here first. Nothing to do, and
-            # emphatically nothing to charge.
+            # emphatically nothing to charge. Either index lands here: 132's
+            # per-plan (user, plan, period) one, and 226's cross-plan (user,
+            # period) one — a scheduled downgrade can charge one period under two
+            # plans, and that index stops the second charge at the database even
+            # if the pre-filter above missed the first row.
             logger.info(
                 "renewal already claimed by a concurrent run: user=%s plan=%s "
                 "period=%s attempt=%d", user_id, plan_id, period_start, attempt,
@@ -835,17 +1153,52 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         # The one case where granting would DESTROY something: the user
         # upgraded pro→max in the seconds between selection and this line.
         # grant_plan writes plan_id unconditionally, so granting the pro
-        # renewal now would silently downgrade a customer who just paid 289.90
+        # renewal now would silently downgrade a customer who just paid 219.90
         # — and neither they nor support would ever work out why. A term that
         # merely MOVED (they stacked an extension) is not a problem: grant_plan
         # stacks onto whatever expires_at says, which is correct.
+        #
+        # Compared against the plan the term was ON at selection — never the
+        # downgrade target (226): on a scheduled downgrade the row is still on
+        # the higher plan here, which is exactly the "nothing moved" case.
         current = await run_db(_select_one_subscription, supabase, user_id)
-        if str((current or {}).get("plan_id") or "") != plan_id:
+        # THE WEBHOOK MAY HAVE BEEN FASTER. Moyasar's payment_paid event runs
+        # the same fulfilment, and for a scheduled downgrade it grants the
+        # TARGET — so by now the row can legitimately be on the target with
+        # THIS payment fulfilled. That is our own success, not a plan that
+        # moved: re-read the ledger row (never act on the stale insert — its
+        # missing paid_at would overwrite the webhook's) and carry on; the
+        # fulfilment below is idempotent and the billing-date fix runs once.
+        latest = await run_db(ps._get_transaction, supabase, payment_id)
+        if latest:
+            row = {**row, **latest}
+        on_plan = str((current or {}).get("plan_id") or "")
+        settled_by_webhook = bool(downgrade and on_plan == plan_id and row.get("fulfilled_at"))
+        if on_plan != current_plan_id and not settled_by_webhook:
             return await _hold_renewal_for_review(
                 supabase, row=row, fetched=fetched, user_id=user_id,
                 plan_id=plan_id, period_start=period_start,
                 reason="plan_changed_mid_charge",
                 current_plan_id=(current or {}).get("plan_id"),
+            )
+        if settled_by_webhook:
+            logger.info(
+                "renewal: payment=%s was already fulfilled by the webhook (user=%s "
+                "now on %s) — completing the job's bookkeeping only",
+                payment_id, user_id, plan_id,
+            )
+        elif downgrade and ss.pending_downgrade_of(current) != plan_id:
+            # The user undid (or changed) the scheduled downgrade between
+            # selection and the charge. The money that moved is the TARGET's
+            # price, so the target is what it buys — granting the higher plan
+            # for the lower price is a discount nobody chose. Same posture as an
+            # opt-out mid-flight below: granted, refundable for 24h, loud.
+            logger.error(
+                "renewal charged a scheduled downgrade that was changed mid-flight: "
+                "user=%s payment=%s charged=%s now_pending=%s. The charged plan is "
+                "granted (that is what was paid for) and the charge is refundable "
+                "for 24h.",
+                user_id, payment_id, plan_id, ss.pending_downgrade_of(current),
             )
         if (current or {}).get("renewal_cancelled_at"):
             # They opted out between selection and the charge. The money is in
@@ -875,6 +1228,9 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
             )
             return "ambiguous"
 
+        # On a scheduled downgrade this grants the TARGET, releases the left
+        # plan's seat 'downgraded', claims the batch seat if the row carries
+        # one, and clears renewal_plan_id — all inside the shared fulfilment.
         result = await ps._mark_paid_and_grant(supabase, row, fetched)
         new_expiry = result.get("expires_at")
         if result.get("granted"):
@@ -883,6 +1239,7 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
                 subscription=subscription,
                 plan=plan,
                 granted_expires_at=new_expiry,
+                plan_id=plan_id,
             )
         # failed_count 0 and the grace cleared: _mark_paid_and_grant's
         # reset_renewal_ladder already did both for every paid grant; this
@@ -910,12 +1267,19 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
                 "renewal_attempt": attempt,
                 "expires_at": new_expiry,
                 "provider_ref": fetched.get("id"),
+                # 226: present only on a scheduled downgrade, so an ordinary
+                # renewal's audit row is byte-identical to the pre-226 one.
+                **({"downgraded_from": current_plan_id,
+                    "promo_batch_id": stamp.get("promo_batch_id"),
+                    "pricing": pricing_source}
+                   if downgrade else {}),
             },
         )
         logger.info(
             "renewal charged: user=%s plan=%s amount=%s period=%s attempt=%d "
-            "new_expiry=%s",
+            "new_expiry=%s downgraded_from=%s",
             user_id, plan_id, price, period_start, attempt, new_expiry,
+            current_plan_id if downgrade else None,
         )
         return "renewed" if result.get("granted") else "ambiguous"
 
@@ -1079,6 +1443,9 @@ async def _handle_decline(
             "hard_decline": hard,
             "grace_until": None if grace_until is _KEEP else grace_until,
             "provider_message": str(provider_message)[:200] if provider_message else None,
+            # 226: a declined scheduled downgrade charged the TARGET plan.
+            **({"charged_plan_id": row.get("plan_id")}
+               if row.get("plan_id") and row.get("plan_id") != plan_id else {}),
         },
     )
 
@@ -1095,6 +1462,9 @@ async def _handle_decline(
     # matters. The first email shows the grace's end as the date access runs to;
     # the final one shows no date, because access ends now.
     if attempt == 0 or final:
+        # `plan` is the plan this renewal CHARGED — on a scheduled downgrade the
+        # target (226) — so the email names the plan whose price it quotes, from
+        # `plans.name_ar` («الاحترافية بلس» included).
         await send_renewal_failed_notice(
             supabase,
             payment_row=row,
@@ -1112,7 +1482,8 @@ async def _handle_decline(
 
 
 async def run_due_renewals(supabase: SupabaseClient) -> dict[str, int]:
-    """Charge every pro/max term due by the next tick, plus every due retry.
+    """Charge every pro/pro_plus/max term due by the next tick, plus every due
+    retry — a scheduled downgrade charging its target instead.
 
     Never raises: a scheduler tick must not be able to crash the app, and one
     bad subscription must never stop the sweep (the account-purge sweep's

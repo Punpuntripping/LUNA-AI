@@ -53,6 +53,7 @@ from backend.app.services import payment_method_service as pm
 from backend.app.services import payment_service as ps
 from backend.app.services import receipt_service
 from backend.app.services import renewal_service as rs
+from backend.app.services import subscription_service as ss
 from backend.tests.promo_ladder_model import NOT_MINE, PromoLadderModel
 from shared.config import get_settings
 
@@ -87,7 +88,7 @@ def _parse(value) -> Optional[datetime]:
 # In-memory PostgREST + RPC stand-in
 # ---------------------------------------------------------------------------
 
-# The live catalog (2026-10-27): pro 94.90, max 289.90, basic 39.90 flat with no
+# The live catalog (2026-11-20): pro 94.90, max 219.90 (224), basic 39.90 flat with no
 # promo (191, pricing_campaigns_v2.md §8). `promo_price_sar` is migration 138
 # (المشتركون الأوائل), frozen for the legacy seats. The renewal job reads
 # the EFFECTIVE price at every charge, which is the line that keeps an early
@@ -97,13 +98,28 @@ PLAN_ROWS = [
      "billing_cycle": None, "promo_price_sar": None},
     # basic stays one_time — it says «بدون تجديد تلقائي» on the card and must
     # never be picked up by the job.
-    {"plan_id": "basic", "name_ar": "الأساسية", "price_sar": "39.90", "duration_days": 7,
+    {"plan_id": "basic", "points_weekly": 75, "name_ar": "الأساسية", "price_sar": "39.90", "duration_days": 7,
      "billing_cycle": "one_time", "promo_price_sar": None},
-    {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "94.90", "duration_days": 30,
+    {"plan_id": "pro", "points_weekly": 100, "name_ar": "الاحترافية", "price_sar": "94.90", "duration_days": 30,
      "billing_cycle": "recurring_30d", "promo_price_sar": "49.90"},
-    {"plan_id": "max", "name_ar": "القصوى", "price_sar": "289.90", "duration_days": 30,
+    # 225 — the LAUNCHED row (the dark NULL price is pinned in its own tests).
+    {"plan_id": "pro_plus", "points_weekly": 250, "name_ar": "الاحترافية بلس", "price_sar": "149.90",
+     "duration_days": 30, "billing_cycle": "recurring_30d", "promo_price_sar": None},
+    {"plan_id": "max", "points_weekly": 500, "name_ar": "القصوى", "price_sar": "219.90", "duration_days": 30,
      "billing_cycle": "recurring_30d", "promo_price_sar": "99.90"},
 ]
+
+
+def _project(rows, cols):
+    """PostgREST returns ONLY the columns a select() names (NULL for a set
+    column that holds no value). Without this the fake handed back whole rows,
+    so a column missing from a production select list passed every test —
+    which is exactly how the renewal job shipped without the promise columns.
+    ``"*"`` (or no list) returns everything."""
+    if not isinstance(cols, str) or cols.strip() in ("", "*"):
+        return rows
+    wanted = [c.strip() for c in cols.split(",") if c.strip()]
+    return [{c: r.get(c) for c in wanted} for r in rows]
 
 
 class _Result:
@@ -130,6 +146,7 @@ class _Query:
     def select(self, *_a, count: Optional[str] = None, **_k):
         self._op = "select"
         self._count = count
+        self._cols = _a[0] if _a else "*"
         return self
 
     def insert(self, payload):
@@ -259,6 +276,20 @@ class _Query:
                             "duplicate key value violates unique constraint "
                             '"uniq_payment_renewal_period" (23505)'
                         )
+                # 226 — the CROSS-PLAN guard: (user_id, period_start) WHERE
+                # renewal AND status <> 'failed'. A scheduled downgrade can try
+                # one period under two plans; this stops the second charge.
+                for other in rows:
+                    if (
+                        other.get("initiated_by") == "renewal"
+                        and other.get("status") != "failed"
+                        and (other.get("user_id"), other.get("period_start"))
+                        == (row.get("user_id"), row.get("period_start"))
+                    ):
+                        raise RuntimeError(
+                            "duplicate key value violates unique constraint "
+                            '"uniq_payment_renewal_period_any_plan" (23505)'
+                        )
 
         if self.table == "payment_methods":
             # payment_methods_consent_hash_check + the NOT NULLs. A row that
@@ -319,7 +350,7 @@ class _Query:
         total = len(matched) if self._count == "exact" else None
         if self._limit is not None:
             matched = matched[: self._limit]
-        return _Result([dict(r) for r in matched], total)
+        return _Result(_project([dict(r) for r in matched], getattr(self, "_cols", "*")), total)
 
 
 class _Rpc:
@@ -1465,7 +1496,7 @@ def test_a_due_term_is_charged_from_the_catalog_price(flag_on, charges, no_smtp)
 
 
 def test_the_amount_is_never_the_last_payments_amount(flag_on, charges, no_smtp):
-    """A prorated upgrade paid 200.00 for `max`; the RENEWAL is 289.90."""
+    """A prorated upgrade paid 200.00 for `max`; the RENEWAL is 219.90."""
     db = FakeSupabase(sub("max", hours_left=DUE_HOURS))
     store_method(db)
     db.tables["payment_transactions"].append({
@@ -1475,7 +1506,7 @@ def test_the_amount_is_never_the_last_payments_amount(flag_on, charges, no_smtp)
     })
 
     sweep(db)
-    assert charges[0]["amount"] == 28990
+    assert charges[0]["amount"] == 21990
 
 
 def test_term_extends_from_expires_at_not_now(flag_on, charges, no_smtp):
@@ -1725,7 +1756,7 @@ def test_an_upgrade_mid_charge_holds_the_grant_instead_of_downgrading(
 ):
     """The narrow race with the ugliest outcome: the user upgrades pro→max while
     their pro renewal is in flight. grant_plan writes plan_id unconditionally, so
-    granting would silently downgrade somebody who just paid 289.90 — and neither
+    granting would silently downgrade somebody who just paid 219.90 — and neither
     they nor support would ever work out why."""
     db = FakeSupabase(sub("pro", hours_left=DUE_HOURS))
     store_method(db)
@@ -2597,7 +2628,7 @@ def test_v4_a_max_batch_checkout_discloses_its_months_too(flag_on):
     session = run(ps.create_checkout(db, USER, "max"))
     assert session["recurring_disclosure_ar"].endswith(
         "يُخصم 149.90 ر.س اليوم، ثم 149.90 ر.س لكلٍّ من الأشهر 3 التالية، "
-        "ثم 289.90 ر.س كل 30 يوماً."
+        "ثم 219.90 ر.س كل 30 يوماً."
     )
 
 
@@ -2672,3 +2703,1202 @@ def test_v4_a_two_month_batch_gets_exactly_two_promo_charges(
     asked = [p for n, p in db.rpc_params if n == "effective_plan_price"]
     assert asked[0]["p_context"] == "current"
     assert ps._parse_ts(asked[0]["p_at"]) == expires
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# تغيير الباقة — THE SCHEDULED DOWNGRADE (migration 226,
+# `.claude/plans/pro_plus_tier_and_downgrade.md` §4 + §8)
+#
+# A paying user picks a LOWER renewable plan; the current term runs out
+# untouched; the renewal charges the target's FRESH-PURCHASE price (D7), grants
+# it, seats a batch offer, releases the left plan's seat 'downgraded', and
+# clears the column. This suite's catalog says recurring_30d, so the renewable
+# rule is live here (the payments suite's predates 132).
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _running(plan_id="max", *, days=10, card=True, **kw):
+    """A paid term with `days` left (not due) — and, unless `card=False`, the
+    chargeable stored card a scheduled change needs."""
+    db = FakeSupabase(sub(plan_id, hours_left=24 * days, **kw))
+    if card:
+        store_method(db)
+    return db
+
+
+def _schedule(db, plan_id, expected=None, months=None):
+    """POST /subscription/downgrade as the dialog sends it: the plan and the
+    price + months it SHOWED (the list price and null unless told otherwise)."""
+    return ss.schedule_downgrade(
+        db, USER, plan_id, expected or _LIST.get(plan_id, "1.00"), months
+    )
+
+
+_LIST = {"pro": "94.90", "pro_plus": "149.90", "max": "219.90"}
+_PENDING = ("renewal_plan_id", "renewal_plan_set_at", "renewal_plan_price_sar",
+            "renewal_plan_batch_id", "renewal_plan_promo_months")
+
+
+def _with_pending(db, plan_id, *, set_days_ago=1, price=None, batch_id=None, months=None):
+    """A change scheduled `set_days_ago` days ago (sub() started the term 30
+    days ago, so the default is a CURRENT change, not a stale one), with the
+    PROMISE stored as schedule_downgrade stores it — the target's list price
+    unless told otherwise."""
+    row = the_sub(db)
+    row["renewal_plan_id"] = plan_id
+    row["renewal_plan_set_at"] = _iso(_now() - timedelta(days=set_days_ago))
+    row["renewal_plan_price_sar"] = price or _LIST[plan_id]
+    row["renewal_plan_batch_id"] = batch_id
+    row["renewal_plan_promo_months"] = months
+    return row
+
+
+def _pending_cleared(db) -> bool:
+    return all(the_sub(db).get(col) is None for col in _PENDING)
+
+
+def _ladder_on(db, profession="individual"):
+    db.campaign_enabled = True
+    db.intro_offer_enabled = True
+    db.ladder_v2 = True
+    db.tables["users"][0]["profession_first_group"] = profession
+    return db
+
+
+def _held_seat(db, batch_id, *, claimed_days_ago=30, days_left=30):
+    b = db._batch(batch_id)
+    seat = {
+        "seat_id": str(uuid.uuid4()), "user_id": USER, "payment_id": str(uuid.uuid4()),
+        "claimed_at": _iso(_now() - timedelta(days=claimed_days_ago)),
+        "promo_ends_at": _iso(_now() + timedelta(days=days_left)),
+        "released_at": None, "release_reason": None, "over_capacity": False,
+        "batch_id": batch_id, "plan_id": b["plan_id"],
+        "price_tier": b["price_tier"], "price_sar": b["price_sar"],
+    }
+    db.early_adopter_seats.append(seat)
+    return seat
+
+
+def _set_price(db, plan_id, price):
+    next(p for p in db.tables["plans"] if p["plan_id"] == plan_id)["price_sar"] = price
+
+
+def _sub_writes(db):
+    return [w[2] for w in db.writes if w[0] == "user_subscriptions" and w[1] == "update"]
+
+
+def _audit(db, event):
+    return [r["metadata"] for r in db.tables["audit_logs"]
+            if (r.get("metadata") or {}).get("event") == event]
+
+
+PRO_PLUS_OPTION = {"plan_id": "pro_plus", "name_ar": "الاحترافية بلس", "price_sar": "149.90",
+                   "promo_price_sar": None, "promo_months": None}
+PRO_OPTION = {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "94.90",
+              "promo_price_sar": None, "promo_months": None}
+
+
+# ── GET /subscription: what may be scheduled, and what is ────────────────────
+
+
+def test_a_max_subscriber_is_offered_pro_plus_then_pro(flag_on):
+    state = run(ss.get_subscription(_running("max"), USER))
+    assert state["downgrade_options"] == [PRO_PLUS_OPTION, PRO_OPTION]
+    assert (state["pending_plan_id"], state["pending_plan_name_ar"],
+            state["pending_price_sar"], state["pending_promo_months"]) == (None,) * 4
+
+
+@pytest.mark.parametrize("plan_id, expected", [("pro_plus", [PRO_OPTION]), ("pro", []),
+                                               ("basic", [])])
+def test_only_lower_renewable_plans_are_offered(flag_on, plan_id, expected):
+    """D8: basic / free are never targets — and basic is never a source."""
+    state = run(ss.get_subscription(_running(plan_id), USER))
+    assert state["downgrade_options"] == expected
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"source": "code"}, {"source": "manual"},
+     {"renewal_cancelled_at": _iso(_now() - timedelta(days=1))},
+     {"expires_at": _iso(_now() - timedelta(days=1))}],
+    ids=["code", "manual", "cancelled", "expired"],
+)
+def test_no_options_without_a_changeable_paid_term(flag_on, overrides):
+    db = FakeSupabase({**sub("max", hours_left=240), **overrides})
+    state = run(ss.get_subscription(db, USER))
+    assert state["downgrade_options"] == [] and state["pending_plan_id"] is None
+
+
+def test_a_dark_pro_plus_is_never_offered(flag_on):
+    """225 ships price_sar NULL: not purchasable, so not a target."""
+    db = _running("max")
+    _set_price(db, "pro_plus", None)
+    assert run(ss.get_subscription(db, USER))["downgrade_options"] == [PRO_OPTION]
+
+
+def test_options_quote_the_offer_a_fresh_buyer_would_get(flag_on):
+    """D7: each option is quoted as if the user had no plan — Pro Plus's 99.90 × 2
+    and Pro's Tier 2 59.90 × 2 for an individual who never used either."""
+    db = _ladder_on(_running("max"))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    state = run(ss.get_subscription(db, USER))
+    assert state["downgrade_options"] == [
+        {**PRO_PLUS_OPTION, "promo_price_sar": "99.90", "promo_months": 2},
+        {**PRO_OPTION, "promo_price_sar": "59.90", "promo_months": 2},
+    ]
+    asked = [p for n, p in db.rpc_params if n == "promo_checkout_price"]
+    assert asked and all(p.get("p_as_new") is True for p in asked)
+
+
+def test_an_unreadable_quote_shows_the_list_price(flag_on, monkeypatch):
+    db = _running("max")
+
+    def _boom(*_a, **_k):
+        raise ps.PricingUnavailable("rpc down")
+
+    monkeypatch.setattr(ps, "fresh_purchase_quote", _boom)
+    assert run(ss.get_subscription(db, USER))["downgrade_options"] == [PRO_PLUS_OPTION, PRO_OPTION]
+
+
+# ── schedule / undo ─────────────────────────────────────────────────────────
+
+
+def test_scheduling_a_downgrade(flag_on):
+    db = _running("max")
+    before = dict(the_sub(db))
+    state = run(_schedule(db, "pro_plus"))
+
+    row = the_sub(db)
+    assert row["renewal_plan_id"] == "pro_plus" and row["renewal_plan_set_at"]
+    # The current term is untouched (D6), and the write named neither column
+    # the assignment trigger or grant_plan own.
+    assert (row["plan_id"], row["expires_at"]) == (before["plan_id"], before["expires_at"])
+    writes = _sub_writes(db)
+    assert len(writes) == 1
+    assert set(writes[0]) == {*_PENDING, "updated_at"}
+    # THE PROMISE, stored with the change: the list price here (no offer).
+    assert row["renewal_plan_price_sar"] == "149.90"
+    assert row["renewal_plan_batch_id"] is None and row["renewal_plan_promo_months"] is None
+
+    assert state["plan_id"] == "max"
+    assert state["pending_plan_id"] == "pro_plus"
+    assert state["pending_plan_name_ar"] == "الاحترافية بلس"
+    assert state["pending_price_sar"] == "149.90" and state["pending_promo_months"] is None
+    assert state["downgrade_options"] == [PRO_PLUS_OPTION, PRO_OPTION]
+    audit = _audit(db, "downgrade_scheduled")[0]
+    assert audit["renewal_plan_id"] == "pro_plus" and audit["promised_price_sar"] == "149.90"
+
+
+def test_the_pending_price_is_the_offer_when_one_applies(flag_on):
+    db = _ladder_on(_running("max"))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    state = run(_schedule(db, "pro_plus", "99.90", 2))
+    assert (state["pending_price_sar"], state["pending_promo_months"]) == ("99.90", 2)
+    row = the_sub(db)
+    assert (row["renewal_plan_price_sar"], row["renewal_plan_batch_id"],
+            row["renewal_plan_promo_months"]) == ("99.90", "pro_plus_t1_a", 2)
+
+
+def test_scheduling_refuses_when_the_promise_cannot_be_priced(flag_on, monkeypatch):
+    """No promise that cannot be stated: 503, nothing written."""
+    db = _running("max")
+
+    def _boom(*_a, **_k):
+        raise ps.PricingUnavailable("rpc down")
+
+    monkeypatch.setattr(ps, "fresh_purchase_quote", _boom)
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro_plus"))
+    assert exc.value.status_code == 503
+    assert _sub_writes(db) == []
+
+
+def test_get_returns_the_stored_promise_not_a_fresh_quote(flag_on):
+    """pending_* come from the row, never re-quoted on read — even when today's
+    quote differs and even when the target has since lost its list price."""
+    db = _ladder_on(_running("max"))
+    db._batch("pro_plus_t1_a")["enabled"] = True          # today: 99.90 × 2
+    _with_pending(db, "pro_plus", price="123.45", batch_id="pro_plus_t1_a", months=3)
+    state = run(ss.get_subscription(db, USER))
+    assert (state["pending_plan_id"], state["pending_price_sar"],
+            state["pending_promo_months"]) == ("pro_plus", "123.45", 3)
+
+    _set_price(db, "pro_plus", None)                      # rolled back to dark
+    state = run(ss.get_subscription(db, USER))
+    assert (state["pending_plan_name_ar"], state["pending_price_sar"],
+            state["pending_promo_months"]) == ("الاحترافية بلس", "123.45", 3)
+    assert [o["plan_id"] for o in state["downgrade_options"]] == ["pro"]
+
+
+def test_scheduling_the_same_plan_twice_is_a_noop(flag_on):
+    db = _running("max")
+    run(_schedule(db, "pro"))
+    first = the_sub(db)["renewal_plan_set_at"]
+    state = run(_schedule(db, "pro"))
+    assert the_sub(db)["renewal_plan_set_at"] == first
+    assert len(_sub_writes(db)) == 1 and state["pending_plan_id"] == "pro"
+
+
+def test_scheduling_another_lower_plan_replaces_the_first(flag_on):
+    db = _running("max")
+    run(_schedule(db, "pro_plus"))
+    state = run(_schedule(db, "pro"))
+    assert the_sub(db)["renewal_plan_id"] == "pro" and state["pending_plan_id"] == "pro"
+
+
+@pytest.mark.parametrize(
+    "current, target",
+    [("max", "max"), ("max", "basic"), ("max", "free"), ("max", "dev"), ("max", "platinum"),
+     ("max", ""), ("pro_plus", "pro_plus"), ("pro_plus", "max"), ("pro", "pro_plus"),
+     ("pro", "basic"), ("basic", "pro")],
+)
+def test_an_invalid_target_is_refused_in_arabic(flag_on, current, target):
+    db = _running(current)
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, target))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_INVALID
+    assert exc.value.detail == ss.DOWNGRADE_INVALID_AR
+    assert _sub_writes(db) == []
+
+
+def test_a_dark_pro_plus_cannot_be_scheduled(flag_on):
+    db = _running("max")
+    _set_price(db, "pro_plus", None)
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro_plus"))
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_INVALID
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"source": "code"}, {"source": "manual"}, {"plan_id": None},
+     {"expires_at": _iso(_now() - timedelta(days=1))}],
+    ids=["code", "manual", "locked", "expired"],
+)
+def test_no_running_paid_term_is_refused(flag_on, overrides):
+    db = FakeSupabase({**sub("max", hours_left=240), **overrides})
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro"))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_NOT_CANCELLABLE
+    assert exc.value.detail == ss.NO_PAID_SUBSCRIPTION_TO_CHANGE_AR
+
+
+def test_no_subscription_row_at_all_is_refused(flag_on):
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(FakeSupabase(), "pro"))
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_NOT_CANCELLABLE
+
+
+def test_a_cancelled_renewal_must_be_undone_first(flag_on):
+    db = FakeSupabase(sub("max", hours_left=240, cancelled_at=_iso(_now() - timedelta(days=1))))
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro"))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_ALREADY_CANCELLED
+    assert exc.value.detail == ss.CHANGE_AFTER_CANCEL_AR
+
+
+def test_every_new_message_is_arabic():
+    arabic = re.compile(r"[؀-ۿ]")
+    for text in (ss.DOWNGRADE_INVALID_AR, ss.NO_PAID_SUBSCRIPTION_TO_CHANGE_AR,
+                 ss.CHANGE_AFTER_CANCEL_AR, ps.DOWNGRADE_BLOCKED_AR):
+        assert arabic.search(text) and not re.search(r"[A-Za-z]", text)
+    assert ErrorCode.SUBSCRIPTION_DOWNGRADE_INVALID.value == "SUBSCRIPTION_DOWNGRADE_INVALID"
+
+
+def test_a_downgrade_can_be_scheduled_inside_the_grace(flag_on):
+    """The grace counts as a running term (196): a declined Max card can be
+    retried at the lower price."""
+    db = FakeSupabase(sub("max", hours_left=-1, failed_count=1,
+                          attempt_at=_iso(_now() - timedelta(hours=1)),
+                          grace_until=_iso(_now() + timedelta(hours=23))))
+    store_method(db)
+    assert run(_schedule(db, "pro_plus"))["pending_plan_id"] == "pro_plus"
+
+
+def test_undoing_a_downgrade(flag_on):
+    db = _running("max")
+    run(_schedule(db, "pro_plus"))
+    state = run(ss.cancel_scheduled_downgrade(db, USER))
+    assert _pending_cleared(db)                        # all five, promise included
+    assert set(_sub_writes(db)[-1]) == {*_PENDING, "updated_at"}
+    assert state["pending_plan_id"] is None and state["pending_price_sar"] is None
+    assert state["downgrade_options"] == [PRO_PLUS_OPTION, PRO_OPTION]
+    assert _audit(db, "downgrade_cancelled")[0]["renewal_plan_id"] == "pro_plus"
+
+
+def test_undoing_with_nothing_pending_is_a_noop(flag_on):
+    db = _running("max")
+    state = run(ss.cancel_scheduled_downgrade(db, USER))
+    assert _sub_writes(db) == [] and state["pending_plan_id"] is None
+    assert run(ss.cancel_scheduled_downgrade(FakeSupabase(), USER))["plan_id"] is None
+
+
+def test_a_stale_pending_change_is_not_shown(flag_on):
+    """Set before the current plan started → scheduled from a plan they left."""
+    db = _running("max")
+    _with_pending(db, "pro", set_days_ago=40)
+    assert run(ss.get_subscription(db, USER))["pending_plan_id"] is None
+
+
+# ── interactions: cancel wins, undo does not restore, purchases clear ───────
+
+
+def test_cancel_drops_the_pending_change_and_undo_does_not_bring_it_back(flag_on):
+    db = _running("max")
+    run(_schedule(db, "pro_plus"))
+
+    state = run(ss.cancel_renewal(db, USER, reason="expensive"))
+    assert _pending_cleared(db)
+    flag = [w for w in _sub_writes(db) if "renewal_cancelled_at" in w][0]
+    assert all(col in flag and flag[col] is None for col in _PENDING)   # the SAME write
+    assert "plan_id" not in flag
+    assert state["pending_plan_id"] is None and state["downgrade_options"] == []
+    assert _audit(db, "renewal_cancelled")[0]["scheduled_downgrade_cleared"] == "pro_plus"
+
+    state = run(ss.reactivate_renewal(db, USER))
+    assert _pending_cleared(db)
+    assert state["pending_plan_id"] is None
+    assert state["downgrade_options"] == [PRO_PLUS_OPTION, PRO_OPTION]
+
+
+def test_reactivate_clears_a_stray_pending_change(flag_on):
+    """Cancel already dropped it; a hand-made row that still carries one is
+    cleared by the undo too — all five columns."""
+    db = FakeSupabase(sub("max", hours_left=240, cancelled_at=_iso(_now() - timedelta(days=1))))
+    _with_pending(db, "pro_plus")
+    state = run(ss.reactivate_renewal(db, USER))
+    assert _pending_cleared(db) and state["pending_plan_id"] is None
+
+
+def test_a_cancel_with_nothing_pending_writes_no_226_column(flag_on):
+    db = _running("max")
+    run(ss.cancel_renewal(db, USER, reason="other"))
+    flag = [w for w in _sub_writes(db) if "renewal_cancelled_at" in w][0]
+    assert "renewal_plan_id" not in flag
+
+
+def _buy(db, plan_id):
+    """Checkout + settle through the ONE fulfilment path."""
+    quote = run(ps.create_checkout(db, USER, plan_id))
+    row = next(r for r in db.tables["payment_transactions"]
+               if r["payment_id"] == quote["payment_id"])
+    fetched = {"id": str(uuid.uuid4()), "status": "paid", "amount": quote["amount_halalas"],
+               "currency": "SAR", "live": False,
+               "metadata": {"payment_id": quote["payment_id"]}}
+    return run(ps._mark_paid_and_grant(db, row, fetched))
+
+
+def test_an_upgrade_clears_the_pending_change(flag_off):
+    db = _running("pro_plus")
+    _with_pending(db, "pro")
+    assert _buy(db, "max")["granted"] is True
+    assert the_sub(db)["plan_id"] == "max"
+    assert _pending_cleared(db)
+    assert "release_early_adopter_seat" not in db.calls     # not a downgrade
+
+
+def test_a_same_plan_repurchase_clears_it_too(flag_off):
+    db = _running("max")
+    _with_pending(db, "pro_plus")
+    assert _buy(db, "max")["granted"] is True
+    assert _pending_cleared(db)
+
+
+def test_a_purchase_with_nothing_pending_writes_nothing_new(flag_off):
+    db = _running("pro")
+    _buy(db, "max")
+    assert not [w for w in _sub_writes(db) if "renewal_plan_id" in w]
+
+
+def test_an_ordinary_renewal_keeps_a_change_scheduled_mid_flight(
+    flag_on, charges, no_smtp, monkeypatch
+):
+    """A change scheduled while a same-plan renewal is in flight is for the
+    NEXT renewal — the renewal's fulfilment must not wipe it."""
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    original = ps.charge_saved_card
+
+    async def _charge_then_schedule(**kwargs):
+        result = await original(**kwargs)
+        _with_pending(db, "pro_plus", set_days_ago=0)
+        return result
+
+    monkeypatch.setattr(ps, "charge_saved_card", _charge_then_schedule)
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 21990
+    assert the_sub(db)["plan_id"] == "max"
+    assert the_sub(db)["renewal_plan_id"] == "pro_plus"
+
+
+# ── the renewal itself ───────────────────────────────────────────────────────
+
+
+def test_a_scheduled_downgrade_renews_into_the_target_at_its_price(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    old_expiry = _parse(the_sub(db)["expires_at"])
+
+    assert sweep(db) == {"scanned": 1, "renewed": 1}   # never "held"
+    assert charges[0]["amount"] == 14990
+    assert "الاحترافية بلس" in charges[0]["description"]
+
+    row = renewal_rows(db)[0]
+    assert row["plan_id"] == "pro_plus" and row["amount_sar"] == "149.90"
+    assert row["status"] == "paid" and row["fulfilled_at"]
+    assert "promo_batch_id" not in row and "intro_offer_group" not in row
+
+    s = the_sub(db)
+    assert s["plan_id"] == "pro_plus"
+    assert _pending_cleared(db)
+    # grant_plan opened the new plan from now(); the period bought starts at
+    # the OLD expiry, so the billing date is kept.
+    assert _parse(s["expires_at"]) == old_expiry + timedelta(days=30)
+    audit = _audit(db, "renewal_charged")[0]
+    # Promised 149.90 (list) and quoted 149.90 today: a TIE keeps the promise.
+    assert audit["downgraded_from"] == "max" and audit["pricing"] == "promise"
+
+
+def test_the_selection_renews_pro_plus_terms(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("pro_plus"))
+    store_method(db)
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 14990
+    assert the_sub(db)["plan_id"] == "pro_plus"
+
+
+def test_a_downgrade_to_an_offer_stamps_the_batch_and_seats_it(flag_on, charges, no_smtp):
+    """The quote came from a batch: the row carries it and the quoted terms, the
+    shared fulfilment claims the Pro Plus seat (a renewal that IS a decision),
+    and the Max seat being left is released 'downgraded' (D12: used)."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    store_method(db)
+    max_seat = _held_seat(db, "max_t2_c")
+    _with_pending(db, "pro_plus")
+
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 9990
+    row = renewal_rows(db)[0]
+    assert row["promo_batch_id"] == "pro_plus_t1_a"
+    assert row["intro_offer_terms"]["offer_sar"] == "99.90"
+    assert row["intro_offer_terms"]["offer_months"] == 2
+    # 226 (S1): the CLAIM supersedes the Max seat — 'downgraded', carrying this
+    # payment's id, so refunding the downgrade gives the Max seat back (V5).
+    assert max_seat["release_reason"] == "downgraded"
+    assert max_seat["released_by_payment_id"] == row["payment_id"]
+    live = [s for s in db.early_adopter_seats if not s.get("released_at")]
+    assert len(live) == 1 and live[0]["batch_id"] == "pro_plus_t1_a"
+    assert live[0]["payment_id"] == row["payment_id"]
+    # …and the post-claim release leaves the new term's own seat alone (S2).
+    assert [p.get("p_reason") for n, p in db.rpc_params
+            if n == "release_early_adopter_seat"] == []
+
+
+def test_a_list_priced_downgrade_still_releases_the_seat_it_leaves(flag_on, charges, no_smtp):
+    db = _ladder_on(FakeSupabase(sub("max")))
+    store_method(db)
+    max_seat = _held_seat(db, "max_t2_c")
+    _with_pending(db, "pro_plus")                   # pro_plus_t1_a still dark
+
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 14990
+    # No claim to supersede it, so the release RPC ends it — after grant_plan,
+    # and (review fix) with the downgrade payment's id, so a refund of that
+    # payment can give it back exactly as for a promo-priced switch.
+    payment_id = renewal_rows(db)[0]["payment_id"]
+    assert max_seat["release_reason"] == "downgraded"
+    assert max_seat["released_by_payment_id"] == payment_id
+    asked = [p for n, p in db.rpc_params if n == "release_early_adopter_seat"]
+    assert asked == [{"p_user_id": USER, "p_reason": "downgraded", "p_payment_id": payment_id}]
+    assert not [s for s in db.early_adopter_seats if not s.get("released_at")]
+    assert "claim_early_adopter_seat" not in db.calls      # no batch → no claim
+    assert db.calls.index("release_early_adopter_seat") > db.calls.index("grant_plan")
+
+
+def test_a_seat_on_the_target_plan_keeps_pricing_it(flag_on, charges, no_smtp):
+    """A live Pro batch seat while on Pro Plus (an upgrade at list left it
+    standing): moving back to Pro is priced by that seat, as a fresh Pro
+    purchase would be, and the seat is NOT released."""
+    db = _ladder_on(FakeSupabase(sub("pro_plus")))
+    store_method(db)
+    pro_seat = _held_seat(db, "pro_t2_a", claimed_days_ago=20, days_left=40)
+    _with_pending(db, "pro")
+
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 5990
+    assert pro_seat["released_at"] is None
+    assert the_sub(db)["plan_id"] == "pro"
+
+
+def test_the_grace_ladder_retries_the_target_price(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+
+    assert sweep(db)["declined"] == 1
+    assert charges[0]["amount"] == 14990
+    assert renewal_rows(db)[0]["plan_id"] == "pro_plus"
+    assert the_sub(db)["plan_id"] == "max"                  # nothing moved yet
+    assert the_sub(db)["renewal_plan_id"] == "pro_plus"     # a decline clears nothing
+    assert the_sub(db)["renewal_grace_until"]
+
+    travel(db, hours=12)
+    old_expiry = _parse(the_sub(db)["expires_at"])
+    charges.script["status"] = "paid"            # type: ignore[attr-defined]
+    assert sweep(db)["renewed"] == 1
+    assert charges[1]["amount"] == 14990
+    s = the_sub(db)
+    assert s["plan_id"] == "pro_plus" and s["renewal_plan_id"] is None
+    assert _parse(s["expires_at"]) == old_expiry + timedelta(days=30)
+
+
+def test_the_dunning_email_names_the_target_plan(flag_on, charges, monkeypatch):
+    notices: list[dict] = []
+
+    async def _notice(_db, *, payment_row, plan_name_ar, expires_at=None, final=False):
+        notices.append({"plan": plan_name_ar, "amount": payment_row.get("amount_sar")})
+
+    monkeypatch.setattr(rs, "send_renewal_failed_notice", _notice)
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+    sweep(db)
+    assert notices == [{"plan": "الاحترافية بلس", "amount": "149.90"}]
+    assert _audit(db, "renewal_declined")[0]["charged_plan_id"] == "pro_plus"
+
+
+def test_an_undo_after_a_decline_retries_the_current_plan_once(flag_on, charges, no_smtp):
+    """The ladder continues across the undo: rung 1 charges Max, never a second
+    rung-0 row, and the declined Pro Plus row keeps nothing open."""
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+    sweep(db)
+    run(ss.cancel_scheduled_downgrade(db, USER))
+
+    travel(db, hours=12)
+    charges.script["status"] = "paid"            # type: ignore[attr-defined]
+    assert sweep(db)["renewed"] == 1
+    assert [c["amount"] for c in charges] == [14990, 21990]
+    assert [(r["plan_id"], r["renewal_attempt"]) for r in renewal_rows(db)] == [
+        ("pro_plus", 0), ("max", 1)]
+    assert the_sub(db)["plan_id"] == "max"
+
+
+def test_an_ambiguous_row_under_either_plan_blocks_the_period(flag_on, charges, no_smtp):
+    """The unique index is per (user, PLAN, period): an unresolved Max charge
+    must still block the period after a downgrade to Pro Plus is scheduled, or
+    the card is charged twice for one month."""
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    charges.script["exc"] = ps.MoyasarUnavailable("timeout")  # type: ignore[attr-defined]
+    assert sweep(db)["ambiguous"] == 1
+
+    run(_schedule(db, "pro_plus"))
+    charges.script["exc"] = None                 # type: ignore[attr-defined]
+    assert sweep(db)["ambiguous"] == 1
+    assert len(charges) == 1
+    assert [r["plan_id"] for r in renewal_rows(db)] == ["max"]
+
+
+def test_plan_changed_mid_charge_still_holds_against_the_original_plan(
+    flag_on, charges, no_smtp, monkeypatch
+):
+    """The guard compares with the plan the term was ON at selection (max), not
+    the target (pro_plus): a downgrade renewal is NOT held for its own target —
+    see the test above — but a real mid-flight change still is."""
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    original = ps.charge_saved_card
+
+    async def _charge_then_move(**kwargs):
+        result = await original(**kwargs)
+        the_sub(db)["plan_id"] = "pro"            # something else moved the row
+        return result
+
+    monkeypatch.setattr(ps, "charge_saved_card", _charge_then_move)
+    assert sweep(db)["held"] == 1
+    assert the_sub(db)["plan_id"] == "pro"
+    assert "grant_plan" not in db.calls
+    assert renewal_rows(db)[0]["status"] == "paid"
+
+
+def test_an_undo_mid_charge_grants_what_was_paid_for(flag_on, charges, no_smtp, monkeypatch, caplog):
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    original = ps.charge_saved_card
+
+    async def _charge_then_undo(**kwargs):
+        result = await original(**kwargs)
+        the_sub(db)["renewal_plan_id"] = None
+        return result
+
+    monkeypatch.setattr(ps, "charge_saved_card", _charge_then_undo)
+    with caplog.at_level(logging.ERROR, logger=rs.logger.name):
+        assert sweep(db)["renewed"] == 1
+    assert the_sub(db)["plan_id"] == "pro_plus"
+    assert any("changed mid-flight" in r.getMessage() for r in caplog.records)
+
+
+def test_a_stale_pending_change_never_moves_the_renewal(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus", set_days_ago=40)          # before started_at
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 21990
+    assert the_sub(db)["plan_id"] == "max"
+
+
+def test_the_promise_is_honoured_when_the_target_lost_its_list_price(flag_on, charges, no_smtp):
+    """Owner 2026-11-20: pro_plus rolled back to price_sar NULL after the change
+    was scheduled at 99.90 × 2 — the renewal still charges the PROMISE, stamps
+    the promised batch (so the seat is claimed) and grants pro_plus. Never
+    skipped, never swapped for the current plan's price."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    store_method(db)
+    max_seat = _held_seat(db, "max_t2_c")
+    _with_pending(db, "pro_plus", price="99.90", batch_id="pro_plus_t1_a", months=2)
+    _set_price(db, "pro_plus", None)
+
+    assert sweep(db) == {"scanned": 1, "renewed": 1}
+    # 226: with pro_plus off sale the claim ranks by points_weekly (max 500 >
+    # pro_plus 250), so the Max seat it supersedes is 'downgraded', not
+    # 'upgraded' — carrying this payment's id (a refund gives it back).
+    assert max_seat["release_reason"] == "downgraded"
+    assert charges[0]["amount"] == 9990
+    row = renewal_rows(db)[0]
+    assert row["plan_id"] == "pro_plus" and row["promo_batch_id"] == "pro_plus_t1_a"
+    assert row["intro_offer_terms"]["offer_sar"] == "99.90"
+    assert row["intro_offer_terms"]["offer_months"] == 2
+    assert row["intro_offer_terms"]["list_sar"] is None      # no list price today
+    assert the_sub(db)["plan_id"] == "pro_plus" and _pending_cleared(db)
+    seat = next(s for s in db.early_adopter_seats if not s.get("released_at"))
+    assert seat["batch_id"] == "pro_plus_t1_a" and seat["payment_id"] == row["payment_id"]
+    assert _audit(db, "renewal_charged")[0]["pricing"] == "promise"
+
+
+def test_a_list_price_promise_is_honoured_with_no_batch(flag_on, charges, no_smtp):
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")                       # promised 149.90, no batch
+    _set_price(db, "pro_plus", None)
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 14990
+    assert "promo_batch_id" not in renewal_rows(db)[0]
+    assert the_sub(db)["plan_id"] == "pro_plus"
+
+
+@pytest.mark.parametrize("closed", ["full", "disabled"])
+def test_the_promised_batch_is_seated_even_if_it_filled_or_closed(
+    flag_on, charges, no_smtp, closed
+):
+    """Today's fresh quote is the list price (the batch is gone), which is above
+    the 99.90 promise — so the promise is charged, stamped with the promised
+    batch, and the claim seats it anyway (over capacity when full)."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    store_method(db)
+    batch = db._batch("pro_plus_t1_a")
+    batch["enabled"] = closed == "full"
+    if closed == "full":
+        batch["seat_limit"] = 1
+        db.early_adopter_seats.append({
+            "seat_id": "other", "user_id": str(uuid.uuid4()), "payment_id": "p-other",
+            "claimed_at": _iso(_now()), "promo_ends_at": _iso(_now() + timedelta(days=60)),
+            "released_at": None, "release_reason": None, "over_capacity": False,
+            "batch_id": "pro_plus_t1_a", "plan_id": "pro_plus", "price_tier": 1,
+            "price_sar": "99.90",
+        })
+    _with_pending(db, "pro_plus", price="99.90", batch_id="pro_plus_t1_a", months=2)
+
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 9990
+    row = renewal_rows(db)[0]
+    assert row["promo_batch_id"] == "pro_plus_t1_a"
+    mine = next(s for s in db.early_adopter_seats
+                if s.get("user_id") == USER and not s.get("released_at"))
+    assert mine["batch_id"] == "pro_plus_t1_a" and mine["payment_id"] == row["payment_id"]
+    assert mine["over_capacity"] is (closed == "full")
+
+
+def test_a_lower_fresh_price_beats_the_promise(flag_on, charges, no_smtp):
+    """Promised the 149.90 list price; by the renewal Pro Plus has a 99.90 × 2
+    offer the user can take as a fresh buyer — the lower price wins, with ITS
+    batch."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    store_method(db)
+    _with_pending(db, "pro_plus")                        # promised 149.90
+
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 9990
+    assert renewal_rows(db)[0]["promo_batch_id"] == "pro_plus_t1_a"
+    assert _audit(db, "renewal_charged")[0]["pricing"] == "fresh"
+
+
+def test_a_higher_fresh_price_never_beats_the_promise(flag_on, charges, no_smtp):
+    """Promised 99.90 from a batch that has since been switched off; today's
+    fresh quote (149.90 list) is higher, so the promise holds."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    store_method(db)
+    _with_pending(db, "pro_plus", price="99.90", batch_id="pro_plus_t1_a", months=2)
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 9990
+
+
+def test_a_failed_fresh_quote_charges_the_promise(flag_on, charges, no_smtp, monkeypatch):
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+
+    def _boom(*_a, **_k):
+        raise ps.PricingUnavailable("rpc down")
+
+    monkeypatch.setattr(ps, "fresh_purchase_quote", _boom)
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 14990
+
+
+def test_no_promise_and_no_fresh_quote_burns_no_rung(flag_on, charges, no_smtp):
+    """Defensive only (226's CHECK makes a promise-less pending row impossible):
+    nothing to charge → skip before the ledger row, the next tick re-asks."""
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    the_sub(db)["renewal_plan_price_sar"] = None
+    _set_price(db, "pro_plus", None)
+    assert sweep(db) == {"scanned": 1, "skipped_pricing_unavailable": 1}
+    assert charges == [] and renewal_rows(db) == []
+    assert the_sub(db)["renewal_failed_count"] == 0
+
+
+def test_a_retry_rung_charges_what_rung_zero_chose(flag_on, charges, no_smtp):
+    """Rung 0 took the lower fresh offer (99.90, batch) and was declined; the
+    offer then closed. Rung 1 charges 99.90 with the same batch — the price the
+    first dunning email named — never the 149.90 a re-decision would give."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    store_method(db)
+    _with_pending(db, "pro_plus")                        # promised 149.90
+    charges.script["status"] = "failed"          # type: ignore[attr-defined]
+    assert sweep(db)["declined"] == 1
+    assert charges[0]["amount"] == 9990
+
+    db._batch("pro_plus_t1_a")["enabled"] = False
+    travel(db, hours=12)
+    charges.script["status"] = "paid"            # type: ignore[attr-defined]
+    assert sweep(db)["renewed"] == 1
+    assert charges[1]["amount"] == 9990
+    rows = renewal_rows(db)
+    assert [r["renewal_attempt"] for r in rows] == [0, 1]
+    assert rows[1]["promo_batch_id"] == "pro_plus_t1_a"
+    assert rows[1]["intro_offer_terms"] == rows[0]["intro_offer_terms"]
+    assert _audit(db, "renewal_charged")[0]["pricing"] == "first_rung"
+
+
+def test_month_two_of_a_promised_offer_renews_at_the_seat_price_off_sale(flag_on, charges, no_smtp):
+    """After the promised switch, the NEW plan renews by the ordinary rule
+    ('current' price). 226 redefines effective_plan_price so a live batch seat
+    keeps its frozen price inside its window even with price_sar NULL: month 2
+    of a promised 99.90 × 2 is charged 99.90 although pro_plus is off sale."""
+    db = _ladder_on(FakeSupabase(sub("pro_plus")))
+    store_method(db)
+    _held_seat(db, "pro_plus_t1_a", claimed_days_ago=30, days_left=30)
+    _set_price(db, "pro_plus", None)
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 9990
+
+
+def test_the_next_renewal_of_an_unpriced_plan_follows_the_normal_rule(flag_on, charges, no_smtp):
+    """…and past the seat window (or with no seat) a NULL list price still
+    answers NULL. Existing behaviour, pinned: the job reads 0.00 and skips the
+    term (`skipped_bad_price`, ERROR, once per period) — it lapses into the
+    free fallback with no charge."""
+    db = FakeSupabase(sub("pro_plus"))
+    store_method(db)
+    _set_price(db, "pro_plus", None)
+    assert sweep(db) == {"scanned": 1, "skipped_bad_price": 1}
+    assert charges == []
+
+
+# ── the routes ───────────────────────────────────────────────────────────────
+
+
+def test_the_downgrade_routes_answer_the_subscription_shape_uncached(flag_on, monkeypatch):
+    from backend.app.api import payments as api
+    from backend.app.models.requests import DowngradeSubscriptionRequest
+
+    db = _running("max")
+    monkeypatch.setattr(api, "get_user_id", lambda _sb, _auth: USER)
+
+    class _Resp:
+        def __init__(self):
+            self.headers: dict = {}
+
+    user = type("U", (), {"auth_id": "auth-1"})()
+    resp = _Resp()
+    scheduled = run(api.schedule_subscription_downgrade(
+        DowngradeSubscriptionRequest(plan_id="pro", expected_price_sar="94.90",
+                                     expected_promo_months=None), resp, current_user=user, supabase=db))
+    assert resp.headers["Cache-Control"] == "private, no-store"
+    assert scheduled["pending_plan_id"] == "pro"
+    assert set(scheduled) == set(run(ss.get_subscription(db, USER)))
+    assert {"pending_plan_id", "pending_plan_name_ar", "pending_price_sar",
+            "pending_promo_months", "downgrade_options"} <= set(scheduled)
+
+    resp = _Resp()
+    undone = run(api.cancel_subscription_downgrade(resp, current_user=user, supabase=db))
+    assert resp.headers["Cache-Control"] == "private, no-store"
+    assert undone["pending_plan_id"] is None
+
+
+# ── independent review fixes (2026-11-20) ────────────────────────────────────
+
+
+def test_every_pending_column_is_selected_where_it_is_read():
+    """Review #1 (CRITICAL): the renewal job's select did not name the promise
+    columns, so promise_of() always read None there. The fakes now project
+    select() lists like PostgREST; this pins the lists themselves too."""
+    for col in ss._PENDING_COLUMNS:
+        assert col in rs._SUBSCRIPTION_COLUMNS
+        assert col in ss._SUBSCRIPTION_COLUMNS
+
+
+def test_the_fake_returns_only_the_selected_columns():
+    """The projection the review asked for: a column a production select does
+    not name is simply absent from what the code receives."""
+    db = FakeSupabase(sub("max"))
+    _with_pending(db, "pro_plus")
+    rows = db.table("user_subscriptions").select("plan_id, expires_at").execute().data
+    assert set(rows[0]) == {"plan_id", "expires_at"}
+
+
+def test_the_job_honours_a_promise_it_has_to_read_from_the_row(flag_on, charges, no_smtp):
+    """End to end through the projected select: the promise (99.90, a batch that
+    has since been switched off) is read by the JOB and beats today's 149.90."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    store_method(db)
+    _with_pending(db, "pro_plus", price="99.90", batch_id="pro_plus_t1_a", months=2)
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 9990
+
+
+@pytest.mark.parametrize(
+    "fresh, promise, fresh_wins",
+    [
+        # (price, months) — list 94.90 for pro
+        (("19.90", 1), ("19.90", 2), False),    # same first charge, a month fewer
+        (("19.90", 2), ("19.90", 1), True),     # a month MORE at the offer
+        (("59.90", 2), ("19.90", 2), False),    # dearer offer
+        (("19.90", 2), ("59.90", 2), True),     # cheaper offer
+        (("19.90", 2), ("19.90", 2), False),    # a tie keeps the promise
+        (("94.90", None), ("94.90", None), False),
+        (("59.90", 2), ("94.90", None), True),  # an offer beats a list promise
+    ],
+)
+def test_the_promise_and_the_fresh_quote_are_compared_over_the_horizon(fresh, promise, fresh_wins):
+    """Review #2: total = price × months + list × (H − months) over the longer
+    offer; the fresh quote wins only when STRICTLY cheaper."""
+    plan = {"plan_id": "pro", "price_sar": "94.90"}
+    f = {"price_sar": ps.q2(fresh[0]),
+         "batch": {"batch_id": "x", "months": fresh[1]} if fresh[1] else None}
+    p = {"price_sar": ps.q2(promise[0]), "batch_id": "y" if promise[1] else None,
+         "months": promise[1]}
+    assert rs._fresh_beats_promise(f, p, plan) is fresh_wins
+    assert rs._fresh_beats_promise(f, p, {**plan, "price_sar": None}) is False
+
+
+def test_a_promised_two_month_offer_beats_a_one_month_fresh_one(flag_on, charges, no_smtp):
+    """Review #2 end to end: promised pro_plus_t1_a 99.90 × 2; at the renewal only
+    a one-month 99.90 batch is open. Same first charge — but the promise is 50.00
+    cheaper over two months, so the PROMISED batch is charged and seated for two
+    months."""
+    db = _ladder_on(FakeSupabase(sub("max")))
+    db._batch("pro_plus_t1_a")["enabled"] = False
+    db.promo_batches.append({
+        "batch_id": "pro_plus_t1_b", "plan_id": "pro_plus", "price_tier": 1,
+        "batch_order": 2, "price_sar": "99.90", "months": 1, "seat_limit": 500,
+        "profession_only": False, "enabled": True,
+    })
+    store_method(db)
+    _with_pending(db, "pro_plus", price="99.90", batch_id="pro_plus_t1_a", months=2)
+
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 9990
+    row = renewal_rows(db)[0]
+    assert row["promo_batch_id"] == "pro_plus_t1_a"
+    assert row["intro_offer_terms"]["offer_months"] == 2
+    assert "intro_offer_group" not in row
+    seat = next(s for s in db.early_adopter_seats if not s.get("released_at"))
+    assert seat["batch_id"] == "pro_plus_t1_a"
+    # 226: a renewal-claimed seat's window is anchored on the period it pays for.
+    assert seat["claimed_at"] == _iso(_parse(row["period_start"]))
+    assert _parse(seat["promo_ends_at"]) == _parse(row["period_start"]) + timedelta(days=60)
+    assert _audit(db, "renewal_charged")[0]["pricing"] == "promise"
+
+
+def test_the_as_new_pro_quote_never_includes_tier_1():
+    """225 (owner 2026-11-20, review #7 option b), model level: a lawyer buying
+    Pro at checkout is quoted Tier 1 (19.90 × 2); the SAME lawyer quoted as a
+    fresh buyer for a scheduled downgrade gets Tier 2 (59.90 × 2)."""
+    db = _ladder_on(FakeSupabase(sub("free", source="signup", hours_left=None)), "legal")
+    assert db._quote(USER, "pro")["batch_id"] == "pro_t1_a"
+    assert db._quote(USER, "pro", as_new=True)["batch_id"] == "pro_t2_a"
+
+
+def test_a_downgrade_to_pro_never_gets_the_profession_offer(flag_on, charges, no_smtp):
+    """A lawyer on Max schedules a downgrade to Pro: the dialog offers 59.90 × 2,
+    the stored promise is 59.90 × 2 (pro_t2_a), 19.90 is refused as a changed
+    price, and the renewal charges exactly the promise — an ordinary, refundable
+    Tier 2 sale (no profession group on the row)."""
+    db = _ladder_on(FakeSupabase(sub("max", hours_left=240)), "legal")
+    store_method(db)
+
+    pro = next(o for o in run(ss.get_subscription(db, USER))["downgrade_options"]
+               if o["plan_id"] == "pro")
+    assert (pro["promo_price_sar"], pro["promo_months"]) == ("59.90", 2)
+
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro", "19.90"))
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED
+
+    state = run(_schedule(db, "pro", "59.90", 2))
+    assert (state["pending_price_sar"], state["pending_promo_months"]) == ("59.90", 2)
+    s = the_sub(db)
+    assert (s["renewal_plan_price_sar"], s["renewal_plan_batch_id"],
+            s["renewal_plan_promo_months"]) == ("59.90", "pro_t2_a", 2)
+
+    s["expires_at"] = _iso(_now() + timedelta(hours=DUE_HOURS))     # the term comes due
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 5990                            # the promise, exactly
+    row = renewal_rows(db)[0]
+    assert row["promo_batch_id"] == "pro_t2_a"
+    assert row["intro_offer_terms"]["offer_sar"] == "59.90"
+    assert not row.get("intro_offer_group")
+    assert ps.transaction_summary(row)["non_refundable"] is False
+    assert the_sub(db)["plan_id"] == "pro"
+
+
+def test_a_downgrade_to_pro_with_tier_2_used_is_promised_the_list_price(flag_on):
+    """…and with Tier 2 already used there is no offer for the downgrade at all
+    (Tier 1 is never an option for it): list price, promised as such."""
+    db = _ladder_on(FakeSupabase(sub("max", hours_left=240)), "legal")
+    store_method(db)
+    _held_seat(db, "pro_t2_a", claimed_days_ago=60, days_left=-1)
+    db.early_adopter_seats[-1].update(released_at=_iso(_now() - timedelta(days=1)),
+                                      release_reason="cancelled")
+    pro = next(o for o in run(ss.get_subscription(db, USER))["downgrade_options"]
+               if o["plan_id"] == "pro")
+    assert pro["promo_price_sar"] is None
+    state = run(_schedule(db, "pro", "94.90"))
+    assert (state["pending_price_sar"], state["pending_promo_months"]) == ("94.90", None)
+    assert the_sub(db)["renewal_plan_batch_id"] is None
+
+
+def test_a_changed_price_is_refused_before_anything_is_promised(flag_on):
+    """Review #3: the dialog showed 149.90, the quote is now 99.90 (an offer
+    opened) — 409, Arabic, nothing written; confirming the new price works."""
+    db = _ladder_on(_running("max"))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro_plus", "149.90"))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED
+    assert exc.value.detail == "تغيّر سعر هذه الباقة قبل التأكيد. راجع السعر الجديد ثم أكّد مرة أخرى."
+    assert _sub_writes(db) == [] and the_sub(db).get("renewal_plan_id") is None
+
+    assert run(_schedule(db, "pro_plus", "99.9", 2))["pending_price_sar"] == "99.90"   # 99.9 == 99.90
+
+
+@pytest.mark.parametrize("expected", ["abc", "", "-1", "0"])
+def test_an_unreadable_expected_price_is_a_changed_price(flag_on, expected):
+    db = _running("max")
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.schedule_downgrade(db, USER, "pro", expected, None))
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED
+
+
+def test_re_picking_the_pending_plan_keeps_the_stored_promise(flag_on):
+    db = _running("max")
+    _with_pending(db, "pro_plus", price="123.45")
+    state = run(_schedule(db, "pro_plus", "149.90"))      # not compared on a re-pick
+    assert state["pending_price_sar"] == "123.45" and _sub_writes(db) == []
+
+
+def test_the_request_requires_and_normalises_the_expected_price():
+    from pydantic import ValidationError
+
+    from backend.app.models.requests import DowngradeSubscriptionRequest
+
+    req = DowngradeSubscriptionRequest(plan_id="pro", expected_price_sar=94.9,
+                                       expected_promo_months=None)
+    assert (req.expected_price_sar, req.expected_promo_months) == ("94.9", None)
+    assert DowngradeSubscriptionRequest(plan_id="pro", expected_price_sar="59.90",
+                                        expected_promo_months=2).expected_promo_months == 2
+    with pytest.raises(ValidationError):
+        DowngradeSubscriptionRequest(plan_id="pro", expected_promo_months=None)
+    with pytest.raises(ValidationError):                  # the key is required (null is fine)
+        DowngradeSubscriptionRequest(plan_id="pro", expected_price_sar="94.90")
+
+
+def test_a_webhook_that_settles_the_downgrade_first_is_not_a_hold(
+    flag_on, charges, no_smtp, monkeypatch
+):
+    """Review #4: Moyasar's payment_paid webhook fulfils the downgrade renewal
+    (granting the TARGET) before the job reads the result. That is the job's
+    own success — no hold, the webhook's paid_at is kept, and the billing date
+    is fixed exactly once."""
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    _with_pending(db, "pro_plus")
+    old_expiry = _parse(the_sub(db)["expires_at"])
+    original = ps.charge_saved_card
+    seen: dict = {}
+
+    async def _charge_then_webhook(**kwargs):
+        fetched = await original(**kwargs)
+        row = next(r for r in db.tables["payment_transactions"]
+                   if r["payment_id"] == kwargs["payment_id"])
+        await ps._mark_paid_and_grant(db, dict(row), fetched)        # the webhook
+        seen["paid_at"] = row["paid_at"]
+        return fetched
+
+    monkeypatch.setattr(ps, "charge_saved_card", _charge_then_webhook)
+    assert sweep(db) == {"scanned": 1, "renewed": 1}
+    assert the_sub(db)["plan_id"] == "pro_plus"
+    assert _parse(the_sub(db)["expires_at"]) == old_expiry + timedelta(days=30)
+    assert renewal_rows(db)[0]["paid_at"] == seen["paid_at"]       # not overwritten
+    assert _audit(db, "renewal_held") == []
+    restacks = [w for w in _sub_writes(db) if "expires_at" in w and "renewal_attempt_at" not in w]
+    assert len(restacks) == 1
+
+    # …and a second pass over the same state changes nothing (idempotent).
+    kept = run(rs._keep_the_billing_date(
+        db, subscription={**sub("max"), "expires_at": _iso(old_expiry)},
+        plan=db._plan("pro_plus"), granted_expires_at=the_sub(db)["expires_at"],
+        plan_id="pro_plus"))
+    assert _parse(kept) == old_expiry + timedelta(days=30)
+    assert len([w for w in _sub_writes(db) if "expires_at" in w
+                and "renewal_attempt_at" not in w]) == 1
+
+
+def test_no_card_blocks_scheduling_but_keeps_the_options_visible(flag_on):
+    """Review #6: without a chargeable card the renewal that applies the change
+    cannot run (skipped_no_method → the term lapses). GET still lists the
+    options and says why; POST is refused in Arabic."""
+    db = _running("max", card=False)
+    state = run(ss.get_subscription(db, USER))
+    assert state["downgrade_options"] == [PRO_PLUS_OPTION, PRO_OPTION]
+    assert state["downgrade_blocked_reason"] == "no_payment_method"
+
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro"))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_NO_METHOD
+    assert exc.value.detail == "أضف بطاقة دفع أولاً حتى نتمكن من تحويل باقتك عند التجديد."
+    assert _sub_writes(db) == []
+
+    store_method(db)
+    state = run(ss.get_subscription(db, USER))
+    assert state["downgrade_blocked_reason"] is None
+
+
+@pytest.mark.parametrize("card", [True, False])
+def test_no_block_reason_when_there_is_nothing_to_pick(flag_on, card):
+    state = run(ss.get_subscription(_running("pro", card=card), USER))
+    assert state["downgrade_options"] == [] and state["downgrade_blocked_reason"] is None
+
+
+def test_the_cross_plan_index_stops_a_second_charge_for_one_period(
+    flag_on, charges, no_smtp, monkeypatch
+):
+    """Review #7: 226's (user, period) index. Even if the pre-filter missed the
+    Max row already charging this period, inserting the Pro Plus row loses at
+    the database and the job treats it as "already being charged"."""
+    db = FakeSupabase(sub("max"))
+    store_method(db)
+    period = the_sub(db)["expires_at"]
+    db.tables["payment_transactions"].append({
+        "payment_id": str(uuid.uuid4()), "user_id": USER, "plan_id": "max",
+        "amount_sar": "219.90", "status": "initiated", "initiated_by": "renewal",
+        "renewal_attempt": 0, "period_start": _iso(_parse(period)),
+        "created_at": _iso(_now()),
+    })
+    _with_pending(db, "pro_plus")
+    monkeypatch.setattr(rs, "_existing_renewal_rows", lambda *_a, **_k: [])
+    assert sweep(db) == {"scanned": 1, "skipped_already_renewed": 1}
+    assert charges == []
+
+
+# ── second review (2026-11-21) ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("months", [None, 1, 3, "2", True])
+def test_changed_offer_months_are_refused_before_anything_is_promised(flag_on, months):
+    """Review B: the dialog showed 99.90 for a number of months; a promise of
+    the same price for different months (or an unreadable months value) is a
+    changed price — 409, nothing written."""
+    db = _ladder_on(_running("max"))
+    db._batch("pro_plus_t1_a")["enabled"] = True            # today: 99.90 × 2
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro_plus", "99.90", months))
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED
+    assert _sub_writes(db) == []
+
+    state = run(_schedule(db, "pro_plus", "99.90", 2))
+    assert (state["pending_price_sar"], state["pending_promo_months"]) == ("99.90", 2)
+
+
+def test_a_list_price_confirmed_with_months_is_refused(flag_on):
+    db = _running("max")
+    with pytest.raises(LunaHTTPException) as exc:
+        run(_schedule(db, "pro_plus", "149.90", 2))
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED
+    assert run(_schedule(db, "pro_plus", "149.90", None))["pending_promo_months"] is None
+
+
+def test_a_batch_priced_at_list_is_promised_as_the_list_price(flag_on):
+    """Shown as no offer (price_sar only, months null), so promised as exactly
+    that — otherwise the months the server would store could never match what
+    the dialog sends, and the confirm would 409 forever."""
+    db = _ladder_on(_running("max"))
+    batch = db._batch("pro_plus_t1_a")
+    batch.update(enabled=True, price_sar="149.90")
+    option = run(ss.get_subscription(db, USER))["downgrade_options"][0]
+    assert (option["promo_price_sar"], option["promo_months"]) == (None, None)
+    state = run(_schedule(db, "pro_plus", "149.90", None))
+    assert (state["pending_price_sar"], state["pending_promo_months"]) == ("149.90", None)
+    assert the_sub(db)["renewal_plan_batch_id"] is None
+
+
+def test_a_fresh_quote_never_charges_more_than_the_promise_up_front():
+    """Review C, the reviewer's case: promise 79.90 × 1, fresh 99.90 × 2 (list
+    149.90). Over two months the offer is cheaper (199.80 vs 229.80), but its
+    first charge is above the promised one — the promise wins."""
+    plan = {"plan_id": "pro_plus", "price_sar": "149.90"}
+    fresh = {"price_sar": ps.q2("99.90"), "batch": {"batch_id": "pro_plus_t1_a", "months": 2}}
+    promise = {"price_sar": ps.q2("79.90"), "batch_id": None, "months": None}
+    assert rs._fresh_beats_promise(fresh, promise, plan) is False
+    # …and with the first charge at or below the promise, the horizon decides.
+    cheaper = {**fresh, "price_sar": ps.q2("79.90")}
+    assert rs._fresh_beats_promise(cheaper, promise, plan) is True
+
+
+def test_the_renewal_never_charges_above_the_promised_price(flag_on, charges, no_smtp):
+    db = _ladder_on(FakeSupabase(sub("max")))
+    db._batch("pro_plus_t1_a")["enabled"] = True            # fresh: 99.90 × 2
+    store_method(db)
+    _with_pending(db, "pro_plus", price="79.90")            # promised 79.90, no batch
+    assert sweep(db)["renewed"] == 1
+    assert charges[0]["amount"] == 7990
+    assert "promo_batch_id" not in renewal_rows(db)[0]
+    assert _audit(db, "renewal_charged")[0]["pricing"] == "promise"

@@ -14,9 +14,11 @@ caller, delegate to ``backend.app.services.payment_service``, return.
     POST /applepay/session  authed   Apple Pay merchant-validation proxy — UNUSED
     GET  /early-adopter     NO JWT   is a promo open, at what prices, for how many months
     GET  /intro-offer       authed   may the CALLER buy عرض الشهر الأول, and at what
-    GET  /subscription      authed   plan + term + cancel eligibility
+    GET  /subscription      authed   plan + term + cancel eligibility + plan change
     POST /subscription/cancel     authed  opt out of renewal + exit survey
     POST /subscription/reactivate authed  undo that opt-out
+    POST /subscription/downgrade  authed  move to a lower plan at the next renewal
+    DELETE /subscription/downgrade authed undo that scheduled change
 
 Three things are unusual here and all of them are deliberate:
 
@@ -56,6 +58,7 @@ from backend.app.models.requests import (
     ApplePaySessionRequest,
     CancelSubscriptionRequest,
     CheckoutRequest,
+    DowngradeSubscriptionRequest,
     RecurringConsentRequest,
     VerifyPaymentRequest,
 )
@@ -337,8 +340,12 @@ async def early_adopter(
     Returns::
 
         {"open": true,
-         "promo":  {"pro": "59.90", "max": "149.90"},
-         "months": {"pro": 2, "max": 4}}
+         "promo":  {"pro": "59.90", "pro_plus": "99.90", "max": "169.90"},
+         "months": {"pro": 2, "pro_plus": 2, "max": 2}}
+
+    A plan appears only while it has an open general offer: ``pro_plus`` from
+    the moment ``pro_plus_t1_a`` is enabled (it ships disabled, 225), and any
+    plan drops out when its batches fill.
 
     …or, once the campaign is closed, disabled, or unreadable::
 
@@ -484,8 +491,32 @@ async def subscription(
             "returnable": false,                # started on عرض الشهر الأول → a cancel
                                                 #   does NOT forfeit the price for good
             "tier_rules": false                 # 192 ladder_v2: cancelling loses the seat
-          }                                     #   and its tier; never-used tiers stay open
+          },                                    #   and its tier; never-used tiers stay open
+          # 226 — تغيير الباقة (scheduled downgrade). Additive.
+          "pending_plan_id": "pro_plus",        # null when no change is scheduled
+          "pending_plan_name_ar": "الاحترافية بلس",
+          "pending_price_sar": "99.90",         # the price PROMISED when scheduled — the
+                                                #   most the next renewal charges (less
+                                                #   only if a fresh quote then is lower);
+                                                #   never null while a change is pending
+          "pending_promo_months": 2,            # months at that price when it is an offer
+          "downgrade_options": [                # empty unless: paid term running and
+            {"plan_id": "pro_plus",             #   renewal not cancelled; only renewable,
+             "name_ar": "الاحترافية بلس",       #   purchasable plans below the current
+             "price_sar": "149.90",             #   one, nearest first
+             "promo_price_sar": "99.90",        # null unless the first renewal is below list
+             "promo_months": 2},                # null unless that price is a batch offer
+            {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "94.90",
+             "promo_price_sar": null, "promo_months": null}
+          ],
+          "downgrade_blocked_reason": null      # "no_payment_method" while options
+                                                #   are listed but no chargeable card
+                                                #   exists — POST would 409
         }
+
+    The change takes effect at the next renewal (``expires_at``, or
+    ``renewal_grace_until`` while a declined renewal is retried): the current
+    term runs out untouched and is never refunded or shortened.
 
     ``cancellable`` describes the SUBSCRIPTION, not the button: it stays true
     while ``renewal_cancelled_at`` is set, because an undo makes cancelling
@@ -528,6 +559,9 @@ async def cancel_subscription(
     a refund (that is ``POST /{payment_id}/refund``, unrelated and unchanged),
     and in Wave 1 it stops no automatic charge, because there is none.
 
+    A scheduled downgrade is dropped in the same write (cancel wins), and
+    ``POST /subscription/reactivate`` does not bring it back.
+
     Errors: 400 VALIDATION_ERROR (unknown reason),
     409 SUBSCRIPTION_NOT_CANCELLABLE (no paid subscription with a running term),
     409 SUBSCRIPTION_ALREADY_CANCELLED (a second call — never a second survey
@@ -558,6 +592,60 @@ async def reactivate_subscription(
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     result = await subscription_service.reactivate_renewal(supabase, user_id)
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
+@router.post("/subscription/downgrade")
+async def schedule_subscription_downgrade(
+    payload: DowngradeSubscriptionRequest,
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """«تغيير الباقة» — move to a LOWER plan at the next renewal.
+
+    Body ``{"plan_id": "pro_plus"|"pro", "expected_price_sar": "99.90",
+    "expected_promo_months": 2|null}`` — all three keys REQUIRED;
+    ``expected_price_sar`` / ``expected_promo_months`` are what the dialog
+    showed for that option (its ``promo_price_sar`` + ``promo_months`` when set,
+    else ``price_sar`` + null). Returns
+    the ``GET /subscription`` shape with ``pending_*`` set to the stored
+    promise. Nothing is charged now and the current term is not touched; the
+    renewal grants the target at the promised price or a strictly cheaper
+    fresh one. Choosing the pending plan again is a no-op (the stored promise
+    stands); choosing another lower plan replaces it.
+
+    Errors, in this order: 409 SUBSCRIPTION_NOT_CANCELLABLE (no paid
+    subscription with a running term), 409 SUBSCRIPTION_ALREADY_CANCELLED
+    (renewal is cancelled — undo the cancel first), 409
+    SUBSCRIPTION_DOWNGRADE_INVALID (not a renewable, purchasable plan ranked
+    below the current one — basic and free never are), 409
+    SUBSCRIPTION_DOWNGRADE_NO_METHOD (no chargeable stored card), 409
+    SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED (the price or its months moved since
+    the dialog — nothing written; re-read GET and confirm again), 503 when the
+    quote or the write fails.
+    """
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await subscription_service.schedule_downgrade(
+        supabase, user_id, payload.plan_id, payload.expected_price_sar,
+        payload.expected_promo_months,
+    )
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
+@router.delete("/subscription/downgrade")
+async def cancel_subscription_downgrade(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """«تراجع» — drop the scheduled plan change; the renewal goes back to the
+    current plan. Returns the ``GET /subscription`` shape. A no-op 200 when
+    nothing is pending. 503 when the write itself fails."""
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await subscription_service.cancel_scheduled_downgrade(supabase, user_id)
     response.headers["Cache-Control"] = _NO_STORE
     return result
 

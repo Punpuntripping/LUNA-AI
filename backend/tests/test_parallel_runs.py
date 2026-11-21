@@ -34,7 +34,7 @@ PLANS = [
      "points_weekly": None, "points_monthly": 5, "max_parallel_runs": 1},
     {"plan_id": "pro", "price_sar": 94.90, "points_session": 15,
      "points_weekly": 100, "points_monthly": None, "max_parallel_runs": 1},
-    {"plan_id": "max", "price_sar": 289.90, "points_session": 75,
+    {"plan_id": "max", "price_sar": 219.90, "points_session": 75,
      "points_weekly": 500, "points_monthly": None, "max_parallel_runs": 5},
     {"plan_id": "dev", "price_sar": None, "points_session": None,
      "points_weekly": None, "points_monthly": None, "max_parallel_runs": 5},

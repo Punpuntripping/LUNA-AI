@@ -213,7 +213,8 @@ def buy(db, monkeypatch, plan_id="pro"):
 
 
 def price_now(db, plan_id="pro", *, context=ps.PRICE_CONTEXT_PURCHASE, user_id=USER):
-    catalog = {"basic": "39.90", "pro": "94.90", "max": "294.90"}[plan_id]
+    catalog = {"basic": "39.90", "pro": "94.90", "pro_plus": "149.90",
+               "max": "219.90"}[plan_id]
     return ps._effective_price(db, user_id, plan_id, catalog, context=context)
 
 
@@ -913,7 +914,7 @@ def test_forfeiture_is_a_property_of_the_user_not_of_the_plan(keys):
     db = open_campaign()
     seat(db, released=True, reason="cancelled")
 
-    assert checkout(db, "max")["amount_sar"] == "289.90"
+    assert checkout(db, "max")["amount_sar"] == "219.90"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1118,7 +1119,7 @@ def test_v2_capacity_is_per_batch_not_the_old_campaign_count(keys, monkeypatch):
     assert pro["amount_sar"] == "59.90" and pro["promo"]["months"] == 2
     assert run(ss.get_subscription(db, USER))["early_adopter"]["is_member"] is True
     assert checkout(db, "max", user_id=OTHER)["promo"] == {
-        "price_sar": "189.90", "months": 3, "list_sar": "289.90"}
+        "price_sar": "189.90", "months": 3, "list_sar": "219.90"}
 
 
 def test_v2_a_cancellation_loses_the_seat_and_its_tier_only(keys, monkeypatch):
@@ -1142,9 +1143,10 @@ def test_v2_a_cancellation_loses_the_seat_and_its_tier_only(keys, monkeypatch):
 
 
 def test_upgraded_never_forfeits(keys):
-    """'upgraded' (192) counts as having used the tier, but it is not a
-    cancellation: with the ladder off, the old forfeiture predicate reads
-    'cancelled' only, so a switcher keeps today's promo price."""
+    """'upgraded' (192) counts as having used the tier (after the first 30
+    days — D12), but it is not a cancellation: with the ladder off, the old
+    forfeiture predicate reads 'cancelled' only, so a switcher keeps today's
+    promo price."""
     db = open_campaign()
     seat(db, released=True, reason="upgraded")
     assert checkout(db, "pro")["amount_sar"] == "49.90"
@@ -1164,7 +1166,7 @@ def test_upgraded_never_forfeits(keys):
                  "price_sar": "19.90"}, -1, 9490),
         # a batch seat prices ONLY its own plan
         ("max", {"batch_id": "pro_t2_a", "plan_id": "pro", "price_tier": 2,
-                 "price_sar": "59.90"}, 30, 28990),
+                 "price_sar": "59.90"}, 30, 21990),
         # a legacy seat keeps today's frozen price (§1.4-4)
         ("pro", {}, 30, 4990),
         ("max", {}, 30, 9990),
@@ -1415,3 +1417,148 @@ def test_the_near_full_alert_counts_basics_own_ledger(keys, monkeypatch):
     buy(db, monkeypatch, "basic")
 
     assert "basic_t1_a" in ps._BATCH_NEAR_FULL_ALERTED
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 14. Pro Plus + D12 (migration 225, `.claude/plans/pro_plus_tier_and_downgrade.md`)
+#
+# Model-level, like section 13: the rules are 225's and the model mirrors the
+# §8 contract written BEFORE the migration — re-verify against it once applied.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _launched(db):
+    """§3.5 launch switch: pro_plus_t1_a + max_t2_c on, the old Max offers off."""
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    db._batch("max_t2_c")["enabled"] = True
+    for b in ("max_t1_a", "max_t2_a", "max_t2_b"):
+        db._batch(b)["enabled"] = False
+    return db
+
+
+def _batch_seat(db, batch_id, *, claimed_days_ago=5, released_days_ago=None,
+                reason=None, days_left=30):
+    b = db._batch(batch_id)
+    row = {
+        "seat_id": str(uuid.uuid4()), "user_id": USER, "payment_id": str(uuid.uuid4()),
+        "claimed_at": _iso(_now() - timedelta(days=claimed_days_ago)),
+        "promo_ends_at": _iso(_now() + timedelta(days=days_left)),
+        "released_at": (_iso(_now() - timedelta(days=released_days_ago))
+                        if released_days_ago is not None else None),
+        "release_reason": reason, "over_capacity": False,
+        "batch_id": batch_id, "plan_id": b["plan_id"],
+        "price_tier": b["price_tier"], "price_sar": b["price_sar"],
+    }
+    db.early_adopter_seats.append(row)
+    return row
+
+
+def test_pro_plus_ships_dark_on_the_public_payload(keys):
+    """225 inserts pro_plus_t1_a disabled: nothing about Pro Plus is public."""
+    payload = run(ps.early_adopter_campaign_state(ladder()))
+    assert "pro_plus" not in payload["promo"] and "pro_plus" not in payload["months"]
+
+
+def test_a_priceless_pro_plus_is_never_public_even_with_its_batch_on(keys):
+    """225: promo_public_quote and promo_quote both skip a plan with no list
+    price — switching the batch on before the price cannot advertise it."""
+    db = ladder()
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    next(p for p in db.tables["plans"] if p["plan_id"] == "pro_plus")["price_sar"] = None
+    payload = run(ps.early_adopter_campaign_state(db))
+    assert "pro_plus" not in payload["promo"]
+    assert db._quote(USER, "pro_plus") is None
+    assert db._quote(USER, "pro_plus", as_new=True) is None
+
+
+def test_the_launch_state_public_payload_gains_pro_plus(keys):
+    """After the launch switch: Pro 59.90 × 2, Pro Plus 99.90 × 2, Max 169.90 × 2
+    — the §8 contract's `promo` / `months` maps with a pro_plus key."""
+    payload = run(ps.early_adopter_campaign_state(_launched(ladder())))
+    assert payload == {"open": True,
+                       "promo": {"pro": "59.90", "pro_plus": "99.90", "max": "169.90"},
+                       "months": {"pro": 2, "pro_plus": 2, "max": 2}}
+
+
+def test_the_pro_plus_offer_is_for_everyone_once(keys):
+    """D3/D5: no profession gate, once per user — a used (here cancelled) Pro
+    Plus seat means the list price next time."""
+    db = _launched(ladder(profession="individual"))
+    first = checkout(db, "pro_plus")
+    assert first["amount_sar"] == "99.90"
+    assert first["promo"] == {"price_sar": "99.90", "months": 2, "list_sar": "149.90"}
+
+    _batch_seat(db, "pro_plus_t1_a", released_days_ago=0, reason="cancelled")
+    assert checkout(db, "pro_plus")["amount_sar"] == "149.90"
+
+
+@pytest.mark.parametrize(
+    "reason, claimed_days_ago, expected",
+    [
+        ("upgraded", 10, "59.90"),      # upgrade inside the first period: NOT used
+        ("upgraded", 35, "94.90"),      # upgrade after day 30: used
+        ("downgraded", 10, "94.90"),    # a downgrade always uses it
+        ("cancelled", 10, "94.90"),     # so does a cancellation
+    ],
+    ids=["upgraded_day_10", "upgraded_day_35", "downgraded", "cancelled"],
+)
+def test_d12_what_counts_as_using_an_offer(keys, reason, claimed_days_ago, expected):
+    """D12 (owner 2026-11-20): an upgrade inside the offer's first charging
+    period (30 days from the claim) does not use it; after that it does, and a
+    downgrade or a cancellation always does. The refund rule (O1) is unchanged
+    and pinned by the section-13 quote matrix."""
+    db = ladder(profession="individual")
+    _batch_seat(db, "pro_t2_a", claimed_days_ago=claimed_days_ago,
+                released_days_ago=0, reason=reason)
+    assert checkout(db, "pro")["amount_sar"] == expected
+
+
+def test_d12_an_upgraded_seat_without_a_claim_date_stays_counted(keys):
+    """SQL compares released_at < claimed_at + 30 days; a NULL claimed_at makes
+    that NULL, i.e. the seat is NOT excused."""
+    db = ladder(profession="individual")
+    s = _batch_seat(db, "pro_t2_a", released_days_ago=0, reason="upgraded")
+    s["claimed_at"] = None
+    assert checkout(db, "pro")["amount_sar"] == "94.90"
+
+
+def test_a_claim_that_supersedes_a_higher_plan_seat_releases_it_downgraded(keys, monkeypatch):
+    """§8 contract item 3: a lapsed Max seat holder buying Pro Plus at the offer
+    — the claim supersedes the Max seat as 'downgraded' (a downgrade, so the Max
+    tier counts as used), not 'upgraded'."""
+    db = _launched(ladder(sub("max", source="payment", days_left=-2), profession="individual"))
+    max_seat = _batch_seat(db, "max_t2_c", claimed_days_ago=32, days_left=28)
+
+    quote, result = buy(db, monkeypatch, "pro_plus")
+    assert quote["amount_sar"] == "99.90" and result["granted"] is True
+    assert max_seat["release_reason"] == "downgraded"
+    assert max_seat["released_by_payment_id"] == quote["payment_id"]
+    assert db._tier_used(USER, "max", 2) is True
+    assert [s["batch_id"] for s in live_seats(db, USER)] == ["pro_plus_t1_a"]
+
+    # …and refunding that payment gives the Max seat back (V5, 'downgraded'
+    # alike with 'upgraded' since 226).
+    patch_fetch(monkeypatch, moyasar_payment(quote["payment_id"], status="refunded",
+                                             amount=9990))
+    run(ps.handle_webhook_event(db, _event(quote["payment_id"], event="payment_refunded")))
+    assert max_seat["released_at"] is None and max_seat["release_reason"] is None
+    assert [s["batch_id"] for s in live_seats(db, USER)] == ["max_t2_c"]
+
+
+def test_the_release_accepts_downgraded(keys):
+    """§8 contract item 4 — and the wrapper passes it through."""
+    db = ladder()
+    _batch_seat(db, "max_t2_c")
+    assert ss.release_early_adopter_seat(
+        db, USER, reason=ss.RELEASE_REASON_DOWNGRADED, plan_id="max") is True
+    assert db.early_adopter_seats[0]["release_reason"] == "downgraded"
+
+
+def test_a_downgraded_release_never_takes_the_current_plans_seat(keys):
+    """226 (S2): called after grant_plan, a live seat on the plan the user is on
+    NOW is the new term's own — left alone."""
+    db = ladder(sub("pro_plus", source="payment", days_left=30))
+    seat = _batch_seat(db, "pro_plus_t1_a")
+    assert ss.release_early_adopter_seat(
+        db, USER, reason=ss.RELEASE_REASON_DOWNGRADED, plan_id="max") is False
+    assert seat["released_at"] is None

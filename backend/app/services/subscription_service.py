@@ -64,6 +64,20 @@ renewal grace (``renewal_grace_until``, migration ``196_renewal_grace.sql``)
 with exactly the expression ``get_user_quota_state`` uses (``_access_ends_at``).
 ⚠ APPLY 196 BEFORE DEPLOYING: ``_fetch_subscription`` names the column, and a
 backend that ships first answers 42703 on the settings dialog — 120's trap.
+
+تغيير الباقة — THE SCHEDULED DOWNGRADE (migration ``226_scheduled_downgrade.sql``,
+`.claude/plans/pro_plus_tier_and_downgrade.md` §4) ────────────────────────────
+Section 8 lets a paying user move to a LOWER renewable plan at the next
+renewal: ``user_subscriptions.renewal_plan_id`` (+ ``renewal_plan_set_at``),
+which ``renewal_service`` reads. Nothing moves money here either — the current
+term runs out untouched, there is no refund and no proration (D6), and the
+renewal charges the target's fresh-purchase price (D7,
+``payment_service.fresh_purchase_quote``). The same two write rules apply:
+the column is written ALONE (never beside ``plan_id``), and it is cleared in
+Python — by a cancel, an undo, and every user-initiated paid grant — never
+inside ``grant_plan``. Cancel wins over a pending change, and an undo of the
+cancel does not bring the change back.
+⚠ APPLY 226 BEFORE DEPLOYING: ``_fetch_subscription`` names both columns.
 """
 from __future__ import annotations
 
@@ -74,10 +88,21 @@ from typing import Any, Optional
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException, MSG_SERVICE_UNAVAILABLE
+from backend.app.services import payment_method_service
 from backend.app.services.audit_service import write_audit_log
 from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
+
+
+def _payments():
+    """``payment_service``, imported at CALL time: it imports this module at
+    load time (the seat wrappers below), so a top-level import here would be a
+    cycle. Only section 8 needs it — for ``PLAN_RANK``, the money formatting
+    and the fresh-purchase quote."""
+    from backend.app.services import payment_service
+
+    return payment_service
 
 # ── The survey ───────────────────────────────────────────────────────────────
 # Mirrors the CHECK constraint on subscription_cancellations.reason (120). The
@@ -106,12 +131,13 @@ PAID_SOURCE = "payment"
 NON_CUSTOMER_PLAN_IDS: frozenset[str] = frozenset({"free", "dev"})
 
 # ── المشتركون الأوائل (early_adopters.md) ────────────────────────────────────
-# A seat is a pro/max concern: `basic` is discounted for EVERYONE while seats
-# remain and enrols nobody (§1.9), so a basic purchase must never claim a seat
-# and — the case that actually bites — a basic refund or a basic cancellation
-# must never RELEASE the pro seat the same user is still holding. Every wrapper
-# in section 7 self-guards on this set, so no call site has to remember.
-EARLY_ADOPTER_PLAN_IDS = frozenset({"pro", "max"})
+# A seat is a pro/pro_plus/max concern: `basic` is discounted for EVERYONE while
+# seats remain and enrols nobody (§1.9), so a basic purchase must never claim a
+# seat and — the case that actually bites — a basic refund or a basic
+# cancellation must never RELEASE the pro seat the same user is still holding.
+# Every wrapper in section 7 self-guards on this set, so no call site has to
+# remember. `pro_plus` bears seats from 225 on (batch `pro_plus_t1_a`).
+EARLY_ADOPTER_PLAN_IDS = frozenset({"pro", "pro_plus", "max"})
 
 # Basic's one-time offer (migration 204). Its seats live in `basic_offer_seats`,
 # never in `early_adopter_seats`, so a Basic purchase cannot touch a Pro/Max seat.
@@ -121,6 +147,10 @@ BASIC_OFFER_PLAN_ID = "basic"
 # cannot drift into a string the constraint rejects.
 RELEASE_REASON_REFUND = "refund"
 RELEASE_REASON_CANCELLED = "cancelled"
+# 226: the seat on the plan a scheduled downgrade LEAVES ends at the switch. It
+# counts as used (D12). Before 226 the RPC refuses the reason (NOTICE + false),
+# which leaves the seat live — the pre-feature state, never an error.
+RELEASE_REASON_DOWNGRADED = "downgraded"
 
 # ── Arabic messages (rule 5) ─────────────────────────────────────────────────
 
@@ -129,6 +159,22 @@ ALREADY_CANCELLED_AR = "تم إلغاء تجديد اشتراكك مسبقاً"
 NOT_CANCELLED_AR = "لا يوجد إلغاء يمكن التراجع عنه"
 TERM_ENDED_AR = "انتهت مدة اشتراكك، لا يمكن التراجع عن الإلغاء"
 INVALID_REASON_AR = "يرجى اختيار سبب الإلغاء"
+# تغيير الباقة (section 8)
+NO_PAID_SUBSCRIPTION_TO_CHANGE_AR = "لا يوجد اشتراك مدفوع فعّال لتغيير باقته"
+CHANGE_AFTER_CANCEL_AR = (
+    "تم إلغاء تجديد اشتراكك. تراجع عن الإلغاء أولاً، ثم اختر الباقة الجديدة."
+)
+DOWNGRADE_INVALID_AR = (
+    "لا يمكن التحويل إلى هذه الباقة. يمكنك التحويل إلى باقة أقل من باقتك الحالية فقط."
+)
+DOWNGRADE_PRICE_CHANGED_AR = (
+    "تغيّر سعر هذه الباقة قبل التأكيد. راجع السعر الجديد ثم أكّد مرة أخرى."
+)
+DOWNGRADE_NO_METHOD_AR = "أضف بطاقة دفع أولاً حتى نتمكن من تحويل باقتك عند التجديد."
+
+# ``downgrade_blocked_reason`` on the GET payload: the options are shown, but a
+# change cannot be scheduled until this is resolved.
+DOWNGRADE_BLOCKED_NO_METHOD = "no_payment_method"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -177,8 +223,24 @@ def _service_unavailable() -> LunaHTTPException:
 # ═══════════════════════════════════════════════════════════════════════════
 
 _SUBSCRIPTION_COLUMNS = (
-    "plan_id, source, started_at, expires_at, renewal_cancelled_at, renewal_grace_until"
+    "plan_id, source, started_at, expires_at, renewal_cancelled_at, renewal_grace_until, "
+    # 226 — the scheduled downgrade (section 8) and the price PROMISED when it
+    # was scheduled (owner 2026-11-20). ⚠ 226 strictly before deploy.
+    "renewal_plan_id, renewal_plan_set_at, renewal_plan_price_sar, "
+    "renewal_plan_batch_id, renewal_plan_promo_months"
 )
+
+# The five 226 columns that describe ONE scheduled change. Set together by
+# schedule_downgrade and nulled together by every clearing path (226's CHECK:
+# all NULL when renewal_plan_id is NULL).
+_PENDING_COLUMNS: tuple[str, ...] = (
+    "renewal_plan_id", "renewal_plan_set_at", "renewal_plan_price_sar",
+    "renewal_plan_batch_id", "renewal_plan_promo_months",
+)
+
+
+def _no_pending() -> dict:
+    return {col: None for col in _PENDING_COLUMNS}
 
 
 def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict]:
@@ -219,6 +281,7 @@ def _write_renewal_flag(
     when: Optional[str],
     *,
     end_grace: bool = False,
+    clear_downgrade: bool = False,
 ) -> bool:
     """Set (or clear) ``renewal_cancelled_at`` and NOTHING ELSE.
 
@@ -232,11 +295,18 @@ def _write_renewal_flag(
     same statement (``renewal_grace_until = when``): the opt-out and the lapse
     are one write, so neither can land without the other.
 
+    ``clear_downgrade`` (226) — a cancel (or its undo) also drops a pending
+    scheduled downgrade, in the SAME statement: cancel wins, and an opt-out
+    must never land while a plan change it supersedes stays armed. Only passed
+    when one is actually pending, so the common write names no 226 column.
+
     Returns True when a row was actually written.
     """
     patch: dict[str, Any] = {"renewal_cancelled_at": when, "updated_at": _now_iso()}
     if end_grace:
         patch["renewal_grace_until"] = when
+    if clear_downgrade:
+        patch.update(_no_pending())          # all five, together (226 CHECK)
     res = (
         supabase.table("user_subscriptions")
         .update(patch)
@@ -421,6 +491,7 @@ def _state_payload(
     row: Optional[dict],
     plan_name_ar: Optional[str],
     early_adopter: Optional[dict] = None,
+    downgrade: Optional[dict] = None,
 ) -> dict:
     return {
         "plan_id": (row or {}).get("plan_id"),
@@ -439,7 +510,24 @@ def _state_payload(
         # dialog needs exactly these two facts to render the forfeiture warning
         # and its undo deadline.
         "early_adopter": early_adopter or _no_seat(),
+        # 226 — تغيير الباقة (section 8). ADDITIVE: older clients ignore them.
+        # `pending_*` describe a change scheduled for the next renewal;
+        # `downgrade_options` the plans one may be scheduled to. See
+        # `_downgrade_state` for when each is populated.
+        **(downgrade or _no_downgrade()),
     }
+
+
+async def _state(
+    supabase: SupabaseClient, user_id: str, row: Optional[dict]
+) -> dict:
+    """The full ``GET /subscription`` payload for ``row`` (as read, or as just
+    written by the caller). Every route on this surface answers with it, so the
+    dialog can re-render from any response."""
+    plan_name_ar = await run_db(_fetch_plan_name, supabase, (row or {}).get("plan_id"))
+    seat = await run_db(early_adopter_status, supabase, user_id)
+    downgrade = await _downgrade_state(supabase, user_id, row)
+    return _state_payload(row, plan_name_ar, seat, downgrade)
 
 
 async def get_subscription(supabase: SupabaseClient, user_id: str) -> dict:
@@ -450,9 +538,7 @@ async def get_subscription(supabase: SupabaseClient, user_id: str) -> dict:
     every message-send path reads.
     """
     row = await run_db(_fetch_subscription, supabase, user_id)
-    plan_name_ar = await run_db(_fetch_plan_name, supabase, (row or {}).get("plan_id"))
-    seat = await run_db(early_adopter_status, supabase, user_id)
-    return _state_payload(row, plan_name_ar, seat)
+    return await _state(supabase, user_id, row)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -513,9 +599,14 @@ async def cancel_renewal(
     # /terms §3 («تبقى باقتك فعّالة حتى نهاية المدة المدفوعة») holds: no paid
     # time is cut. The dialog says so before the user confirms.
     end_grace = _in_renewal_grace(row)
+    # CANCEL WINS over a scheduled downgrade (pro_plus_tier_and_downgrade.md
+    # §4.1): there is no next renewal for it to apply to. Dropped in the same
+    # write as the opt-out, and an undo does not bring it back.
+    pending_plan_id = row.get("renewal_plan_id") or None
     try:
         written = await run_db(
-            _write_renewal_flag, supabase, user_id, cancelled_at, end_grace=end_grace
+            _write_renewal_flag, supabase, user_id, cancelled_at,
+            end_grace=end_grace, clear_downgrade=bool(pending_plan_id),
         )
     except Exception as exc:  # noqa: BLE001 — includes 42703 if 120 is unapplied
         logger.exception("cancel: renewal flag write failed for user=%s: %s", user_id, exc)
@@ -576,22 +667,25 @@ async def cancel_renewal(
             "expires_at": expires_at,
             "renewal_grace_ended": end_grace,
             "early_adopter_seat_released": released,
+            "scheduled_downgrade_cleared": pending_plan_id,
         },
     )
 
     logger.info(
-        "renewal cancelled: user=%s plan=%s reason=%s expires=%s grace_ended=%s",
-        user_id, plan_id, reason, expires_at, end_grace,
+        "renewal cancelled: user=%s plan=%s reason=%s expires=%s grace_ended=%s "
+        "downgrade_cleared=%s",
+        user_id, plan_id, reason, expires_at, end_grace, pending_plan_id,
     )
 
-    plan_name_ar = await run_db(_fetch_plan_name, supabase, plan_id)
-    # Re-READ rather than assumed: if the release failed above, the user still
-    # holds the seat and the dialog must not claim otherwise.
-    seat = await run_db(early_adopter_status, supabase, user_id)
+    # The seat is re-READ inside _state rather than assumed: if the release
+    # failed above, the user still holds the seat and the dialog must not claim
+    # otherwise.
     written_row = {**row, "renewal_cancelled_at": cancelled_at}
     if end_grace:
         written_row["renewal_grace_until"] = cancelled_at
-    return _state_payload(written_row, plan_name_ar, seat)
+    if pending_plan_id:
+        written_row.update(_no_pending())
+    return await _state(supabase, user_id, written_row)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -620,8 +714,16 @@ async def reactivate_renewal(supabase: SupabaseClient, user_id: str) -> dict:
             detail=TERM_ENDED_AR,
         )
 
+    # An undo restores the RENEWAL, not a plan change: the cancel already
+    # dropped any scheduled downgrade and this does not bring it back (the user
+    # picks again). A pending value here could only be a hand-made row; it is
+    # cleared in the same write so "renewal back on" never resurrects it.
+    stray_downgrade = row.get("renewal_plan_id") or None
     try:
-        written = await run_db(_write_renewal_flag, supabase, user_id, None)
+        written = await run_db(
+            _write_renewal_flag, supabase, user_id, None,
+            clear_downgrade=bool(stray_downgrade),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "reactivate: renewal flag clear failed for user=%s: %s", user_id, exc
@@ -671,9 +773,11 @@ async def reactivate_renewal(supabase: SupabaseClient, user_id: str) -> dict:
         user_id, row.get("plan_id"), revoked_id,
     )
 
-    plan_name_ar = await run_db(_fetch_plan_name, supabase, row.get("plan_id"))
-    seat = await run_db(early_adopter_status, supabase, user_id)
-    return _state_payload({**row, "renewal_cancelled_at": None}, plan_name_ar, seat)
+    return await _state(
+        supabase,
+        user_id,
+        {**row, "renewal_cancelled_at": None, **_no_pending()},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1050,8 +1154,15 @@ def release_early_adopter_seat(
     *,
     reason: str,
     plan_id: Optional[str],
+    payment_id: Optional[str] = None,
 ) -> bool:
     """``release_early_adopter_seat(user, reason)`` — refund or cancellation.
+
+    ``payment_id`` (226) is sent only when given — today only by the
+    ``'downgraded'`` release, with the downgrade renewal's payment, so the
+    released seat records which payment superseded it and a refund of that
+    payment can give it back, as for a promo-priced switch. Every other call's
+    wire params are unchanged (two keys).
 
     ``reason='refund'`` (§1.5) voids the status and returns the seat to the pool;
     they may buy back in while seats remain. ``reason='cancelled'`` (§1.6) is the
@@ -1072,12 +1183,12 @@ def release_early_adopter_seat(
     """
     if not _seat_applies(user_id, plan_id):
         return False
+    params: dict[str, Any] = {"p_user_id": user_id, "p_reason": reason}
+    if payment_id:
+        params["p_payment_id"] = str(payment_id)
     try:
         released = _rpc_bool(
-            supabase.rpc(
-                "release_early_adopter_seat",
-                {"p_user_id": user_id, "p_reason": reason},
-            ).execute()
+            supabase.rpc("release_early_adopter_seat", params).execute()
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
@@ -1247,3 +1358,602 @@ def early_adopter_status(supabase: SupabaseClient, user_id: str) -> dict:
         # RULES, never about capacity — still no count on this payload.
         "tier_rules": tier_rules,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. تغيير الباقة — the scheduled downgrade (migration 226)
+#
+# `.claude/plans/pro_plus_tier_and_downgrade.md` §4 + §8. A paying user may move
+# to a LOWER renewable plan at the NEXT renewal (D6): the current term runs out
+# untouched, nothing is refunded or prorated, and the renewal job charges the
+# target's fresh-purchase price (D7) and grants it. Basic / free are never
+# targets (D8 — the dialog points at «إلغاء التجديد» instead).
+#
+# State lives in five columns on user_subscriptions (``_PENDING_COLUMNS``) —
+# ``renewal_plan_id``, ``renewal_plan_set_at`` and THE PROMISE (owner
+# 2026-11-20): ``renewal_plan_price_sar`` / ``renewal_plan_batch_id`` /
+# ``renewal_plan_promo_months``, the fresh-purchase quote taken when the change
+# was scheduled. The renewal charges the LOWER of that promise and a fresh quote
+# at charge time, so what the user confirmed is a ceiling that holds even if the
+# offer's batch fills or closes, or the target loses its list price, meanwhile.
+# Written ALONE (rule 1: never beside plan_id) through the service role, set and
+# nulled as one. Who clears them, all in Python, never inside grant_plan:
+#   * cancel_renewal (cancel wins) and reactivate_renewal (an undo does not
+#     bring a change back);
+#   * every user-initiated paid grant, and the downgrade renewal itself
+#     (``payment_service._mark_paid_and_grant`` → ``clear_scheduled_downgrade``);
+#   * the user, via ``cancel_scheduled_downgrade``.
+#
+# Not modelled on this branch: store-billed subscriptions (Phase D). There is no
+# store-managed state on master to refuse on; when it lands, ``_change_allowed``
+# is the one place to add it.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _no_downgrade() -> dict:
+    """No change pending and none on offer — a FRESH dict every time (it is
+    embedded in an API payload)."""
+    return {
+        "pending_plan_id": None,
+        "pending_plan_name_ar": None,
+        "pending_price_sar": None,
+        "pending_promo_months": None,
+        "downgrade_options": [],
+        "downgrade_blocked_reason": None,
+    }
+
+
+def _has_chargeable_method(supabase: SupabaseClient, user_id: str) -> Optional[bool]:
+    """Is there a card the renewal job could charge? Sync. ``None`` when the
+    read itself failed — the dialog then shows no block (the POST re-checks)."""
+    try:
+        return payment_method_service.get_chargeable_method(supabase, user_id) is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chargeable method unreadable for user=%s: %s", user_id, exc)
+        return None
+
+
+def _plan_rank(plan_id: Optional[str]) -> Optional[int]:
+    """``payment_service.PLAN_RANK`` — the SAME ranking checkout's downgrade
+    guard uses, so «lower» means one thing on both sides."""
+    return _payments().PLAN_RANK.get(str(plan_id or ""))
+
+
+def _change_allowed(row: Optional[dict]) -> bool:
+    """May this subscription have a plan change scheduled (or shown) right now?
+
+    The cancel button's own rule — a PAID term still running, the renewal grace
+    included — and renewal still ON: a cancelled term has no next renewal for a
+    change to apply to, so the undo comes first."""
+    return _is_cancellable(row) and not (row or {}).get("renewal_cancelled_at")
+
+
+def _is_downgrade_target(current: Optional[dict], target: Optional[dict]) -> bool:
+    """Both plans renew, the target is purchasable today (``price_sar`` NOT
+    NULL — pro_plus ships dark with a NULL price), and it ranks STRICTLY lower
+    than the current plan."""
+    if not current or not target:
+        return False
+    if not payment_method_service.plan_renews(current):
+        return False
+    if not payment_method_service.plan_renews(target) or target.get("price_sar") is None:
+        return False
+    cur, tgt = _plan_rank(current.get("plan_id")), _plan_rank(target.get("plan_id"))
+    return cur is not None and tgt is not None and tgt < cur
+
+
+def pending_downgrade_of(row: Optional[dict]) -> Optional[str]:
+    """The plan ``row`` is scheduled to move to at its next renewal, or None.
+
+    Shared by the dialog and the renewal job, so the change the user sees and
+    the change their card is charged for cannot disagree.
+
+    A STALE value reads as None: one set before the current plan started
+    (``renewal_plan_set_at < started_at``) was scheduled from a plan the user has
+    since left — grant_plan stamps a fresh ``started_at`` on every plan change —
+    and must never move them off a plan they bought afterwards. Every user
+    purchase also clears the column; this is the second wall for when that
+    best-effort clear failed.
+    """
+    if not row:
+        return None
+    target = row.get("renewal_plan_id")
+    if not target or target == row.get("plan_id"):
+        return None
+    set_at = _parse_ts(row.get("renewal_plan_set_at"))
+    started = _parse_ts(row.get("started_at"))
+    if set_at is not None and started is not None and set_at < started:
+        return None
+    return str(target)
+
+
+def promise_of(row: Optional[dict]) -> Optional[dict]:
+    """The price PROMISED when the pending change was scheduled →
+    ``{"price_sar": Decimal, "batch_id": str | None, "months": int | None}``,
+    or None when there is no usable promise (no change pending, or a row from
+    before the promise columns — 226's CHECK makes that impossible once
+    applied). Shared by the dialog and the renewal job."""
+    if pending_downgrade_of(row) is None:
+        return None
+    ps = _payments()
+    raw = (row or {}).get("renewal_plan_price_sar")
+    if raw is None:
+        return None
+    price = ps.q2(raw)
+    if price < ps.MIN_CHARGE_SAR:
+        return None
+    batch_id = (row or {}).get("renewal_plan_batch_id") or None
+    return {
+        "price_sar": price,
+        "batch_id": str(batch_id) if batch_id else None,
+        "months": ps._quote_months((row or {}).get("renewal_plan_promo_months")) if batch_id else None,
+    }
+
+
+def _fetch_change_catalog(
+    supabase: SupabaseClient, current_plan_id: Optional[str]
+) -> dict[str, dict]:
+    """The renewable plans plus the current one, keyed by ``plan_id``. One read:
+    the catalog is a handful of rows."""
+    ids = set(payment_method_service.RENEWABLE_PLAN_IDS)
+    if current_plan_id:
+        ids.add(str(current_plan_id))
+    res = (
+        supabase.table("plans")
+        .select("plan_id, name_ar, price_sar, duration_days, billing_cycle")
+        .in_("plan_id", sorted(ids))
+        .execute()
+    )
+    return {
+        str(r["plan_id"]): r
+        for r in (getattr(res, "data", None) or [])
+        if isinstance(r, dict) and r.get("plan_id")
+    }
+
+
+def _quote_target(
+    supabase: SupabaseClient, user_id: str, plan: dict
+) -> Optional[dict]:
+    """``payment_service.fresh_purchase_quote`` for the dialog. Sync, never
+    raises: an unreadable quote shows the LIST price with no offer (the dialog
+    must not break on a promotion), and an unpurchasable plan shows nothing."""
+    ps = _payments()
+    try:
+        return ps.fresh_purchase_quote(supabase, user_id, plan)
+    except Exception as exc:  # noqa: BLE001 — PricingUnavailable included
+        if plan.get("price_sar") is None:
+            return None
+        logger.warning(
+            "downgrade quote unreadable for user=%s plan=%s — showing the list "
+            "price: %s", user_id, plan.get("plan_id"), exc,
+        )
+        list_sar = ps.q2(plan["price_sar"])
+        return {"price_sar": list_sar, "list_sar": list_sar, "batch": None,
+                "intro_group": None}
+
+
+def _option(plan: dict, quote: Optional[dict]) -> dict:
+    """One entry of ``downgrade_options``. ``price_sar`` is the LIST price;
+    ``promo_price_sar`` is what the first renewal would charge when that is
+    below list (an offer this user could take as a fresh buyer), with
+    ``promo_months`` when it comes from a batch. Never a batch id, tier or seat
+    count (pricing v2 §1.4-10)."""
+    ps = _payments()
+    list_sar = ps.q2(plan.get("price_sar"))
+    price = (quote or {}).get("price_sar")
+    promo = price if price is not None and ps.q2(price) < list_sar else None
+    batch = (quote or {}).get("batch") or None
+    return {
+        "plan_id": plan.get("plan_id"),
+        "name_ar": plan.get("name_ar"),
+        "price_sar": ps._money(list_sar),
+        "promo_price_sar": ps._money(promo) if promo is not None else None,
+        "promo_months": batch.get("months") if (promo is not None and batch) else None,
+    }
+
+
+async def _downgrade_state(
+    supabase: SupabaseClient, user_id: Optional[str], row: Optional[dict]
+) -> dict:
+    """The five 226 keys of the ``GET /subscription`` payload.
+
+    Empty (nulls + ``[]``) unless the subscription may change plan
+    (``_change_allowed``). Then:
+
+    * ``downgrade_options`` — every renewable, purchasable plan ranked below the
+      current one, nearest first (max → pro_plus, pro; pro_plus → pro; pro →
+      none), each quoted as a fresh buyer NOW;
+    * ``pending_*`` — the scheduled change, if any, as PROMISED when it was
+      scheduled (the stored columns, never re-quoted on read):
+      ``pending_price_sar`` is the most the next renewal will charge (it charges
+      less only if a fresh quote at that moment is lower), and
+      ``pending_promo_months`` how many months that price lasts when it is an
+      offer. Never null while a change is pending — the promise stands even if
+      the target has since lost its list price.
+
+    Never raises: a catalog or quote failure costs the options, never the
+    dialog — and never the pending change, which is read from the row.
+    """
+    out = _no_downgrade()
+    if not user_id or not _change_allowed(row):
+        return out
+    assert row is not None                      # _change_allowed proved it
+    current_id = str(row.get("plan_id"))
+    try:
+        catalog = await run_db(_fetch_change_catalog, supabase, current_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("downgrade catalog unreadable for user=%s: %s", user_id, exc)
+        catalog = None
+
+    quotes: dict[str, Optional[dict]] = {}
+    if catalog is not None:
+        current = catalog.get(current_id)
+        targets = sorted(
+            (p for p in catalog.values() if _is_downgrade_target(current, p)),
+            key=lambda p: -(_plan_rank(p.get("plan_id")) or 0),
+        )
+        for plan in targets:
+            quotes[str(plan["plan_id"])] = await run_db(_quote_target, supabase, user_id, plan)
+        out["downgrade_options"] = [_option(p, quotes[str(p["plan_id"])]) for p in targets]
+        # The options stay listed so the dialog can show what could be picked;
+        # the reason says why nothing can be scheduled yet. Without a card the
+        # renewal that applies the change cannot run (skipped_no_method) and
+        # the term would simply lapse.
+        if targets and await run_db(_has_chargeable_method, supabase, user_id) is False:
+            out["downgrade_blocked_reason"] = DOWNGRADE_BLOCKED_NO_METHOD
+
+    pending_id = pending_downgrade_of(row)
+    if pending_id:
+        promise = promise_of(row)
+        plan = (catalog or {}).get(pending_id) or {}
+        name_ar = plan.get("name_ar")
+        if name_ar is None:
+            name_ar = await run_db(_fetch_plan_name, supabase, pending_id)
+        if promise is not None:
+            price, months = promise["price_sar"], promise["months"]
+        else:
+            # Defensive only: a pending row with no stored promise cannot exist
+            # once 226's CHECK is applied. Show today's quote rather than null.
+            quote = quotes.get(pending_id)
+            if quote is None and plan:
+                quote = await run_db(_quote_target, supabase, user_id, plan)
+            price = (quote or {}).get("price_sar")
+            months = ((quote or {}).get("batch") or {}).get("months")
+        out.update({
+            "pending_plan_id": pending_id,
+            "pending_plan_name_ar": name_ar,
+            "pending_price_sar": _payments()._money(price) if price is not None else None,
+            "pending_promo_months": months,
+        })
+    return out
+
+
+def _same_months(expected: Any, stored: Optional[int]) -> bool:
+    """The months the dialog showed (``expected_promo_months``) vs the months
+    about to be promised. null ↔ null; an int ↔ the same int; anything else
+    (a string, a bool, a float with a fraction) is "not the same"."""
+    if expected is None or stored is None:
+        return expected is None and stored is None
+    if isinstance(expected, bool) or not isinstance(expected, int):
+        return False
+    return expected == int(stored)
+
+
+def _write_scheduled_plan(
+    supabase: SupabaseClient,
+    user_id: str,
+    pending: Optional[dict],
+) -> bool:
+    """Set the five ``_PENDING_COLUMNS`` from ``pending`` — or null all five with
+    ``None`` — and NOTHING ELSE: never ``plan_id`` (the assignment trigger, rule
+    1), never ``expires_at``. ``updated_at`` rides along for the operator view.
+    Returns True when a row was written."""
+    patch: dict[str, Any] = {
+        **_no_pending(),
+        **{k: v for k, v in (pending or {}).items() if k in _PENDING_COLUMNS},
+        "updated_at": _now_iso(),
+    }
+    res = (
+        supabase.table("user_subscriptions")
+        .update(patch)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return bool(getattr(res, "data", None) or [])
+
+
+async def schedule_downgrade(
+    supabase: SupabaseClient,
+    user_id: str,
+    plan_id: str,
+    expected_price_sar: Any,
+    expected_promo_months: Any,
+) -> dict:
+    """«تغيير الباقة» — move to ``plan_id`` at the next renewal.
+
+    Guards, in order: a paid running term (409 SUBSCRIPTION_NOT_CANCELLABLE) →
+    renewal not cancelled (409 SUBSCRIPTION_ALREADY_CANCELLED — undo the cancel
+    first) → the target is renewable, purchasable and ranked strictly lower
+    (409 SUBSCRIPTION_DOWNGRADE_INVALID) → a chargeable stored card (409
+    SUBSCRIPTION_DOWNGRADE_NO_METHOD — the renewal that applies the change needs
+    one) → the price AND months about to be promised are the ones the user
+    confirmed, ``expected_price_sar`` / ``expected_promo_months`` (409
+    SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED — the quote moved between the dialog
+    and the tap; nothing is written). Choosing the pending plan again is a
+    no-op that keeps the original promise and ``renewal_plan_set_at`` (the
+    expected values are not compared then — the stored promise stands and is
+    what the response shows); choosing another lower plan replaces both.
+
+    THE PROMISE (owner 2026-11-20): the target is quoted as a fresh buyer NOW
+    (``payment_service.fresh_purchase_quote`` — the same call the options were
+    priced with) and the price, its batch and months are stored with the
+    change. That is the most the renewal will ever charge for it. A quote that
+    cannot be read is a 503 — no promise is made that cannot be stated.
+
+    Returns the ``GET /subscription`` payload with the change pending.
+    """
+    row = await run_db(_fetch_subscription, supabase, user_id)
+    if not _is_cancellable(row):
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.SUBSCRIPTION_NOT_CANCELLABLE,
+            detail=NO_PAID_SUBSCRIPTION_TO_CHANGE_AR,
+        )
+    assert row is not None                      # _is_cancellable proved it
+    if row.get("renewal_cancelled_at"):
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.SUBSCRIPTION_ALREADY_CANCELLED,
+            detail=CHANGE_AFTER_CANCEL_AR,
+        )
+
+    target_id = str(plan_id or "").strip()
+    current_id = str(row.get("plan_id"))
+    try:
+        catalog = await run_db(_fetch_change_catalog, supabase, current_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("downgrade: catalog read failed for user=%s: %s", user_id, exc)
+        raise _service_unavailable()
+    if not _is_downgrade_target(catalog.get(current_id), catalog.get(target_id)):
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.SUBSCRIPTION_DOWNGRADE_INVALID,
+            detail=DOWNGRADE_INVALID_AR,
+        )
+
+    if pending_downgrade_of(row) == target_id and promise_of(row) is not None:
+        return await _state(supabase, user_id, row)       # idempotent
+
+    try:
+        has_method = (
+            await run_db(payment_method_service.get_chargeable_method, supabase, user_id)
+        ) is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("downgrade: card read failed for user=%s: %s", user_id, exc)
+        raise _service_unavailable()
+    if not has_method:
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.SUBSCRIPTION_DOWNGRADE_NO_METHOD,
+            detail=DOWNGRADE_NO_METHOD_AR,
+        )
+
+    ps = _payments()
+    try:
+        quote = await run_db(
+            ps.fresh_purchase_quote, supabase, user_id, catalog.get(target_id)
+        )
+    except Exception as exc:  # noqa: BLE001 — PricingUnavailable included
+        logger.error("downgrade: could not price %s for user=%s: %s", target_id, user_id, exc)
+        raise _service_unavailable()
+    batch = quote.get("batch") or None
+    if batch is not None and ps.q2(quote["price_sar"]) >= ps.q2(catalog[target_id]["price_sar"]):
+        # A batch priced at (or above) list is no offer: the dialog shows it as
+        # the list price with no months (``_option``), so it is promised as
+        # exactly that — otherwise the months it would store could never match
+        # what the user was shown, and the confirm would 409 forever.
+        batch = None
+    months = batch["months"] if batch else None
+    # The user confirmed a price for a number of months. If the promise we are
+    # about to store differs in either, refuse and let the dialog re-render —
+    # never store a promise the user did not see. Unparseable input is simply
+    # "not equal".
+    if (ps.q2(ps._dec(expected_price_sar, default="-1")) != ps.q2(quote["price_sar"])
+            or not _same_months(expected_promo_months, months)):
+        logger.info(
+            "downgrade: quote moved for user=%s → %s (expected %r × %r, now %s × %r)",
+            user_id, target_id, expected_price_sar, expected_promo_months,
+            quote["price_sar"], months,
+        )
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED,
+            detail=DOWNGRADE_PRICE_CHANGED_AR,
+        )
+    pending = {
+        "renewal_plan_id": target_id,
+        "renewal_plan_set_at": _now_iso(),
+        "renewal_plan_price_sar": ps._money(quote["price_sar"]),
+        "renewal_plan_batch_id": batch["batch_id"] if batch else None,
+        "renewal_plan_promo_months": months,
+    }
+    try:
+        written = await run_db(_write_scheduled_plan, supabase, user_id, pending)
+    except Exception as exc:  # noqa: BLE001 — includes 42703 if 226 is unapplied
+        logger.exception("downgrade: write failed for user=%s: %s", user_id, exc)
+        raise _service_unavailable()
+    if not written:
+        logger.error("downgrade: write matched no row for user=%s", user_id)
+        raise _service_unavailable()
+
+    await run_db(
+        write_audit_log,
+        supabase,
+        user_id=user_id,
+        action="update",
+        resource_type="subscription",
+        metadata={
+            "event": "downgrade_scheduled",
+            "plan_id": current_id,
+            "renewal_plan_id": target_id,
+            "promised_price_sar": pending["renewal_plan_price_sar"],
+            "promised_batch_id": pending["renewal_plan_batch_id"],
+            "promised_months": pending["renewal_plan_promo_months"],
+            "replaced_renewal_plan_id": row.get("renewal_plan_id"),
+            "expires_at": row.get("expires_at"),
+        },
+    )
+    logger.info(
+        "downgrade scheduled: user=%s %s → %s at expires=%s promised=%s batch=%s",
+        user_id, current_id, target_id, row.get("expires_at"),
+        pending["renewal_plan_price_sar"], pending["renewal_plan_batch_id"],
+    )
+    return await _state(supabase, user_id, {**row, **pending})
+
+
+async def cancel_scheduled_downgrade(supabase: SupabaseClient, user_id: str) -> dict:
+    """«تراجع» — drop a pending plan change. The renewal goes back to the
+    current plan at its current price.
+
+    A no-op 200 when nothing is pending (a double tap, a stale dialog). Returns
+    the ``GET /subscription`` payload.
+    """
+    row = await run_db(_fetch_subscription, supabase, user_id)
+    pending = (row or {}).get("renewal_plan_id") or None
+    if not pending:
+        return await _state(supabase, user_id, row)
+
+    try:
+        written = await run_db(_write_scheduled_plan, supabase, user_id, None)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("downgrade undo: write failed for user=%s: %s", user_id, exc)
+        raise _service_unavailable()
+    if not written:
+        logger.error("downgrade undo: write matched no row for user=%s", user_id)
+        raise _service_unavailable()
+
+    await run_db(
+        write_audit_log,
+        supabase,
+        user_id=user_id,
+        action="update",
+        resource_type="subscription",
+        metadata={
+            "event": "downgrade_cancelled",
+            "plan_id": (row or {}).get("plan_id"),
+            "renewal_plan_id": pending,
+        },
+    )
+    logger.info("downgrade undone: user=%s (was → %s)", user_id, pending)
+    return await _state(supabase, user_id, {**(row or {}), **_no_pending()})
+
+
+# ── called from the paid-fulfilment path (payment_service) ──────────────────
+# SYNC, through run_db, and NEVER raising — the same contract as
+# clear_renewal_cancellation: by the time they run the plan is granted and the
+# money is in. The read uses select("*") so a backend that lands ahead of 226
+# degrades to "nothing pending" instead of failing every purchase.
+
+
+def read_pending_downgrade(supabase: SupabaseClient, user_id: Optional[str]) -> Optional[dict]:
+    """``{"plan_id", "renewal_plan_id"}`` when a change is pending, else None.
+    Read BEFORE ``grant_plan`` rewrites ``plan_id``."""
+    if not user_id:
+        return None
+    try:
+        res = (
+            supabase.table("user_subscriptions")
+            .select("*")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pending downgrade unreadable for user=%s: %s", user_id, exc)
+        return None
+    row = rows[0] if rows else None
+    if not isinstance(row, dict) or not row.get("renewal_plan_id"):
+        return None
+    return {"plan_id": row.get("plan_id"), "renewal_plan_id": row.get("renewal_plan_id")}
+
+
+def clear_scheduled_downgrade(supabase: SupabaseClient, user_id: Optional[str]) -> bool:
+    """Drop ``renewal_plan_id`` after a paid grant (an upgrade, a re-purchase, or
+    the downgrade renewal itself). Never raises. Returns True when cleared."""
+    if not user_id:
+        return False
+    try:
+        written = _write_scheduled_plan(supabase, user_id, None)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "could not clear renewal_plan_id for user=%s after a paid grant (the "
+            "plan IS granted; the renewal job ignores a change set before the "
+            "current plan started, so a stale value cannot move them): %s",
+            user_id, exc,
+        )
+        return False
+    if written:
+        logger.info("scheduled downgrade cleared by a paid grant: user=%s", user_id)
+    return written
+
+
+def release_seat_for_downgrade(
+    supabase: SupabaseClient,
+    user_id: Optional[str],
+    *,
+    from_plan_id: Optional[str],
+    to_plan_id: Optional[str],
+    payment_id: Optional[str] = None,
+) -> bool:
+    """The seat on the plan a scheduled downgrade LEAVES ends at the switch,
+    released ``'downgraded'`` — that tier counts as used (D12). ``payment_id``
+    (the downgrade renewal's) is stamped as the payment that superseded it, so
+    refunding it can give the seat back exactly as for a promo-priced switch.
+
+    Called AFTER ``grant_plan`` and the claim on the same payment — 226's order
+    (S2). A promo-priced downgrade's claim has already superseded the old seat
+    'downgraded' with the payment's id (a refund then gives it back, V5); this
+    then finds the NEW term's own seat and leaves it. A list-priced downgrade
+    claims nothing, so this is what ends the old seat. Two cases release
+    nothing here, before the RPC is even asked:
+
+    * no live seat;
+    * the live seat is a batch seat on the TARGET plan — the new term's own
+      seat, or one that keeps pricing the target exactly as it would for
+      someone buying that plan fresh (D7).
+
+    The RPC applies the same rule itself (a live seat on the plan the user is
+    on NOW is never released 'downgraded'), legacy seats included; this check
+    only saves the round trip and keeps the rule readable here.
+
+    Never raises. Returns True when a seat was released.
+    """
+    if not _seat_applies(user_id, from_plan_id):
+        return False
+    try:
+        res = (
+            supabase.table("early_adopter_seats")
+            .select("seat_id, plan_id, batch_id")
+            .eq("user_id", str(user_id))
+            .is_("released_at", "null")
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "downgrade: live seat unreadable for user=%s (%s → %s) — the seat on "
+            "the plan they left is NOT released; release it by hand: %s",
+            user_id, from_plan_id, to_plan_id, exc,
+        )
+        return False
+    if not rows or not isinstance(rows[0], dict):
+        return False
+    live = rows[0]
+    if live.get("batch_id") and live.get("plan_id") == to_plan_id:
+        return False
+    return release_early_adopter_seat(
+        supabase, user_id, reason=RELEASE_REASON_DOWNGRADED, plan_id=from_plan_id,
+        payment_id=payment_id,
+    )

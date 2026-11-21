@@ -95,6 +95,9 @@ class ErrorCode(str, Enum):
     # Subscription lifecycle (إلغاء الاشتراك — subscription_cancellation.md)
     SUBSCRIPTION_NOT_CANCELLABLE = "SUBSCRIPTION_NOT_CANCELLABLE"  # 409 — no paid running term to cancel, or nothing to undo
     SUBSCRIPTION_ALREADY_CANCELLED = "SUBSCRIPTION_ALREADY_CANCELLED"  # 409 — renewal already opted out (never a second survey row)
+    SUBSCRIPTION_DOWNGRADE_INVALID = "SUBSCRIPTION_DOWNGRADE_INVALID"  # 409 — scheduled downgrade target not lower / not renewable / not purchasable (pro_plus_tier_and_downgrade.md §4)
+    SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED = "SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED"  # 409 — the price that would be promised differs from the expected_price_sar the user confirmed; nothing written
+    SUBSCRIPTION_DOWNGRADE_NO_METHOD = "SUBSCRIPTION_DOWNGRADE_NO_METHOD"  # 409 — no chargeable stored card, so the renewal that applies the change could not run
 
     # Library entitlement (access tiers — Layer B refusals, all HTTP 402)
     LIBRARY_QUOTA_EXCEEDED = "LIBRARY_QUOTA_EXCEEDED"  # period allowance spent

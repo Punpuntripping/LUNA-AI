@@ -354,6 +354,46 @@ class CancelSubscriptionRequest(BaseModel):
         return _reject_null_bytes(v) if isinstance(v, str) else v
 
 
+class DowngradeSubscriptionRequest(BaseModel):
+    """POST /api/v1/payments/subscription/downgrade
+
+    ``plan_id`` — the plan to move to at the next renewal — and what the
+    dialog SHOWED for it: ``expected_price_sar`` (the option's
+    ``promo_price_sar`` when set, else its ``price_sar``; a 2-dp string like
+    every amount on this API, a JSON number is accepted too) and
+    ``expected_promo_months`` (the option's ``promo_months``, null for a list
+    price). The promise itself is still quoted server-side
+    (``payment_service.fresh_purchase_quote``); the expected values only let the
+    server refuse (409 SUBSCRIPTION_DOWNGRADE_PRICE_CHANGED) when that quote
+    moved between the dialog and the tap — price OR months — so no promise is
+    stored that the user did not see.
+
+    Both are plain strings validated in ``subscription_service.schedule_downgrade``
+    so a bad value is refused with the Arabic envelope, not FastAPI's English
+    422 (rule 5).
+    """
+    plan_id: str = Field(..., min_length=1, max_length=64)
+    expected_price_sar: str = Field(..., min_length=1, max_length=16)
+    # The months the dialog showed at that price — the option's
+    # ``promo_months`` (an int), or null for a list price. REQUIRED but
+    # nullable: the key must be sent, ``null`` is a real answer.
+    expected_promo_months: Optional[int] = Field(...)
+
+    @field_validator("plan_id", mode="before")
+    @classmethod
+    def check_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v
+
+    @field_validator("expected_price_sar", mode="before")
+    @classmethod
+    def price_as_text(cls, v):
+        # A JSON number (99.9) is accepted as its text; the service compares it
+        # as money, so "99.9" and "99.90" are the same price.
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(v)
+        return _reject_null_bytes(v) if isinstance(v, str) else v
+
+
 class RecurringConsentRequest(BaseModel):
     """POST /api/v1/payments/{payment_id}/consent
 

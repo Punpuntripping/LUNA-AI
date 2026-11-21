@@ -67,23 +67,43 @@ def _now() -> datetime:
 # In-memory PostgREST + RPC stand-in
 # ---------------------------------------------------------------------------
 
-# The live catalog (2026-10-27): pro 94.90, max 289.90, basic 39.90 FLAT
-# (migration 191 — basic is in no tier and has no promo, pricing_campaigns_v2.md
-# §8). `promo_price_sar` is migration 138's single promo; for pro/max it is
-# frozen at 49.90 / 99.90 for the legacy seats (§1.4-4) and only matters when a
-# campaign is enabled, which it ships not to be — see FakeSupabase.__init__.
+# The live catalog (2026-11-20): pro 94.90, max 219.90 (224 — was 289.90),
+# basic 39.90 FLAT (migration 191 — basic is in no tier and has no promo,
+# pricing_campaigns_v2.md §8). `promo_price_sar` is migration 138's single
+# promo; for pro/max it is frozen at 49.90 / 99.90 for the legacy seats
+# (§1.4-4) and only matters when a campaign is enabled, which it ships not to
+# be — see FakeSupabase.__init__.
+#
+# `pro_plus` (225) is the LAUNCHED row (149.90) so the suite can sell it; the
+# dark state it ships in (price_sar NULL) is pinned by
+# test_pro_plus_is_not_purchasable_while_its_price_is_null. promo_price_sar is
+# NULL for it — the legacy column is never used for new plans.
 PLAN_ROWS = [
     {"plan_id": "free", "name_ar": "المجانية", "price_sar": None, "duration_days": None,
      "billing_cycle": None, "promo_price_sar": None},
-    {"plan_id": "basic", "name_ar": "الأساسية", "price_sar": "39.90", "duration_days": 7,
+    {"plan_id": "basic", "points_weekly": 75, "name_ar": "الأساسية", "price_sar": "39.90", "duration_days": 7,
      "billing_cycle": "one_time", "promo_price_sar": None},
-    {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "94.90", "duration_days": 30,
+    {"plan_id": "pro", "points_weekly": 100, "name_ar": "الاحترافية", "price_sar": "94.90", "duration_days": 30,
      "billing_cycle": "one_time", "promo_price_sar": "49.90"},
-    {"plan_id": "max", "name_ar": "القصوى", "price_sar": "289.90", "duration_days": 30,
+    {"plan_id": "pro_plus", "points_weekly": 250, "name_ar": "الاحترافية بلس", "price_sar": "149.90",
+     "duration_days": 30, "billing_cycle": "one_time", "promo_price_sar": None},
+    {"plan_id": "max", "points_weekly": 500, "name_ar": "القصوى", "price_sar": "219.90", "duration_days": 30,
      "billing_cycle": "one_time", "promo_price_sar": "99.90"},
     {"plan_id": "marketing_lawyer", "name_ar": "عرض المحامين", "price_sar": None,
      "duration_days": 7, "billing_cycle": None, "promo_price_sar": None},
 ]
+
+
+def _project(rows, cols):
+    """PostgREST returns ONLY the columns a select() names (NULL for a set
+    column that holds no value). Without this the fake handed back whole rows,
+    so a column missing from a production select list passed every test —
+    which is exactly how the renewal job shipped without the promise columns.
+    ``"*"`` (or no list) returns everything."""
+    if not isinstance(cols, str) or cols.strip() in ("", "*"):
+        return rows
+    wanted = [c.strip() for c in cols.split(",") if c.strip()]
+    return [{c: r.get(c) for c in wanted} for r in rows]
 
 
 class _Result:
@@ -112,6 +132,7 @@ class _Query:
     def select(self, *_a, count: Optional[str] = None, **_k):
         self._op = "select"
         self._count = count
+        self._cols = _a[0] if _a else "*"
         return self
 
     def insert(self, payload):
@@ -191,6 +212,7 @@ class _Query:
         total = len(matched) if self._count == "exact" else None
         if self._limit is not None:
             matched = matched[: self._limit]
+        matched = _project([dict(r) for r in matched], getattr(self, "_cols", "*"))
         if self._single:
             return _Result(dict(matched[0]) if matched else None, total)
         return _Result([dict(r) for r in matched], total)
@@ -538,7 +560,7 @@ def test_unrecognized_key_prefix_refuses_boot(monkeypatch):
     "charge,halalas,net,vat",
     [("49.90", 4990, "43.39", "6.51"),
      ("89.90", 8990, "78.17", "11.73"),
-     ("289.90", 28990, "252.09", "37.81")],
+     ("219.90", 21990, "191.22", "28.68")],
 )
 def test_vat_split_matches_plan_table(charge, halalas, net, vat):
     n, v = ps.vat_split(ps.q2(charge))
@@ -576,7 +598,7 @@ def test_checkout_prices_from_the_catalog(keys):
 
 
 def test_upgrade_credit_matches_plan_example(keys):
-    """pro with 26 days left → max: 289.90 − round(26/30 × 94.90, 2) = 207.65.
+    """pro with 26 days left → max: 219.90 − round(26/30 × 94.90, 2) = 137.65.
 
     Flag off (ladder_v2 down): the old term is valued at its 'current' price.
     The v2 basis — the cash actually paid — is pinned in the pricing-campaigns
@@ -584,12 +606,12 @@ def test_upgrade_credit_matches_plan_example(keys):
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     result = checkout(db, "max")
     assert result["credit_sar"] == "82.25"
-    assert result["amount_sar"] == "207.65"
-    assert result["amount_halalas"] == 20765
+    assert result["amount_sar"] == "137.65"
+    assert result["amount_halalas"] == 13765
     row = db.tables["payment_transactions"][0]
     assert row["upgrade_credit_sar"] == "82.25"
     # VAT is split on the CHARGED amount, not the catalog price.
-    assert row["vat_amount_sar"] == "27.08" and row["net_amount_sar"] == "180.57"
+    assert row["vat_amount_sar"] == "17.95" and row["net_amount_sar"] == "119.70"
 
 
 def test_code_sourced_plan_earns_no_credit(keys):
@@ -720,7 +742,7 @@ def test_paid_path_stamps_snapshot_before_grant(keys, monkeypatch):
     RPC — and it MUST run first: grant_plan overwrites the row it snapshots."""
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=20765))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=13765))
 
     run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert db.calls == [
@@ -1302,14 +1324,14 @@ def test_refund_uses_provider_fee_end_to_end(keys, provider_refunds):
 def test_credit_ratio_is_clamped_to_one_period(keys):
     """The amplified exploit. Same-plan purchases STACK (grant_plan adds
     duration_days onto a live expiry), so remaining_days was unbounded: pro
-    bought 3× left 90 days → 90/30 × 94.90 = 284.70 credit against a 289.90
-    plan → clamped by `price − 1.00` to 288.90 → **a 30-day `max` for 1.00
+    bought 3× left 90 days → 90/30 × 94.90 = 284.70 credit against a 219.90
+    plan → clamped by `price − 1.00` to 218.90 → **a 30-day `max` for 1.00
     SAR**, below the ~1.73 SAR the card network charges us to collect it."""
     db = FakeSupabase(sub("pro", source="payment", days_left=90))
     result = checkout(db, "max")
     assert result["credit_sar"] == "94.90"       # one period of pro, never three
-    assert result["amount_sar"] == "195.00"
-    assert result["amount_halalas"] == 19500
+    assert result["amount_sar"] == "125.00"
+    assert result["amount_halalas"] == 12500
 
 
 @pytest.mark.parametrize("days_left", [30, 45, 90, 365])
@@ -1363,7 +1385,7 @@ def test_stockpiled_credited_checkouts_grant_exactly_once(keys, monkeypatch):
         # A distinct provider id per payment, as Moyasar would issue.
         patch_fetch(
             monkeypatch,
-            {**moyasar_payment(pid, amount=20765), "id": str(uuid.uuid4())},
+            {**moyasar_payment(pid, amount=13765), "id": str(uuid.uuid4())},
         )
         results.append(run(ps.verify_payment(db, USER, MOYASAR_ID)))
 
@@ -1393,7 +1415,7 @@ def test_credit_revalidation_refuses_when_the_term_is_gone(keys, monkeypatch):
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["user_subscriptions"] = []
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=20765))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=13765))
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is False
@@ -1411,7 +1433,7 @@ def test_a_stale_quote_cannot_be_banked(keys, monkeypatch):
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["payment_transactions"][0]["created_at"] = _iso(_now() - timedelta(hours=25))
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=20765))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=13765))
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is False and result["review_reason"] == "quote_expired"
@@ -1425,7 +1447,7 @@ def test_an_honest_upgrade_still_grants(keys, monkeypatch):
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["payment_transactions"][0]["created_at"] = _iso(_now() - timedelta(hours=3))
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=20765))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=13765))
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is True
@@ -1443,7 +1465,7 @@ def test_a_credited_upgrade_is_idempotent_across_both_paths(keys, monkeypatch):
     it, exactly as it stops grant_plan."""
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=20765))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=13765))
 
     first = run(ps.verify_payment(db, USER, MOYASAR_ID))
     second = run(ps.handle_webhook_event(db, _event(pid)))
@@ -1458,8 +1480,8 @@ def test_a_price_cut_between_quote_and_payment_still_grants(keys, monkeypatch):
     pid = checkout(db, "max")["payment_id"]
     for plan in db.tables["plans"]:
         if plan["plan_id"] == "max":
-            plan["price_sar"] = "249.90"
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=20765))
+            plan["price_sar"] = "199.90"
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=13765))
 
     assert run(ps.verify_payment(db, USER, MOYASAR_ID))["granted"] is True
 
@@ -1471,14 +1493,14 @@ def test_a_held_payment_stays_refundable_by_the_customer(keys, monkeypatch, prov
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["user_subscriptions"] = []
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=20765))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=13765))
     run(ps.verify_payment(db, USER, MOYASAR_ID))
 
     result = run(ps.refund_payment(db, USER, pid))
     assert result["status"] == "refunded"
     assert result["revoke_action"] == "not_fulfilled"
     assert result["revoked"] is True
-    assert provider_refunds == [(MOYASAR_ID, 20765 - 340)]   # legacy-fee fallback
+    assert provider_refunds == [(MOYASAR_ID, 13765 - 340)]   # legacy-fee fallback
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1487,7 +1509,8 @@ def test_a_held_payment_stays_refundable_by_the_customer(keys, monkeypatch, prov
 
 
 def _ladder(db):
-    """basic → pro → max: 289.90 paid across three rungs, each upgrade priced
+    """basic → pro → max: 289.90 paid across three rungs (the 2026-08 catalog:
+    basic 49.90, pro 89.90, max 289.90 — kept as found), each upgrade priced
     against the one below it. Audit logs from prod confirm the shape
     (`checkout_initiated plan=max from_plan=pro credit=89.90 amount=200.00`)."""
     basic = paid_row(
@@ -1658,7 +1681,11 @@ def test_subscription_state_of_a_user_with_no_row():
                      # user reads while the campaign is disabled. No count here,
                      # by design (early_adopters.md §1.10).
                      "early_adopter": {"is_member": False, "promo_ends_at": None,
-                                       "returnable": False, "tier_rules": False}}
+                                       "returnable": False, "tier_rules": False},
+                     # 226 — تغيير الباقة: nothing pending, nothing on offer.
+                     "pending_plan_id": None, "pending_plan_name_ar": None,
+                     "pending_price_sar": None, "pending_promo_months": None,
+                     "downgrade_options": [], "downgrade_blocked_reason": None}
 
 
 @pytest.mark.parametrize(
@@ -2373,7 +2400,7 @@ def refund_released_seat(db, batch_id, *, purchase_status):
     2026-10-27: the tier was never used); 'paid' = a later renewal was refunded
     and the seat went with it (the tier WAS used)."""
     price = BATCH_PRICE[batch_id][0]
-    plan_id = batch_id.split("_")[0]
+    plan_id = db._batch(batch_id)["plan_id"]        # pro_plus_t1_a is pro_plus, not pro
     purchase = paid_row(db, plan_id=plan_id, amount=price, promo_batch_id=batch_id,
                         status=purchase_status, paid_at=_iso(_now() - timedelta(days=20)))
     return batch_seat(db, batch_id, payment_id=purchase["payment_id"], reason="refund")
@@ -2387,8 +2414,10 @@ def fill(db, batch_id):
 
 
 BATCH_PRICE = {"pro_t1_a": ("19.90", 2), "pro_t1_b": ("19.90", 1), "pro_t2_a": ("59.90", 2),
-               "max_t1_a": ("149.90", 4), "max_t2_a": ("189.90", 3), "max_t2_b": ("189.90", 1)}
-LIST = {"pro": "94.90", "max": "289.90"}
+               "max_t1_a": ("149.90", 4), "max_t2_a": ("189.90", 3), "max_t2_b": ("189.90", 1),
+               # 225 — shipped disabled, enabled by the launch switch (§3.5)
+               "pro_plus_t1_a": ("99.90", 2), "max_t2_c": ("169.90", 2)}
+LIST = {"pro": "94.90", "pro_plus": "149.90", "max": "219.90"}
 
 
 def _case(db, case):
@@ -2555,9 +2584,9 @@ def _case(db, case):
         ("max_fresh", "max_t1_a", "149.90"),
         ("max_t1_full", "max_t2_a", "189.90"),
         ("max_t1_and_t2a_full", "max_t2_b", "189.90"),
-        ("max_all_full", None, "289.90"),
+        ("max_all_full", None, "219.90"),
         ("max_lapsed_legacy_max", "max_t2_a", "189.90"),
-        ("max_used_t1_and_t2", None, "289.90"),
+        ("max_used_t1_and_t2", None, "219.90"),
         ("lapsed_pro_t1_buys_max", "max_t1_a", "149.90"),
         ("active_basic_buys_max", "max_t1_a", None),        # upgrade from Basic
         ("legacy_pro_holder_switches_to_max", "max_t1_a", None),
@@ -2796,7 +2825,7 @@ def test_v2_a_19_90_payer_upgrading_is_credited_what_they_paid(keys, monkeypatch
     _pro_tier1_holder(db)
 
     quote = checkout(db, "max")
-    assert quote["promo"] == {"price_sar": "149.90", "months": 4, "list_sar": "289.90"}
+    assert quote["promo"] == {"price_sar": "149.90", "months": 4, "list_sar": "219.90"}
     assert quote["credit_sar"] == "17.25"
     assert quote["amount_sar"] == "132.65"
 
@@ -2964,7 +2993,7 @@ def test_v2_a_legacy_pro_holder_switching_to_max_pays_the_max_quote(keys, monkey
     old = legacy_seat(db, "pro", days_left=30)
 
     quote = checkout(db, "max")
-    assert quote["promo"] == {"price_sar": "149.90", "months": 4, "list_sar": "289.90"}
+    assert quote["promo"] == {"price_sar": "149.90", "months": 4, "list_sar": "219.90"}
     assert _row(db, quote["payment_id"])["promo_batch_id"] == "max_t1_a"
     assert quote["credit_sar"] == "33.27"                    # 20/30 × 49.90
     assert quote["amount_sar"] == "116.63"
@@ -2983,7 +3012,7 @@ def test_v2_a_pre_flip_carry_over_keeps_renewing_at_the_legacy_price(keys):
     never re-quoted."""
     db = ladder_db("individual", sub("max", source="payment", days_left=1))
     legacy_seat(db, "pro", days_left=30)
-    assert ps._effective_price(db, USER, "max", "289.90",
+    assert ps._effective_price(db, USER, "max", "219.90",
                                context=ps.PRICE_CONTEXT_CURRENT) == ps.q2("99.90")
 
 
@@ -3257,8 +3286,8 @@ def test_after_a_rollback_a_batch_seat_carries_over_like_a_legacy_seat(keys):
     batch_seat(db, "pro_t1_a", days_left=40)
     current = ps.PRICE_CONTEXT_CURRENT
     assert ps._effective_price(db, USER, "pro", "94.90", context=current) == ps.q2("19.90")
-    assert ps._effective_price(db, USER, "max", "289.90", context=current) == ps.q2("99.90")
-    assert checkout(db, "max")["amount_sar"] != "289.90"     # the promo, minus a credit
+    assert ps._effective_price(db, USER, "max", "219.90", context=current) == ps.q2("99.90")
+    assert checkout(db, "max")["amount_sar"] != "219.90"     # the promo, minus a credit
 
 
 def test_v2_refunding_a_switch_restores_the_seat_it_superseded(keys, monkeypatch, provider_refunds):
@@ -3408,7 +3437,7 @@ def test_after_a_rollback_a_batch_seat_survives_an_old_cancellation(keys):
     legacy_seat(db, "pro", days_left=-30, reason="cancelled")
     batch_seat(db, "pro_t2_a", days_left=40)
     current = ps.PRICE_CONTEXT_CURRENT
-    assert ps._effective_price(db, USER, "max", "289.90", context=current) == ps.q2("99.90")
+    assert ps._effective_price(db, USER, "max", "219.90", context=current) == ps.q2("99.90")
     assert ps._effective_price(db, USER, "pro", "94.90", context=current) == ps.q2("59.90")
 
 
@@ -3472,3 +3501,242 @@ def test_v2_a_refunded_renewal_still_used_the_tier(keys, monkeypatch):
     db2 = ladder_db("legal")
     refund_released_seat(db2, "pro_t1_a", purchase_status="paid")
     assert checkout(db2, "pro")["promo"]["price_sar"] == "59.90"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# الاحترافية بلس — pro_plus between pro and max (migration 225,
+# `.claude/plans/pro_plus_tier_and_downgrade.md` §3)
+#
+# PLAN_ROWS carries the LAUNCHED catalog (pro_plus 149.90). Ranking, upgrade
+# credit and the downgrade guard are pure Python over PLAN_RANK, so they are
+# pinned here; the promo rules are the model's (promo_ladder_model.py) and must
+# be re-verified against 225 itself once it is written.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _set_price(db, plan_id, price):
+    next(p for p in db.tables["plans"] if p["plan_id"] == plan_id)["price_sar"] = price
+
+
+def test_pro_plus_ranks_between_pro_and_max():
+    assert ps.PLAN_RANK == {"basic": 1, "pro": 2, "pro_plus": 3, "max": 4}
+    assert "pro_plus" in ps.PROMO_PLAN_IDS
+    assert "pro_plus" in ss.EARLY_ADOPTER_PLAN_IDS
+
+
+def test_pro_to_pro_plus_is_a_credited_upgrade(keys):
+    """149.90 − round(26/30 × 94.90, 2) = 149.90 − 82.25 = 67.65."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    quote = checkout(db, "pro_plus")
+    assert quote["credit_sar"] == "82.25"
+    assert quote["amount_sar"] == "67.65" and quote["amount_halalas"] == 6765
+    assert quote["plan_name_ar"] == "الاحترافية بلس"
+    assert quote["description"].endswith("(ترقية)")
+
+
+def test_pro_plus_to_max_is_a_credited_upgrade(keys):
+    """219.90 − round(26/30 × 149.90, 2) = 219.90 − 129.91 = 89.99 — one period
+    of pro_plus is still below the max price, so the ceiling never binds."""
+    db = FakeSupabase(sub("pro_plus", source="payment", days_left=26))
+    quote = checkout(db, "max")
+    assert quote["credit_sar"] == "129.91"
+    assert quote["amount_sar"] == "89.99" and quote["amount_halalas"] == 8999
+
+
+@pytest.mark.parametrize("current, target", [("max", "pro_plus"), ("pro_plus", "pro"),
+                                             ("max", "pro"), ("pro_plus", "basic")])
+def test_checkout_refuses_a_lower_plan_while_a_higher_one_runs(keys, current, target):
+    """A move DOWN is a scheduled change at the next renewal now, and the
+    refusal says where to find it — in Arabic."""
+    db = FakeSupabase(sub(current, source="payment", days_left=10))
+    with pytest.raises(LunaHTTPException) as exc:
+        checkout(db, target)
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.PAYMENT_DOWNGRADE_BLOCKED
+    assert exc.value.detail == (
+        "لديك باقة أعلى فعّالة حالياً. يمكنك التحويل إلى باقة أقل من إعدادات "
+        "الحساب، ويبدأ التحويل عند التجديد."
+    )
+    assert not db.tables["payment_transactions"]
+
+
+@pytest.mark.parametrize("ladder", [False, True])
+def test_pro_plus_is_not_purchasable_while_its_price_is_null(keys, ladder):
+    """225 ships the row DARK (price_sar NULL). Checkout refuses before any
+    pricing RPC — even with the ladder on and its batch switched on — and opens
+    no row."""
+    db = ladder_db("legal") if ladder else FakeSupabase(sub("free"))
+    _set_price(db, "pro_plus", None)
+    if ladder:
+        db._batch("pro_plus_t1_a")["enabled"] = True
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ps.create_checkout(db, USER, "pro_plus"))
+    assert exc.value.status_code == 400
+    assert exc.value.code is ErrorCode.PAYMENT_PLAN_NOT_PURCHASABLE
+    assert exc.value.detail == ps.PLAN_NOT_PURCHASABLE_AR
+    assert "promo_checkout_price" not in db.calls
+    assert not db.tables["payment_transactions"]
+
+
+def test_a_null_priced_pro_plus_is_never_quoted_as_a_fresh_purchase(keys):
+    """The scheduled downgrade's quote refuses it the same way (the renewal job
+    then skips rather than charging anything)."""
+    db = FakeSupabase(sub("max", source="payment", days_left=10))
+    _set_price(db, "pro_plus", None)
+    plan = next(p for p in db.tables["plans"] if p["plan_id"] == "pro_plus")
+    with pytest.raises(ps.PricingUnavailable):
+        ps.fresh_purchase_quote(db, USER, plan)
+    assert "promo_checkout_price" not in db.calls
+
+
+def test_a_pro_plus_purchase_settles_and_grants(keys, monkeypatch):
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    quote = checkout(db, "pro_plus")
+    patch_fetch(monkeypatch, moyasar_payment(quote["payment_id"], amount=6765))
+    result = run(ps.verify_payment(db, USER, MOYASAR_ID))
+    assert result["granted"] is True
+    assert db.tables["user_subscriptions"][0]["plan_id"] == "pro_plus"
+
+
+def test_v2_pro_to_pro_plus_takes_the_pro_plus_offer_credited_on_cash(keys, monkeypatch):
+    """D5: a Pro Tier 2 holder (59.90 paid) switching to Pro Plus is quoted the
+    99.90 × 2 offer, credited on the cash actually paid (26/30 × 59.90 = 51.91),
+    and the claim releases the Pro seat 'upgraded' beside a 2-month Pro Plus
+    seat. Released 5 days after its claim, so D12 leaves Pro Tier 2 unused."""
+    db = ladder_db("individual", sub("pro", source="payment", days_left=26))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    pay = paid_row(db, plan_id="pro", amount="59.90", promo_batch_id="pro_t2_a",
+                   paid_at=_iso(_now() - timedelta(days=4)),
+                   fulfilled_at=_iso(_now() - timedelta(days=4)))
+    pro_seat = batch_seat(db, "pro_t2_a", payment_id=pay["payment_id"], days_left=56)
+
+    quote = checkout(db, "pro_plus")
+    assert quote["promo"] == {"price_sar": "99.90", "months": 2, "list_sar": "149.90"}
+    assert _row(db, quote["payment_id"])["promo_batch_id"] == "pro_plus_t1_a"
+    assert quote["credit_sar"] == "51.91"
+    assert quote["amount_sar"] == "47.99"
+
+    patch_fetch(monkeypatch, moyasar_payment(quote["payment_id"], amount=4799))
+    assert run(ps.verify_payment(db, USER, MOYASAR_ID))["granted"] is True
+
+    assert pro_seat["release_reason"] == "upgraded"
+    live = [s for s in db.early_adopter_seats if s["user_id"] == USER and not s["released_at"]]
+    assert len(live) == 1 and live[0]["batch_id"] == "pro_plus_t1_a"
+    assert db._tier_used(USER, "pro", 2) is False              # D12: inside day 30
+    assert db._tier_used(USER, "pro_plus", 1) is True
+
+
+def test_v2_a_max_subscriber_is_never_quoted_pro_plus(keys):
+    """On Max now, Pro Plus is a downgrade: promo_quote answers nothing and the
+    checkout guard refuses it. As a FRESH buyer (the scheduled downgrade) the
+    offer is there."""
+    db = ladder_db("individual", sub("max", source="payment", days_left=10))
+    db._batch("pro_plus_t1_a")["enabled"] = True
+    assert db._quote(USER, "pro_plus") is None
+    assert db._quote(USER, "pro_plus", as_new=True)["batch_id"] == "pro_plus_t1_a"
+    with pytest.raises(LunaHTTPException) as exc:
+        checkout(db, "pro_plus")
+    assert exc.value.code is ErrorCode.PAYMENT_DOWNGRADE_BLOCKED
+
+
+def test_v2_a_pro_plus_subscriber_switching_to_max_gets_the_max_quote(keys):
+    """Pro Plus → Max uses the existing Max quote (here the launch-state offer)."""
+    db = ladder_db("individual", sub("pro_plus", source="payment", days_left=26))
+    for b in ("max_t1_a", "max_t2_a", "max_t2_b"):
+        db._batch(b)["enabled"] = False
+    db._batch("max_t2_c")["enabled"] = True
+    quote = checkout(db, "max")
+    assert quote["promo"] == {"price_sar": "169.90", "months": 2, "list_sar": "219.90"}
+    assert _row(db, quote["payment_id"])["promo_batch_id"] == "max_t2_c"
+
+
+def test_the_checkout_rpc_is_unchanged_and_only_the_downgrade_asks_as_new(keys):
+    """`p_as_new` rides ONLY on the scheduled-downgrade quote; every checkout's
+    wire call stays byte-identical to the pre-226 one."""
+    db = FakeSupabase(sub("max", source="payment", days_left=10))
+    checkout(db, "max")
+    asked = [p for n, p in db.rpc_params if n == "promo_checkout_price"]
+    assert asked and all("p_as_new" not in p for p in asked)
+
+    plan = next(p for p in db.tables["plans"] if p["plan_id"] == "pro")
+    ps.fresh_purchase_quote(db, USER, plan)
+    assert db.rpc_params[-1] == ("promo_checkout_price",
+                                 {"p_user_id": USER, "p_plan_id": "pro", "p_as_new": True})
+
+
+def test_flag_off_a_fresh_purchase_quote_is_the_list_price(keys):
+    """ladder_v2 off (a rollback): a downgrade renews at LIST — never the flag-off
+    legacy campaign price, which no renewal could seat."""
+    db = FakeSupabase(sub("max", source="payment", days_left=10))
+    db.campaign_enabled = True                 # the legacy campaign is open
+    plan = next(p for p in db.tables["plans"] if p["plan_id"] == "pro")
+    quote = ps.fresh_purchase_quote(db, USER, plan)
+    assert quote == {"price_sar": ps.q2("94.90"), "list_sar": ps.q2("94.90"),
+                     "batch": None, "intro_group": None}
+
+
+# ── second review (2026-11-21): one seat release per refund ─────────────────
+
+
+def _switch_to_max(db, monkeypatch):
+    """A Pro Tier 1 holder (seat X) switches to Max at the offer; X is released
+    'upgraded' by the switch payment S. → (S's payment id, X)."""
+    pay = _pro_tier1_holder(db)
+    x = next(s for s in db.early_adopter_seats if s["payment_id"] == pay["payment_id"])
+    quote = checkout(db, "max")
+    assert _settle(db, monkeypatch, quote, ps.to_halalas(quote["amount_sar"]))["granted"] is True
+    assert x["release_reason"] == "upgraded"
+    _row(db, quote["payment_id"])["raw_payload"] = {"id": MOYASAR_ID, "fee": 173}
+    return quote["payment_id"], x
+
+
+def _refund_webhook(db, monkeypatch, payment_id):
+    halalas = ps.to_halalas(_row(db, payment_id)["amount_sar"])
+    patch_fetch(monkeypatch, moyasar_payment(payment_id, status="refunded", amount=halalas))
+    return run(ps.handle_webhook_event(db, _event(payment_id, event="payment_refunded")))
+
+
+def _releases(db):
+    return [p for n, p in db.rpc_params if n == "release_early_adopter_seat"]
+
+
+def test_a_self_serve_refund_then_its_webhook_releases_the_seat_once(
+    keys, monkeypatch, provider_refunds
+):
+    """Review A: refund_payment releases S's seat and gives X back (V5); the
+    payment_refunded webhook that follows finds the row already 'refunded' and
+    must NOT release again — that second release would take X (live again, its
+    own purchase still 'paid', so no give-back) and its tier would read as
+    used."""
+    db = ladder_db("legal", sub("pro", source="payment", days_left=26))
+    switch_id, x = _switch_to_max(db, monkeypatch)
+
+    run(ps.refund_payment(db, USER, switch_id))
+    assert x["released_at"] is None                         # X is back
+    _refund_webhook(db, monkeypatch, switch_id)
+
+    assert x["released_at"] is None and x["release_reason"] is None
+    assert len([p for p in _releases(db) if p["p_reason"] == "refund"]) == 1
+    live = [s for s in db.early_adopter_seats if s["user_id"] == USER and not s["released_at"]]
+    assert live == [x]
+
+
+def test_a_dashboard_refund_reaching_us_only_as_a_webhook_releases_once(
+    keys, monkeypatch, provider_refunds
+):
+    """…while a refund issued from the Moyasar dashboard (the row still 'paid'
+    when the webhook lands) is released by the webhook — once, and a retry of
+    the same event does not release again."""
+    db = ladder_db("legal", sub("pro", source="payment", days_left=26))
+    switch_id, x = _switch_to_max(db, monkeypatch)
+
+    _refund_webhook(db, monkeypatch, switch_id)
+    assert _row(db, switch_id)["status"] == "refunded"
+    assert len([p for p in _releases(db) if p["p_reason"] == "refund"]) == 1
+    assert x["released_at"] is None                         # V5 gave X back
+    max_seat = next(s for s in db.early_adopter_seats if s.get("batch_id") == "max_t1_a")
+    assert max_seat["release_reason"] == "refund"
+
+    _refund_webhook(db, monkeypatch, switch_id)             # Moyasar retries
+    assert len([p for p in _releases(db) if p["p_reason"] == "refund"]) == 1
+    assert x["released_at"] is None

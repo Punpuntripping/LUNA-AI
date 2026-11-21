@@ -1,6 +1,13 @@
-"""A MODEL of the seat + price SQL (migrations 138, 182, 183, 192) shared by the
-in-memory Supabase stand-ins in ``test_payments.py`` and
+"""A MODEL of the seat + price SQL (migrations 138, 182, 183, 192, 225, 226)
+shared by the in-memory Supabase stand-ins in ``test_payments.py`` and
 ``test_subscription_renewal.py``.
+
+225/226 (`.claude/plans/pro_plus_tier_and_downgrade.md` §8 contract, coded here
+BEFORE the migrations exist — re-verify against them once written): pro_plus is
+a seat plan with one Tier 1 batch; promo_quote / promo_checkout_price take
+``p_as_new``; a claim superseding a seat on a higher-priced plan releases it
+'downgraded'; the release accepts 'downgraded'; promo_tier_used ignores an
+'upgraded' release inside the first 30 days (D12).
 
 Not a test module (no ``test_`` prefix), so pytest never collects it.
 ⚠ ``.gitignore`` blankets ``backend/tests/*``: this file needs ``git add -f``,
@@ -70,12 +77,24 @@ SEED_BATCHES: tuple[dict, ...] = (
     {"batch_id": "basic_t1_a", "plan_id": "basic", "price_tier": 1, "batch_order": 1,
      "price_sar": "9.80", "months": 1, "seat_limit": 500, "profession_only": False,
      "enabled": False},
+    # 225 (pro_plus_tier_and_downgrade.md D3/D10) ships both DARK; the launch
+    # switch (§3.5) enables them and disables max_t1_a / max_t2_a / max_t2_b.
+    {"batch_id": "pro_plus_t1_a", "plan_id": "pro_plus", "price_tier": 1, "batch_order": 1,
+     "price_sar": "99.90", "months": 2, "seat_limit": 500, "profession_only": False,
+     "enabled": False},
+    {"batch_id": "max_t2_c", "plan_id": "max", "price_tier": 2, "batch_order": 3,
+     "price_sar": "169.90", "months": 2, "seat_limit": 500, "profession_only": False,
+     "enabled": False},
 )
 
 #: §1.3-3 / A6 — the first profession answers that unlock Pro Tier 1.
 OFFER_PROFESSIONS = frozenset({"legal", "specialist", "entrepreneur"})
 
-SEAT_PLAN_IDS = ("pro", "max")
+SEAT_PLAN_IDS = ("pro", "pro_plus", "max")
+
+#: D12 (owner 2026-11-20, migration 225): an 'upgraded' release inside the
+#: offer's first charging period does not use the tier.
+FIRST_PERIOD = timedelta(days=30)
 
 #: 192 (R2): an UNSTAMPED payment created after the flip that is nonetheless
 #: priced at or below the legacy promo is a checkout bug — 'plan_not_eligible',
@@ -252,15 +271,33 @@ class PromoLadderModel:
         return (seat.get("release_reason") == "refund"
                 and (self._payment(seat.get("payment_id")) or {}).get("status") == "refunded")
 
+    def _upgraded_in_first_period(self, seat) -> bool:
+        """D12 (225): released 'upgraded' less than 30 days after it was
+        claimed — an upgrade inside the offer's first charging period. A seat
+        with no ``claimed_at`` stays counted (SQL: the comparison is NULL)."""
+        if seat.get("release_reason") != "upgraded":
+            return False
+        claimed = ps._parse_ts(seat.get("claimed_at"))
+        released = ps._parse_ts(seat.get("released_at"))
+        return claimed is not None and released is not None and \
+            released < claimed + FIRST_PERIOD
+
     def _tier_used(self, user_id, plan_id, tier) -> bool:
         """§1.3-7: ever held a seat at that tier for that plan, live or
-        released — 'upgraded', 'cancelled' and 'refund' alike, EXCEPT (owner,
-        2026-10-27) a seat whose own purchase was refunded: a refunded purchase
-        never used the tier. A refunded renewal still did."""
+        released — 'upgraded', 'downgraded', 'cancelled' and 'refund' alike,
+        EXCEPT
+          * (owner, 2026-10-27) a seat whose own purchase was refunded: a
+            refunded purchase never used the tier. A refunded renewal still did;
+          * (D12, owner 2026-11-20) a seat released 'upgraded' within 30 days of
+            its claim: upgrading inside the first charging period does not use
+            the offer. After day 30 it does, and 'downgraded' / 'cancelled'
+            always do."""
         return any(
             (plan_id, tier) in self._seat_tiers_used(s)
             for s in self.early_adopter_seats
-            if s.get("user_id") == user_id and not self._refunded_purchase(s)
+            if s.get("user_id") == user_id
+            and not self._refunded_purchase(s)
+            and not self._upgraded_in_first_period(s)
         )
 
     def _batch(self, batch_id):
@@ -317,11 +354,34 @@ class PromoLadderModel:
             return False
         if seat.get("batch_id"):
             return seat.get("plan_id") == plan_id
-        return not (self._legacy_seat_plan(seat) == "pro" and plan_id == "max")
+        # 225 (D5, by rank = list price): a legacy seat claimed by a payment for
+        # a LOWER-priced plan takes the quote (pro → pro_plus, pro → max); a
+        # legacy seat with no payment (no plan, no rank) keeps blocking.
+        held = (self._plan(self._legacy_seat_plan(seat)) or {}).get("price_sar")
+        asked = (self._plan(plan_id) or {}).get("price_sar")
+        return not (held is not None and asked is not None and ps.q2(held) < ps.q2(asked))
 
-    def _quote(self, user_id, plan_id) -> Optional[dict]:
-        """``promo_quote(user, plan)`` — §1.3, in 192's order. None = regular."""
+    def _batch_seat_on(self, user_id, plan_id) -> bool:
+        """A live in-window BATCH seat on ``plan_id`` (the one I2 block that
+        ``p_as_new`` keeps, 225)."""
+        seat = self._live_seat(user_id)
+        return bool(seat is not None and self._in_window(seat) and seat.get("batch_id")
+                    and seat.get("plan_id") == plan_id)
+
+    def _quote(self, user_id, plan_id, as_new: bool = False) -> Optional[dict]:
+        """``promo_quote(user, plan, p_as_new)`` — §1.3, in 192's order. None =
+        regular.
+
+        ``as_new`` (225, contract item 1): quote as a FRESH buyer once the
+        current term ends — skips the "on this plan now" / "lower than the
+        current plan" guard (and with it the running-Basic Tier 1 rule) and the
+        LEGACY-seat block; a live BATCH seat on the asked plan still blocks.
+        Everything else (the switches, tiers used, batches, profession) still
+        applies. Plan rank = list price; a plan with no list price (pro_plus
+        while dark) is never quoted."""
         if not user_id or plan_id not in (*SEAT_PLAN_IDS, "basic"):
+            return None
+        if (self._plan(plan_id) or {}).get("price_sar") is None:
             return None
         if not (self.ladder_v2 and self.campaign_enabled and self.campaign_row_present):
             return None
@@ -334,22 +394,34 @@ class PromoLadderModel:
                 return None
             return {"batch_id": batch["batch_id"], "price_tier": 1,
                     "price_sar": batch["price_sar"], "months": batch["months"]}
-        active = self._active_plan(user_id)
-        # §1.3-1: on Pro/Max now → no new seat for that plan; Max → Pro is a
-        # downgrade. Pro → Max is the switch (rule 6) and IS quoted.
-        if active == plan_id or (active == "max" and plan_id == "pro"):
-            return None
-        # (I2) the held seat keeps pricing this plan.
-        if self._holds_window_for(user_id, plan_id):
+        # as_new: v_eff stays NULL in 225 — the current term ends at the switch.
+        active = None if as_new else self._active_plan(user_id)
+        if not as_new:
+            # §1.3-1: on the asked plan now → no new seat for it; on a plan with
+            # a HIGHER list price → a downgrade, never quoted (225: max → pro /
+            # pro_plus, pro_plus → pro). Pro → Pro Plus / Max and Pro Plus → Max
+            # are switches (rule 6 / D5) and ARE quoted. A current plan with no
+            # list price (free, dev, marketing_*) outranks nothing.
+            listed = (self._plan(plan_id) or {}).get("price_sar")
+            current = (self._plan(active) or {}).get("price_sar") if active else None
+            if active == plan_id or (current is not None
+                                     and ps.q2(listed) < ps.q2(current)):
+                return None
+            # (I2) the held seat keeps pricing this plan.
+            if self._holds_window_for(user_id, plan_id):
+                return None
+        elif self._batch_seat_on(user_id, plan_id):
             return None
         prof_ok = self._first_profession(user_id) in OFFER_PROFESSIONS
-        if plan_id == "max":
-            t1_ok = True                          # Max Tier 1: everyone, Basic too
+        if plan_id in ("max", "pro_plus"):
+            t1_ok = True                          # Max / Pro Plus Tier 1: everyone
         else:
             # Pro Tier 1: the profession offer — the three groups, 183's switch
             # and end date (§1.4-9), and NOT while Basic runs (§1.3-2; decision
-            # 2: this blocks ONLY Pro Tier 1).
-            t1_ok = (prof_ok and active != "basic"
+            # 2: this blocks ONLY Pro Tier 1). (225, owner 2026-11-20) and NEVER
+            # with as_new: a scheduled downgrade to Pro never gets the
+            # profession offer — it falls to Tier 2, else list.
+            t1_ok = (prof_ok and active != "basic" and not as_new
                      and self.intro_offer_enabled and _now() < self.intro_offer_ends_at)
         for tier in (1, 2):
             if tier == 1 and not t1_ok:
@@ -381,6 +453,13 @@ class PromoLadderModel:
         pro = self._active_batch("pro", 2)               # Tier 1 is personal
         if pro is not None:
             rows.append({"plan_id": "pro", "price_sar": pro["price_sar"], "months": pro["months"]})
+        # 225: tier 1 is everyone's, so it is public (else tier 2) — and never
+        # while pro_plus has no list price (it ships dark).
+        if (self._plan("pro_plus") or {}).get("price_sar") is not None:
+            plus = self._active_batch("pro_plus", 1) or self._active_batch("pro_plus", 2)
+            if plus is not None:
+                rows.append({"plan_id": "pro_plus", "price_sar": plus["price_sar"],
+                             "months": plus["months"]})
         mx = self._active_batch("max", 1) or self._active_batch("max", 2)
         if mx is not None:
             rows.append({"plan_id": "max", "price_sar": mx["price_sar"], "months": mx["months"]})
@@ -417,8 +496,11 @@ class PromoLadderModel:
         in_window = seat is not None and self._in_window(seat, at)
         recurring = plan_id in SEAT_PLAN_IDS
 
-        # (b1)
-        if (listed is not None and recurring and in_window and seat.get("batch_id")
+        # (b1) — (226) list-price-independent: a seat promised while the plan
+        # was on sale keeps its price to the end of its window even after the
+        # plan went off sale (price_sar NULL); past the window a NULL list price
+        # answers NULL below, exactly as before.
+        if (recurring and in_window and seat.get("batch_id")
                 and seat.get("plan_id") == plan_id):
             return seat["price_sar"]
         legacy_in_window = in_window and not seat.get("batch_id")
@@ -561,14 +643,25 @@ class PromoLadderModel:
         if live is not None and live.get("batch_id") == batch["batch_id"]:
             return _seat_row(live, ss.CLAIM_ACTION_ALREADY_CLAIMED)    # same batch: keep
         over = self._batch_live(batch["batch_id"]) >= int(batch["seat_limit"])
-        anchor = ps._parse_ts(row.get("paid_at")) or _now()
+        # 226: a renewal-claimed seat (a scheduled downgrade's) anchors its
+        # window on the PERIOD it pays for, not on when the charge landed (up to
+        # 15 min early, or a day late inside the grace). period_start is NULL on
+        # every non-renewal row (132's CHECK), so this is paid_at for them.
+        anchor = (ps._parse_ts(row.get("period_start"))
+                  or ps._parse_ts(row.get("paid_at")) or _now())
         if live is not None:
             # (I4) ANY live seat not in this batch — legacy, other plan, or a
-            # spent / other batch of this plan — is released 'upgraded': counts
-            # as used, never forfeits. (5d) It records WHICH payment superseded
-            # it, so refunding that payment can give it back.
+            # spent / other batch of this plan — is superseded: never forfeits.
+            # (5d) It records WHICH payment superseded it, so refunding that
+            # payment can give it back. 226 (contract item 3): superseding a
+            # seat on a HIGHER-priced plan (by list price) is a downgrade and
+            # is released 'downgraded'; otherwise 'upgraded' (D12 decides when
+            # that one counts as used).
             live["released_at"] = _iso(_now())
-            live["release_reason"] = "upgraded"
+            live["release_reason"] = (
+                "downgraded" if self._held_plan_is_higher(live, batch["plan_id"])
+                else "upgraded"
+            )
             live["released_by_payment_id"] = payment_id
         seat = {
             "seat_id": str(uuid.uuid4()), "user_id": uid, "payment_id": payment_id,
@@ -580,6 +673,23 @@ class PromoLadderModel:
         }
         self.early_adopter_seats.append(seat)
         return _seat_row(seat, ss.CLAIM_ACTION_CLAIMED)
+
+    def _held_plan_is_higher(self, seat, new_plan_id) -> bool:
+        """Does the held seat's plan rank ABOVE ``new_plan_id``? (226's claim.)
+        A batch seat names its plan; a legacy seat is its claiming payment's
+        plan. Rank = list price; when EITHER plan has no list price (off sale —
+        a promised downgrade charged after its target left the shelf) rank =
+        ``points_weekly``. Same plan, no plan, or a NULL on the compared column
+        → not higher."""
+        held_plan = seat.get("plan_id") if seat.get("batch_id") else self._legacy_seat_plan(seat)
+        if held_plan is None or held_plan == new_plan_id:
+            return False
+        held, new = self._plan(held_plan) or {}, self._plan(new_plan_id) or {}
+        if held.get("price_sar") is not None and new.get("price_sar") is not None:
+            return ps.q2(held["price_sar"]) > ps.q2(new["price_sar"])
+        if held.get("points_weekly") is None or new.get("points_weekly") is None:
+            return False
+        return held["points_weekly"] > new["points_weekly"]
 
     def _paid_after_flip(self, row) -> bool:
         """192 R2: flag ON and the payment was CREATED at/after
@@ -639,18 +749,33 @@ class PromoLadderModel:
         renewal) releases the live seat and restores nothing."""
         uid = params.get("p_user_id")
         reason = params.get("p_reason")
-        if not uid or reason not in ("refund", "cancelled"):
+        # 226 (contract item 4): 'downgraded' joins the accepted reasons.
+        if not uid or reason not in ("refund", "cancelled", "downgraded"):
             return False                       # 138: NOTICE + false, never the CHECK
         seat = self._live_seat(uid)
         if seat is None:
             return False
+        if reason == "downgraded":
+            # 226 (S2): a live seat on the plan the user is on NOW is the new
+            # term's own — never released 'downgraded' (NOTICE + false).
+            seat_plan = seat.get("plan_id") or self._legacy_seat_plan(seat)
+            sub = next((s for s in self.tables["user_subscriptions"]
+                        if s.get("user_id") == uid), None)
+            if seat_plan is not None and seat_plan == (sub or {}).get("plan_id"):
+                return False
         seat["released_at"] = _iso(_now())
         seat["release_reason"] = reason
+        # 226 (trailing p_payment_id DEFAULT NULL): a 'downgraded' release
+        # records the downgrade payment that superseded the seat.
+        if reason == "downgraded" and params.get("p_payment_id"):
+            seat["released_by_payment_id"] = params["p_payment_id"]
         claimed_by = seat.get("payment_id")
         if reason == "refund" and claimed_by and \
                 (self._payment(claimed_by) or {}).get("status") == "refunded":
+            # 226: a switch either way — 'upgraded' or 'downgraded' by that payment.
             superseded = [s for s in self.early_adopter_seats
-                          if s.get("user_id") == uid and s.get("release_reason") == "upgraded"
+                          if s.get("user_id") == uid
+                          and s.get("release_reason") in ("upgraded", "downgraded")
                           and s.get("released_by_payment_id") == claimed_by
                           and self._in_window(s)]
             if superseded:
@@ -710,12 +835,19 @@ class PromoLadderModel:
                  "promo_ends_at": ends}]
 
     def _checkout_price(self, params: dict) -> list[dict]:
-        """``promo_checkout_price(user, plan)`` (192) — EXACTLY ONE row, the
-        whole v2 sale in one statement: ``ladder_v2``, the price to charge, and
-        when it comes from a batch its id / tier / months, plus the profession
-        group for Pro Tier 1. Flag off: only ``ladder_v2 = false`` matters.
-        Mirrors effective_plan_price('purchase') with the quote taken once."""
+        """``promo_checkout_price(user, plan, p_as_new)`` (192, 226) — EXACTLY
+        ONE row, the whole v2 sale in one statement: ``ladder_v2``, the price
+        to charge, and when it comes from a batch its id / tier / months, plus
+        the profession group for Pro Tier 1. Flag off: only ``ladder_v2 =
+        false`` matters. Mirrors effective_plan_price('purchase') with the quote
+        taken once.
+
+        In the SQL's order: the quote FIRST, then the inline fallback (b1)
+        own-plan batch seat → (b2) legacy seat → list. Without ``p_as_new`` the
+        order is moot (I2: a seat that would hit b1 blocks the quote); with it
+        the quote skips the live-seat block, so it must come first."""
         uid, plan_id = params.get("p_user_id"), params.get("p_plan_id")
+        as_new = bool(params.get("p_as_new"))
         if self._plan(plan_id) is None:
             return []                                    # unknown plan: no row
         row = {"ladder_v2": bool(self.ladder_v2), "price_sar": None, "batch_id": None,
@@ -729,19 +861,21 @@ class PromoLadderModel:
         seat = self._live_seat(uid)
         in_window = seat is not None and self._in_window(seat)
         recurring = plan_id in SEAT_PLAN_IDS
-        if listed is None:
-            return [row]
-        if recurring and in_window and seat.get("batch_id") and seat.get("plan_id") == plan_id:
-            return [{**row, "price_sar": seat["price_sar"]}]               # (b1)
-        quote = self._quote(uid, plan_id)
+        quote = self._quote(uid, plan_id, as_new=as_new)
         if quote:
             group = (self._first_profession(uid)
                      if plan_id == "pro" and quote["price_tier"] == 1 else None)
             return [{**row, "price_sar": quote["price_sar"], "batch_id": quote["batch_id"],
                      "price_tier": quote["price_tier"], "months": quote["months"],
                      "intro_group": group}]
-        if recurring and promo is not None and in_window and not seat.get("batch_id"):
-            return [{**row, "price_sar": promo}]                           # (b2)
+        if listed is None:
+            return [row]
+        if recurring and in_window and seat.get("batch_id") and seat.get("plan_id") == plan_id:
+            return [{**row, "price_sar": seat["price_sar"]}]               # (b1)
+        # (b2) — skipped with p_as_new (225): the legacy seat ends at the switch.
+        if not as_new and recurring and promo is not None and in_window \
+                and not seat.get("batch_id"):
+            return [{**row, "price_sar": promo}]
         return [{**row, "price_sar": listed}]
 
     # ── dispatch ─────────────────────────────────────────────────────────
@@ -766,7 +900,8 @@ class PromoLadderModel:
         if name == "early_adopter_status":
             return self._status(params)
         if name == "promo_quote":
-            quote = self._quote(params.get("p_user_id"), params.get("p_plan_id"))
+            quote = self._quote(params.get("p_user_id"), params.get("p_plan_id"),
+                                as_new=bool(params.get("p_as_new")))
             return [quote] if quote else []
         if name == "promo_public_quote":
             return self._public_quote()
