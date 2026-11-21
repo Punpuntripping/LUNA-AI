@@ -381,9 +381,11 @@ export function QuotaUpgradeDialog({
         : cardCount === 2
           ? "max-w-2xl"
           : "max-w-md";
+  // Owner 2026-11-21: four cards always side by side — one swipeable row
+  // below lg, four across from lg (never 2×2).
   const gridClass =
     cardCount >= 4
-      ? "sm:grid-cols-2 xl:grid-cols-4"
+      ? "flex snap-x snap-mandatory gap-4 overflow-x-auto pb-3 pt-4 [&>*]:w-[17rem] [&>*]:shrink-0 [&>*]:snap-start sm:[&>*]:w-[19rem] lg:grid lg:grid-cols-4 lg:overflow-visible lg:pb-0 lg:pt-0 lg:[&>*]:w-auto"
       : cardCount === 3
         ? "md:grid-cols-3"
         : cardCount === 2
@@ -476,7 +478,7 @@ export function QuotaUpgradeDialog({
 
         {/* Plan cards — same structure as app/pricing/page.tsx, tightened one
             step (p-5, text-base heading) to fit three across inside a modal. */}
-        <div className={`mt-2 grid gap-4 ${gridClass}`}>
+        <div className={`mt-2 ${cardCount >= 4 ? "" : "grid "}gap-4 ${gridClass}`}>
           {showFreeTrial && freeTrialPlan && (
             <FreeTrialCard
               plan={freeTrialPlan}

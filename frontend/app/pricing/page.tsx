@@ -84,14 +84,14 @@ export default async function PricingPage() {
           </p>
         </header>
 
-        {/* Plan cards — four since pro_plus: one column on a phone, 2×2 from
-            sm, four across from xl. Four across at md/lg would squeeze each
-            card under ~230px and wrap every price row; 3 + 1 would orphan max. */}
-        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+        {/* Plan cards — owner 2026-11-21: always side by side, never 2×2.
+            Four across from lg; below lg one swipeable row (each card 17–19rem,
+            snap). pt-4 keeps the «الأكثر شيوعاً» badge inside the scroller. */}
+        <div className="-mx-4 px-4 lg:mx-0 lg:px-0 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-3 pt-4 [&>*]:w-[17rem] [&>*]:shrink-0 [&>*]:snap-start sm:[&>*]:w-[19rem] lg:grid lg:grid-cols-4 lg:overflow-visible lg:pb-0 lg:pt-0 lg:[&>*]:w-auto">
           {cards.map(({ plan, pricing }) => (
             <div
               key={plan.id}
-              className={`relative flex flex-col rounded-2xl border bg-card p-6 ${
+              className={`relative flex flex-col rounded-2xl border bg-card p-6 lg:p-5 xl:p-6 ${
                 plan.highlighted
                   ? "border-primary shadow-lg"
                   : "border-border"

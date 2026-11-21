@@ -66,13 +66,13 @@ export async function PricingSection() {
           </p>
         </div>
 
-        {/* Plan cards — same grid as /pricing: 1 → 2×2 (sm) → 4 across (xl). */}
-        <div className="mt-10 grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+        {/* Plan cards — same row as /pricing: swipeable below lg, four across from lg. */}
+        <div className="mt-6 -mx-4 px-4 lg:mx-0 lg:px-0 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-3 pt-4 [&>*]:w-[17rem] [&>*]:shrink-0 [&>*]:snap-start sm:[&>*]:w-[19rem] lg:grid lg:grid-cols-4 lg:overflow-visible lg:pb-0 lg:pt-0 lg:[&>*]:w-auto">
           {cards.map(({ plan, pricing }) => (
             <div
               key={plan.id}
               className={cn(
-                "relative flex flex-col rounded-2xl border bg-card p-6 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-md",
+                "relative flex flex-col rounded-2xl border bg-card p-6 lg:p-5 xl:p-6 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-md",
                 plan.highlighted
                   ? "border-primary shadow-md ring-1 ring-primary/20"
                   : "border-border",
