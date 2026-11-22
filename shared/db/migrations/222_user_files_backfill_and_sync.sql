@@ -295,10 +295,15 @@ BEGIN
 END $$;
 
 -- Fingerprint of the attachment rows: every column but file_id and content_md
--- (the live column list, 2026-11-19), plus the text's byte length and stored
--- size, both read from the TOAST header without detoasting. The link UPDATE
--- sets only file_id, so the text keeps its TOAST pointer; Tx D compares the
--- full text bytes after COMMIT. Session-temporary function, dropped below.
+-- (the live column list, 2026-11-19), plus the text's byte length, read from
+-- the TOAST header without detoasting. NOT its stored size (pg_column_size):
+-- the link UPDATE writes a new row version 16 bytes wider (file_id), and a row
+-- that sat just under the TOAST threshold gets its in-row compressed text moved
+-- out to TOAST — same bytes, different stored size. Prod trial run 2026-11-21:
+-- 1 row of 911 (a 2 KB text compressed in the row, summary already in TOAST)
+-- tripped the check on that alone. The link UPDATE sets only file_id; Tx D
+-- compares the full text bytes after COMMIT. Session-temporary function,
+-- dropped below.
 CREATE OR REPLACE FUNCTION pg_temp.m222_fingerprint() RETURNS text LANGUAGE sql STABLE AS $f$
     SELECT md5(string_agg(md5(ROW(
                wi.item_id, wi.user_id, wi.conversation_id, wi.case_id, wi.agent_family, wi.title, wi.metadata,
@@ -306,7 +311,7 @@ CREATE OR REPLACE FUNCTION pg_temp.m222_fingerprint() RETURNS text LANGUAGE sql 
                wi.document_id, wi.is_visible, wi.locked_by_agent_until, wi.summary, wi.summary_source_length,
                wi.summary_updated_at, wi.describe_query, wi.word_count, wi.used_ref_words_total, wi.wi_seq,
                wi.prev_content_md, wi.feedback, wi.created_while_paid,
-               octet_length(wi.content_md), pg_column_size(wi.content_md))::text), '' ORDER BY wi.item_id))
+               octet_length(wi.content_md))::text), '' ORDER BY wi.item_id))
            || ':' || count(*)
       FROM public.workspace_items wi
      WHERE wi.kind = 'attachment'
