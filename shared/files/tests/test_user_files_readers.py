@@ -306,13 +306,14 @@ def test_segmenter_bundle_members_and_item_row(read_on):
 def test_segment_maps_staleness_uses_the_files_length(read_on):
     from agents.memory.attachment_segmenter import store as seg_store
 
+    # Since migration 223 a map hangs on the FILE: its item_id column holds the file id.
     smap = {
-        "item_id": ITEM, "user_id": USER, "content_chars": len(F["content_md"]),
+        "item_id": FILE, "user_id": USER, "content_chars": len(F["content_md"]),
         "paragraph_rule_version": "p1", "prompt_version": "v1", "model": None, "split": False,
         "documents_in_file": [], "key_paragraphs": [], "created_at": "2026-11-10T11:00:00+00:00",
     }
     segs = [{
-        "item_id": ITEM, "seq": 1, "from_p": 1, "to_p": 1, "page_from": None, "page_to": None,
+        "item_id": FILE, "seq": 1, "from_p": 1, "to_p": 1, "page_from": None, "page_to": None,
         "char_start": 0, "char_end": 4, "label": "parties", "value": "core", "what": "", "content_md": "file",
     }]
     sb = db(attachment_segment_maps=[smap], attachment_segments=segs)

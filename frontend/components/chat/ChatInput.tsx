@@ -65,6 +65,7 @@ import {
   type FileMatchDecision,
 } from "@/lib/contracts";
 import type {
+  LibraryFilePick,
   LibraryItemRef,
   PendingBlog,
   PendingFile,
@@ -889,6 +890,107 @@ export function ChatInput({
     importLibraryRefs(fresh.slice(0, room));
   }, [conversationId, importLibraryRefs]);
 
+  // «الملفات» → the conversation (my_files.md §3.5, Phase 3). A picked library
+  // file becomes an ordinary attachment chip (`pendingFiles`, `fromLibrary`)
+  // whose item comes from the attach-from-file call instead of an upload: no
+  // bytes, no OCR pages, no new summary. Marked in `replacedRef` like a
+  // «استخدام الموجود» chip, so removing it never deletes an item and no upload
+  // event ever touches it. The send path collects its `itemId` exactly like a
+  // finished upload's.
+  const attachLibraryFiles = useCallback(
+    (picks: LibraryFilePick[]) => {
+      if (!conversationId || picks.length === 0) return;
+      for (const pick of picks) {
+        const pendingId = `libfile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const name = (pick.filename ?? "").trim() || pick.title.trim() || "ملف";
+        const mimeType = pick.mimeType ?? "";
+        replacedRef.current.add(pendingId);
+        addPendingFile({
+          id: pendingId,
+          file: new File([], name, { type: mimeType }),
+          previewUrl: "",
+          name,
+          size: 0,
+          mimeType,
+          uploadStatus: "uploading",
+          uploadProgress: 0,
+          itemId: null,
+          errorMessage: null,
+          displayName: pick.title.trim() || name,
+          fromLibrary: true,
+          libraryFileId: pick.fileId,
+        });
+        workspaceApi
+          .attachFromFile(conversationId, pick.fileId)
+          .then((row) => {
+            updatePendingFile(pendingId, {
+              itemId: row.item_id,
+              uploadStatus: "completed",
+              uploadProgress: 1,
+              displayName: (row.title ?? "").trim() || pick.title.trim() || name,
+            });
+            void qc.invalidateQueries({
+              queryKey: workspaceKeys.byConversation(conversationId),
+            });
+          })
+          .catch((err) => {
+            updatePendingFile(pendingId, {
+              uploadStatus: "failed",
+              errorMessage:
+                err instanceof ApiClientError ? err.message : "تعذّر إرفاق الملف",
+            });
+          });
+      }
+    },
+    [conversationId, addPendingFile, updatePendingFile, qc],
+  );
+
+  // New-chat handoff for «الملفات» picks (the pendingBlogTokens twin): picked
+  // on the empty page, attached once the conversation exists. Declared AFTER
+  // the conversationId-change clear effect so the fresh chips aren't wiped.
+  useEffect(() => {
+    if (!conversationId) return;
+    const carried = useChatStore.getState().pendingLibraryFilePicks;
+    if (carried.length === 0) return;
+    useChatStore.getState().clearPendingLibraryFilePicks();
+    attachLibraryFiles(carried);
+  }, [conversationId, attachLibraryFiles]);
+
+  // The «+» → «مرفق» → «من الملفات» entry point. Dedups against the chips
+  // already holding the same file, shares MAX_FILES with uploads, and rides
+  // the create-on-attach flow when no conversation exists yet.
+  const queueLibraryFiles = useCallback(
+    (picks: LibraryFilePick[]) => {
+      const store = useChatStore.getState();
+      const held = new Set([
+        ...store.pendingLibraryFilePicks.map((p) => p.fileId),
+        ...store.pendingFiles.flatMap((f) => (f.libraryFileId ? [f.libraryFileId] : [])),
+      ]);
+      const fresh = picks.filter((p) => !held.has(p.fileId));
+      if (fresh.length === 0) return;
+      const used = store.pendingFiles.length + store.pendingLibraryFilePicks.length;
+      if (used + fresh.length > MAX_FILES) {
+        setValidationError(`الحد الأقصى ${MAX_FILES} ملفات`);
+        return;
+      }
+      setValidationError(null);
+
+      if (!conversationId) {
+        if (!onRequireConversation) {
+          setValidationError("ابدأ محادثة أولاً قبل إرفاق الملفات");
+          return;
+        }
+        store.setPendingLibraryFilePicks([...store.pendingLibraryFilePicks, ...fresh]);
+        if (content.trim()) store.setPendingComposerDraft(content);
+        if (store.pendingTemplate) store.setPendingTemplateCarry(store.pendingTemplate);
+        onRequireConversation([]);
+        return;
+      }
+      attachLibraryFiles(fresh);
+    },
+    [conversationId, onRequireConversation, content, attachLibraryFiles],
+  );
+
   // Queue blog tokens as composer chips — the single entry point shared by
   // the paste handler, the «مدونة → من مدوناتي» menu list, and the «إضافة
   // رابط» dialog. Dedups against live chips AND the new-chat carry slot,
@@ -1284,6 +1386,7 @@ export function ChatInput({
           onPickFiles={handleAddFile}
           onPickTemplate={handlePickTemplate}
           onAddBlogTokens={handleAddBlogTokens}
+          onPickLibraryFiles={filesEnabled ? queueLibraryFiles : undefined}
         />
 
         {isStreaming ? (

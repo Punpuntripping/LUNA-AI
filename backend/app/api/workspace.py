@@ -94,6 +94,11 @@ class FromDocumentRequest(BaseModel):
     document_id: str = Field(..., min_length=1)
 
 
+class FromFileRequest(BaseModel):
+    """POST /conversations/{conversation_id}/workspace/attachments/from-file"""
+    file_id: str = Field(..., min_length=1)
+
+
 class UpdateVisibilityRequest(BaseModel):
     """PATCH /workspace/{item_id}/visibility"""
     is_visible: bool
@@ -958,6 +963,42 @@ async def attach_from_case_document(
         conversation_id=conversation_id,
         document_id=body.document_id,
         metadata=metadata,
+    )
+    return _to_response(row)
+
+
+@router.post(
+    "/conversations/{conversation_id}/workspace/attachments/from-file",
+    response_model=WorkspaceItemResponse,
+    status_code=201,
+)
+async def attach_from_library_file(
+    conversation_id: str,
+    body: FromFileRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Attach one of the caller's «الملفات» files to this conversation
+    (my_files.md §3.5 / §5 Phase 3, migration 227).
+
+    ``file_id`` is the library row's ``file_id`` (its ``item_id`` works too).
+    The file arrives already extracted, summarised and segmented: no OCR pages,
+    no model call. Idempotent per conversation — the file's live item already in
+    this conversation is returned instead of a second one. The returned item id
+    rides ``attachment_ids`` on the next message, like an upload's.
+    """
+    validate_uuid(conversation_id, "معرف المحادثة")
+    validate_uuid(body.file_id, "معرف الملف")
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    if not files_service.my_files_enabled(user_id):
+        raise LunaHTTPException(status_code=404, code=ErrorCode.FEATURE_OFF, detail="هذه الميزة غير متاحة")
+    # OWNERSHIP of the CONVERSATION (see ``create_note``); the function checks
+    # the file's owner and checks the conversation again.
+    await run_db(
+        message_service.verify_conversation_ownership, supabase, conversation_id, user_id
+    )
+    row = await run_db(
+        files_service.attach_library_file, supabase, user_id, conversation_id, body.file_id
     )
     return _to_response(row)
 

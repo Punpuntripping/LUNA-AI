@@ -193,6 +193,30 @@ export interface PendingFile {
    * labels the chip). Never set with the feature off.
    */
   displayName?: string;
+  /**
+   * Picked from «الملفات» (my_files.md §3.5, Phase 3): no bytes travel and
+   * nothing is uploaded — the chip carries the conversation item the
+   * attach-from-file call returns (`itemId`, `uploadStatus: "completed"`).
+   * `file` is an empty placeholder; `size` is 0. Removing the chip only
+   * un-attaches it from the message.
+   */
+  fromLibrary?: boolean;
+  /** With `fromLibrary`: the picked file's id (a second pick of it is ignored). */
+  libraryFileId?: string;
+}
+
+/**
+ * A «الملفات» file picked in the composer before a conversation existed — the
+ * new-chat carry slot (`pendingLibraryFilePicks`, the `pendingBlogTokens`
+ * twin), attached by the destination ChatInput after the create-then-navigate
+ * hop.
+ */
+export interface LibraryFilePick {
+  /** `user_files.file_id` (or one of its conversation items' ids). */
+  fileId: string;
+  title: string;
+  filename: string | null;
+  mimeType: string | null;
 }
 
 /**

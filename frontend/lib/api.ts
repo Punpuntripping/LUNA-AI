@@ -937,6 +937,18 @@ export const workspaceApi = {
     ),
 
   /**
+   * «الملفات» Phase 3: put one of the user's library files into this
+   * conversation. Nothing is uploaded, extracted or summarised again; the
+   * returned item rides `attachment_ids` like an upload's. Idempotent per
+   * conversation (the file's item already there comes back).
+   */
+  attachFromFile: (conversationId: string, fileId: string) =>
+    api.post<WorkspaceItem>(
+      `/conversations/${conversationId}/workspace/attachments/from-file`,
+      { file_id: fileId },
+    ),
+
+  /**
    * Migration 049: fetch the per-WI reference list. References used to live
    * on ``metadata.references`` JSONB; they now live in a relational table
    * and are reconstructed by the backend via JOINs to chunks_v2 / cases /

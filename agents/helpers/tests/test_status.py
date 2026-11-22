@@ -467,3 +467,40 @@ def test_the_supabase_store_writes_are_conditional():
     update = next(c for c in db.calls if c[0] == "update")[1][0]
     assert update["status"] == "failed" and len(update["error"]) == 200
     assert update["lease_until"] is None
+
+
+class _ByTable(_Recorder):
+    """``_Recorder`` that answers per table: the item → file lookup, then helper_runs."""
+
+    def __init__(self, items: list[dict], runs: list[dict]) -> None:
+        super().__init__([])
+        self._answers = {"workspace_items": items, "helper_runs": runs}
+        self._current = ""
+
+    def table(self, name: str) -> "_ByTable":
+        self._current = name
+        return super().table(name)
+
+    def execute(self) -> Any:
+        return SimpleNamespace(data=self._answers.get(self._current, []))
+
+
+def test_a_second_copy_of_a_file_shares_the_files_run():
+    # migration 223: helper_runs.item_id holds the FILE id; a library file attached
+    # to another conversation (migration 227) is a new item with the same file
+    run = {"item_id": "file-1", "helper": "segmenter", "status": "done", "attempt": 1,
+           "lease_until": None, "version": "v1", "error": None}
+    db = _ByTable([{"item_id": "copy-2", "file_id": "file-1"}], [run])
+    store = status.SupabaseHelperRunStore(db)
+    got = store.get("copy-2", "segmenter")
+    assert got is not None and got.item_id == "file-1" and got.status == "done"
+    run_filters = [c[1] for c in db.calls if c[0] == "eq" and c[1][0] == "item_id"]
+    assert ("item_id", "file-1") in run_filters
+
+    db = _ByTable([{"item_id": "copy-2", "file_id": "file-1"}], [run])
+    status.SupabaseHelperRunStore(db).claim(
+        item_id="copy-2", helper="segmenter", user_id=USER, prev=None, attempt=1,
+        lease_until=utcnow() + timedelta(seconds=90), version="v1",
+    )
+    upsert = next(c for c in db.calls if c[0] == "upsert")
+    assert upsert[1][0]["item_id"] == "file-1"           # the run is claimed on the file

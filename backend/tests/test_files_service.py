@@ -1045,3 +1045,98 @@ def test_routes_carry_file_id_only_on_the_files_path(client_for, data_path):
             assert body["file_id"] == a["item_id"]
         else:
             assert "file_id" not in body
+
+
+# ===========================================================================
+# Attach a library file to a conversation (Phase 3, migration 227)
+# ===========================================================================
+
+
+def _library(**tables: list[dict]) -> _UserFilesFake:
+    """Files already in their own table (222 backfill), as on prod since 11-21."""
+    return _UserFilesFake(backfill=True, **tables)
+
+
+def test_attach_creates_a_copy_in_the_other_conversation_with_the_files_fields():
+    a = att()
+    sb = _library(workspace_items=[a], conversations=conversations())
+    row = fs.attach_library_file(sb, USER, CONV_B, a["item_id"])
+    assert row["item_id"] != a["item_id"] and row["file_id"] == a["item_id"]
+    assert row["conversation_id"] == CONV_B and row["kind"] == "attachment"
+    assert row["content_md"] == SAMPLE_TEXT and row["summary"] == SAMPLE_SUMMARY
+    assert row["metadata"]["ocr_status"] == "done"            # extraction is never re-run
+    assert sb.rpcs == [("user_file_attach", {"p_user_id": USER, "p_conversation_id": CONV_B,
+                                             "p_file_id": a["item_id"]})]
+
+
+def test_attach_accepts_a_second_copys_item_id_and_is_idempotent_per_conversation():
+    a = att()
+    sb = _library(workspace_items=[a], conversations=conversations())
+    copy_row = fs.attach_library_file(sb, USER, CONV_B, a["item_id"])
+    again = fs.attach_library_file(sb, USER, CONV_B, copy_row["item_id"])   # an item id, not the file id
+    assert again["item_id"] == copy_row["item_id"]
+    assert sb.rpcs[-1][1]["p_file_id"] == a["item_id"]                     # resolved to the file
+    assert sum(1 for w in sb.tables["workspace_items"] if w.get("conversation_id") == CONV_B) == 1
+
+
+@pytest.mark.parametrize("case", ["other_users_conversation", "deleted_conversation", "hidden", "no_text",
+                                  "other_users_file", "unknown"])
+def test_attach_refusals_are_a_404_and_write_nothing(case):
+    a = att()
+    theirs = att(user=OTHER_USER, conv=CONV_OTHER)
+    hidden = att(library_hidden_at="2026-11-12T10:00:00+00:00")
+    empty = att(text="")
+    sb = _library(workspace_items=[a, theirs, hidden, empty], conversations=conversations())
+    before = len(sb.tables["workspace_items"])
+    conv, target = {
+        "other_users_conversation": (CONV_OTHER, a["item_id"]),
+        "deleted_conversation": (CONV_DELETED, a["item_id"]),
+        "hidden": (CONV_B, hidden["item_id"]),
+        "no_text": (CONV_B, empty["item_id"]),
+        "other_users_file": (CONV_B, theirs["item_id"]),
+        "unknown": (CONV_B, _id()),
+    }[case]
+    with pytest.raises(LunaHTTPException) as e:
+        fs.attach_library_file(sb, USER, conv, target)
+    assert e.value.status_code == 404 and e.value.detail == "الملف غير موجود"
+    assert len(sb.tables["workspace_items"]) == before
+
+
+def test_attach_before_migration_227_is_a_503_in_arabic():
+    a = att()
+    sb = _library(workspace_items=[a], conversations=conversations())
+    sb.missing_rpcs.add("user_file_attach")
+    with pytest.raises(LunaHTTPException) as e:
+        fs.attach_library_file(sb, USER, CONV_B, a["item_id"])
+    assert e.value.status_code == 503 and e.value.detail == "هذه الميزة غير متاحة حالياً"
+
+
+def test_attach_unexpected_failure_is_a_500_in_arabic():
+    a = att()
+    sb = _library(workspace_items=[a], conversations=conversations())
+    sb.fail_rpcs.add("user_file_attach")
+    with pytest.raises(LunaHTTPException) as e:
+        fs.attach_library_file(sb, USER, CONV_B, a["item_id"])
+    assert e.value.status_code == 500 and e.value.detail == "حدث خطأ أثناء إرفاق الملف"
+
+
+def test_attach_the_library_still_lists_one_card_for_a_file_in_two_conversations():
+    a = att()
+    sb = _library(workspace_items=[a], conversations=conversations())
+    fs.attach_library_file(sb, USER, CONV_B, a["item_id"])
+    with files_flags.override(read=True, write=True):
+        out = fs.list_library_files(sb, USER)
+    assert out["total"] == 1 and [f["file_id"] for f in out["files"]] == [a["item_id"]]
+
+
+def test_attach_a_shared_file_stays_listed_when_its_first_conversation_is_deleted():
+    a = att()
+    convs = conversations()
+    sb = _library(workspace_items=[a], conversations=convs)
+    copy_row = fs.attach_library_file(sb, USER, CONV_B, a["item_id"])
+    next(c for c in sb.tables["conversations"] if c["conversation_id"] == CONV_A)["deleted_at"] = "2026-11-20T09:00:00+00:00"
+    with files_flags.override(read=True, write=True):
+        out = fs.list_library_files(sb, USER)
+    assert [f["file_id"] for f in out["files"]] == [a["item_id"]]
+    assert out["files"][0]["item_id"] == copy_row["item_id"]     # the card opens the live copy
+    assert out["files"][0]["conversation_id"] == CONV_B

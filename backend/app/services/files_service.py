@@ -508,10 +508,13 @@ def _live_pointers(frow: dict) -> list[dict]:
 def _file_row(frow: dict, pointer: Optional[dict] = None) -> dict:
     """A ``user_files`` row in the shape the row helpers above read. The
     conversation facts (``item_id``, WI number, home conversation) come from
-    ``pointer`` when given, else from the home pointer — the oldest live one. A
-    file with no live pointer answers with its own id."""
+    ``pointer`` when given, else from the home pointer — the oldest live one
+    whose conversation is not deleted (a file attached to several conversations
+    stays in the library while any of them lives, O4), else the oldest live one.
+    A file with no live pointer answers with its own id."""
     live = _live_pointers(frow)
-    home = pointer or (live[0] if live else None) or {}
+    alive = [p for p in live if not _conversation_deleted(p)]
+    home = pointer or (alive[0] if alive else None) or (live[0] if live else None) or {}
     file_id = str(frow.get("file_id") or "")
     return {
         "item_id": str(home.get("item_id") or file_id),
@@ -1202,12 +1205,68 @@ def match_library_file(
     }
 
 
+# ============================================
+# Attach a library file to a conversation (Phase 3, migration 227)
+# ============================================
+
+#: PostgREST: the function is not in its schema cache (227 not applied yet).
+_PGRST_NO_FUNCTION = "PGRST202"
+#: user_file_attach refuses (file not the caller's / deleted / hidden / no text,
+#: or conversation not the caller's / deleted).
+_SQL_NO_DATA = "P0002"
+
+
+def attach_library_file(
+    supabase: SupabaseClient, user_id: str, conversation_id: str, file_or_item_id: str
+) -> dict:
+    """Put one of the caller's library files into ``conversation_id``; returns
+    the conversation's item row (``workspace_items``).
+
+    ``file_or_item_id`` is the file's id (``GET /files`` → ``file_id``) or one
+    of its conversation items' ids (the card's ``item_id``). One call to
+    ``user_file_attach``: a new item whose fields are copied from the file in
+    the database — no new extraction, summary or segmentation — or the file's
+    live item already in that conversation. The caller verifies the
+    conversation's ownership first; the function checks it again.
+    """
+    wanted = str(file_or_item_id)
+    try:
+        file_id = files_store.file_ids_for_items(supabase, [wanted], user_id=user_id).get(wanted, wanted)
+        resp = supabase.rpc("user_file_attach", {
+            "p_user_id": str(user_id),
+            "p_conversation_id": str(conversation_id),
+            "p_file_id": file_id,
+        }).execute()
+    except Exception as exc:  # noqa: BLE001
+        code = str(getattr(exc, "code", "") or "")
+        if code == _SQL_NO_DATA:
+            raise LunaHTTPException(status_code=404, code=ErrorCode.DOC_NOT_FOUND, detail="الملف غير موجود")
+        if code == _PGRST_NO_FUNCTION:
+            logger.error("files: user_file_attach missing (migration 227 not applied)")
+            raise LunaHTTPException(status_code=503, code=ErrorCode.FEATURE_OFF, detail="هذه الميزة غير متاحة حالياً")
+        logger.exception("files: attach failed for %s (%s)", wanted, type(exc).__name__)
+        raise LunaHTTPException(
+            status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إرفاق الملف",
+        )
+    data = getattr(resp, "data", None)
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict) or not data.get("item_id"):
+        logger.error("files: attach returned no row for %s", wanted)
+        raise LunaHTTPException(
+            status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إرفاق الملف",
+        )
+    logger.info("files: attached file %s to conversation %s as item %s", file_id, conversation_id, data["item_id"])
+    return data
+
+
 __all__ = [
     "CROSS_CONVERSATION_MATCH",
     "DOC_TYPES",
     "HIDDEN_KEY",
     "LIBRARY_CAP",
     "PREVIEW_MAX_CHARS",
+    "attach_library_file",
     "get_library_file",
     "hide_library_file",
     "list_library_files",

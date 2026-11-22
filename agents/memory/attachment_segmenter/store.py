@@ -8,6 +8,14 @@ insert the segments. A reader that lands between the steps sees either no map or
 a map with no segments yet — :func:`load_segment_maps` treats both as "no map".
 A failed segment insert removes the map row again, so a half-written map never
 looks complete.
+
+Pages, maps and segments hang on the FILE (migration 223: their ``item_id``
+column holds ``user_files.file_id``). Callers pass conversation item ids; every
+function here first turns each into its file's id (:func:`_file_keys`). For the
+file's first item the two are equal (``file_id = item_id``); a library file
+attached to another conversation (migration 227) has a new item id and the same
+file id, so it finds the same pages and map. Results are keyed by the ids the
+caller passed.
 """
 from __future__ import annotations
 
@@ -37,18 +45,42 @@ def _data(resp: Any) -> list[dict]:
     return list(getattr(resp, "data", None) or [])
 
 
+def _file_keys(
+    supabase: Any, item_ids: Iterable[str], *, user_id: str | None = None, strict: bool = False
+) -> dict[str, str]:
+    """``{item_id: id its pages / map are stored under}`` — the item's file, or
+    the item itself when it links none. ``strict``: a failed read raises;
+    otherwise each item keeps its own id (right for every file's first item)."""
+    ids = list(dict.fromkeys(str(i) for i in item_ids if i))
+    if not ids:
+        return {}
+    try:
+        files = files_store.file_ids_for_items(supabase, ids, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001
+        if strict:
+            raise
+        logger.warning("attachment_segmenter: file lookup failed (%s) — item ids used", type(exc).__name__)
+        files = {}
+    return {i: files.get(i, i) for i in ids}
+
+
+def _file_key(supabase: Any, item_id: str, *, strict: bool = False) -> str:
+    return _file_keys(supabase, [item_id], strict=strict).get(str(item_id), str(item_id))
+
+
 # ---------------------------------------------------------------------------
 # Reads used by the runner
 # ---------------------------------------------------------------------------
 
 
 def load_pages(supabase: Any, item_id: str) -> list[dict]:
-    """The item's ``attachment_pages`` rows in page order (``[]`` on any failure)."""
+    """The item's file's ``attachment_pages`` rows in page order (``[]`` on any failure)."""
     try:
+        key = _file_key(supabase, item_id)
         return _data(
             supabase.table(PAGES_TABLE)
             .select("page_no, char_start, content_md")
-            .eq("item_id", item_id)
+            .eq("item_id", key)
             .order("page_no")
             .execute()
         )
@@ -58,15 +90,16 @@ def load_pages(supabase: Any, item_id: str) -> list[dict]:
 
 
 def map_state(supabase: Any, item_id: str) -> tuple[int, bool] | None:
-    """``(content_chars, has_segments)`` of the item's stored map, or ``None``.
+    """``(content_chars, has_segments)`` of the item's file's stored map, or ``None``.
 
     Raises on a failed read: the runner must not mistake "could not read" for
     "no map" — that only costs a re-run, but it is still a paid call.
     """
+    key = _file_key(supabase, item_id, strict=True)
     rows = _data(
         supabase.table(MAPS_TABLE)
         .select("content_chars")
-        .eq("item_id", item_id)
+        .eq("item_id", key)
         .limit(1)
         .execute()
     )
@@ -75,7 +108,7 @@ def map_state(supabase: Any, item_id: str) -> tuple[int, bool] | None:
     seg = _data(
         supabase.table(SEGMENTS_TABLE)
         .select("seq")
-        .eq("item_id", item_id)
+        .eq("item_id", key)
         .limit(1)
         .execute()
     )
@@ -88,8 +121,14 @@ def map_state(supabase: Any, item_id: str) -> tuple[int, bool] | None:
 
 
 def write_segment_map(supabase: Any, map_row: Mapping[str, Any], segment_rows: list[Mapping[str, Any]]) -> None:
-    """Replace the item's map and segments. Raises :class:`StoreError`."""
-    item_id = map_row["item_id"]
+    """Replace the map and segments of the item's file (rows are re-keyed from the
+    item id to the file id). Raises :class:`StoreError`."""
+    try:
+        item_id = _file_key(supabase, str(map_row["item_id"]), strict=True)
+    except Exception as exc:  # noqa: BLE001
+        raise StoreError(f"file lookup: {type(exc).__name__}") from exc
+    map_row = {**map_row, "item_id": item_id}
+    segment_rows = [{**r, "item_id": item_id} if "item_id" in r else dict(r) for r in segment_rows]
     try:
         supabase.table(MAPS_TABLE).delete().eq("item_id", item_id).execute()
         supabase.table(MAPS_TABLE).insert(dict(map_row)).execute()
@@ -183,24 +222,28 @@ def load_segment_maps(
             if content_chars is not None
             else _content_lengths(supabase, ids, user_id)
         )
-        q = supabase.table(MAPS_TABLE).select("*").in_("item_id", ids)
+        keys = _file_keys(supabase, ids, user_id=user_id)
+        q = supabase.table(MAPS_TABLE).select("*").in_("item_id", list(dict.fromkeys(keys.values())))
         if user_id:
             q = q.eq("user_id", user_id)
+        maps = {str(r["item_id"]): r for r in _data(q.execute())}
+        # item id -> its file's map row, when that map was made from this text
         fresh = {
-            str(r["item_id"]): r
-            for r in _data(q.execute())
-            if str(r["item_id"]) in lengths and int(r.get("content_chars") or -1) == lengths[str(r["item_id"])]
+            item: maps[key]
+            for item, key in keys.items()
+            if key in maps and item in lengths
+            and int(maps[key].get("content_chars") or -1) == lengths[item]
         }
         if not fresh:
             return {}
-        by_item: dict[str, list[StoredSegment]] = {}
-        for r in _segment_rows(supabase, list(fresh)):
-            by_item.setdefault(str(r["item_id"]), []).append(
+        by_key: dict[str, list[StoredSegment]] = {}
+        for r in _segment_rows(supabase, list(dict.fromkeys(keys[i] for i in fresh))):
+            by_key.setdefault(str(r["item_id"]), []).append(
                 StoredSegment(**{k: r.get(k) for k in StoredSegment.model_fields if k in r})
             )
         out: dict[str, StoredMap] = {}
         for item_id, r in fresh.items():
-            segs = sorted(by_item.get(item_id, []), key=lambda s: s.seq)
+            segs = sorted(by_key.get(keys[item_id], []), key=lambda s: s.seq)
             if not segs:
                 continue
             out[item_id] = StoredMap(

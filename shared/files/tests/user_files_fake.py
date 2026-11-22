@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import copy
 import re
+import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -32,6 +33,14 @@ from typing import Any, Optional
 ITEMS = "workspace_items"
 FILES = "user_files"
 CONVERSATIONS = "conversations"
+
+
+class FakeApiError(RuntimeError):
+    """postgrest's ``APIError`` shape: the SQLSTATE / PostgREST code on ``.code``."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
 
 #: (columns the file→item sync copies, migration 222 trigger 3)
 _SYNC_TO_ITEMS = (
@@ -277,8 +286,8 @@ class _Rpc:
         self.sb.rpcs.append((self.name, copy.deepcopy(self.params)))
         if self.name in self.sb.fail_rpcs:
             raise RuntimeError(f"rpc {self.name} failed")
-        if not self.sb.schema_ready:
-            raise RuntimeError(f"PGRST202: function {self.name} not found")
+        if not self.sb.schema_ready or self.name in self.sb.missing_rpcs:
+            raise FakeApiError("PGRST202", f"function {self.name} not found")
         handler = getattr(self.sb, f"_rpc_{self.name}")
         return Result(handler(**self.params))
 
@@ -305,6 +314,7 @@ class FakeSupabase:
         self.fail_tables: set[str] = set()
         self.fail_update_ids: set[str] = set()
         self.fail_rpcs: set[str] = set()
+        self.missing_rpcs: set[str] = set()     # PGRST202: not in PostgREST's schema yet
         if backfill:
             self.backfill()
 
@@ -455,6 +465,48 @@ class FakeSupabase:
         self._sync_file_to_items(f)
         return f["file_id"]
 
+    def _rpc_user_file_attach(self, p_user_id: str, p_conversation_id: str, p_file_id: str) -> dict:
+        """Migration 227: a new item in the conversation, fields copied from the
+        file, or the file's live item already there. P0002 when not allowed."""
+        conv = next(
+            (c for c in self.tables[CONVERSATIONS]
+             if c.get("conversation_id") == p_conversation_id and c.get("user_id") == p_user_id
+             and c.get("deleted_at") is None),
+            None,
+        )
+        if conv is None:
+            raise FakeApiError("P0002", "user_file_attach: conversation not found")
+        existing = sorted(
+            (w for w in self.tables[ITEMS]
+             if w.get("file_id") == p_file_id and w.get("conversation_id") == p_conversation_id
+             and w.get("user_id") == p_user_id and w.get("kind") == "attachment" and w.get("deleted_at") is None),
+            key=lambda w: (str(w.get("created_at") or ""), w["item_id"]),
+        )
+        if existing:
+            return copy.deepcopy(existing[0])
+        f = next(
+            (f for f in self.tables[FILES]
+             if f["file_id"] == p_file_id and f.get("user_id") == p_user_id and f.get("deleted_at") is None
+             and f.get("library_hidden_at") is None and (f.get("content_md") or "")),
+            None,
+        )
+        if f is None:
+            raise FakeApiError("P0002", "user_file_attach: file not attachable")
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "item_id": str(uuid.uuid4()), "user_id": p_user_id, "conversation_id": p_conversation_id,
+            "case_id": conv.get("case_id"), "kind": "attachment", "created_by": "user",
+            "title": f.get("title"), "content_md": f.get("content_md"), "metadata": copy.deepcopy(f.get("metadata")),
+            "storage_path": f.get("storage_path"), "document_id": f.get("document_id"),
+            "summary": f.get("summary"), "summary_source_length": f.get("summary_source_length"),
+            "summary_updated_at": f.get("summary_updated_at"), "file_id": f["file_id"],
+            "created_at": now, "updated_at": now, "deleted_at": None, "is_visible": True,
+            "wi_seq": 1 + max((w.get("wi_seq") or 0 for w in self.tables[ITEMS]
+                               if w.get("conversation_id") == p_conversation_id), default=0),
+        }
+        self.tables[ITEMS].append(row)
+        return copy.deepcopy(row)
+
     def _rpc_user_files_hide(self, p_user_id: str, p_file_ids: list[str]) -> int:
         if any(i in self.fail_update_ids for i in p_file_ids):
             raise RuntimeError("hide failed")
@@ -474,4 +526,4 @@ def resp(data: Any) -> SimpleNamespace:
     return SimpleNamespace(data=data)
 
 
-__all__ = ["FakeSupabase", "Query", "Result", "derived_file", "split_columns"]
+__all__ = ["FakeApiError", "FakeSupabase", "Query", "Result", "derived_file", "split_columns"]

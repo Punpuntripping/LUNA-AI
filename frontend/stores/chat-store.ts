@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   DeepSearchStage,
+  LibraryFilePick,
   LibraryItemRef,
   NextStep,
   NextStepKind,
@@ -339,6 +340,10 @@ interface ChatState {
   // create-then-navigate hop.
   pendingLibraryItems: PendingLibraryItem[];
   pendingLibraryRefs: LibraryItemRef[];
+  // «الملفات» files picked in the composer before a conversation exists (the
+  // ``pendingBlogTokens`` twin); attached by the destination ChatInput. The
+  // live chips are ordinary ``pendingFiles`` entries with ``fromLibrary``.
+  pendingLibraryFilePicks: LibraryFilePick[];
   // قالب chip picked from the composer's «+» menu. Single-slot — the planner
   // drafts from ONE template, so picking another replaces it. Cleared on
   // conversation switch (same discipline as files/blogs); ``pendingTemplateCarry``
@@ -463,6 +468,8 @@ interface ChatState {
   updatePendingBlog: (id: string, partial: Partial<PendingBlog>) => void;
   setPendingBlogTokens: (tokens: string[]) => void;
   clearPendingBlogTokens: () => void;
+  setPendingLibraryFilePicks: (picks: LibraryFilePick[]) => void;
+  clearPendingLibraryFilePicks: () => void;
   addPendingLibraryItem: (item: PendingLibraryItem) => void;
   removePendingLibraryItem: (id: string) => void;
   clearPendingLibraryItems: () => void;
@@ -627,6 +634,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingBlogTokens: [],
   pendingLibraryItems: [],
   pendingLibraryRefs: [],
+  pendingLibraryFilePicks: [],
   pendingTemplate: null,
   pendingTemplateCarry: null,
   errorByConversation: {},
@@ -862,6 +870,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setPendingBlogTokens: (tokens) => set({ pendingBlogTokens: tokens }),
 
   clearPendingBlogTokens: () => set({ pendingBlogTokens: [] }),
+
+  setPendingLibraryFilePicks: (picks) => set({ pendingLibraryFilePicks: picks }),
+
+  clearPendingLibraryFilePicks: () => set({ pendingLibraryFilePicks: [] }),
 
   addPendingLibraryItem: (item) =>
     set((state) => ({
@@ -1256,6 +1268,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingBlogTokens: [],
       pendingLibraryItems: [],
       pendingLibraryRefs: [],
+      pendingLibraryFilePicks: [],
       pendingTemplate: null,
       pendingTemplateCarry: null,
       errorByConversation: {},

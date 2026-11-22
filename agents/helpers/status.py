@@ -119,18 +119,34 @@ def _to_row(data: Mapping[str, Any]) -> RunRow:
 
 class SupabaseHelperRunStore:
     """``helper_runs`` over PostgREST, as service_role (the table has no client
-    grants — migration 216). Every write is conditional on the row as read."""
+    grants — migration 216). Every write is conditional on the row as read.
+
+    Rows hang on the FILE (migration 223: ``helper_runs.item_id`` holds
+    ``user_files.file_id``). ``get`` / ``claim`` take the conversation item id
+    and look the row up under its file's id — equal for a file's first item; a
+    library file attached to another conversation (migration 227) shares its
+    file's run. ``renew`` / ``finish`` use the row as claimed."""
 
     _COLS = "item_id,helper,status,attempt,lease_until,version,error"
 
     def __init__(self, supabase: Any) -> None:
         self._db = supabase
+        self._keys: dict[str, str] = {}
+
+    def _key(self, item_id: str) -> str:
+        item_id = str(item_id)
+        if item_id not in self._keys:
+            from shared.files import store as files_store  # local: keeps the frame import-light
+
+            self._keys[item_id] = files_store.file_ids_for_items(self._db, [item_id]).get(item_id, item_id)
+        return self._keys[item_id]
 
     def get(self, item_id: str, helper: str) -> RunRow | None:
+        key = self._key(item_id)
         resp = (
             self._db.table(TABLE)
             .select(self._COLS)
-            .eq("item_id", item_id)
+            .eq("item_id", key)
             .eq("helper", helper)
             .limit(1)
             .execute()
@@ -150,6 +166,7 @@ class SupabaseHelperRunStore:
         version: str,
     ) -> RunRow | None:
         now = utcnow().isoformat()
+        item_id = self._key(item_id)
         fields = {
             "status": "running",
             "attempt": attempt,

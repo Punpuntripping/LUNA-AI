@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   BookText,
   Check,
+  FileText,
+  FolderOpen,
   LayoutTemplate,
   Link2,
   Loader2,
@@ -32,9 +34,11 @@ import {
 } from "@/components/ui/dialog";
 import { useTemplates } from "@/hooks/use-templates";
 import { useMyBlogs } from "@/hooks/use-my-blogs";
+import { useLibraryFiles } from "@/hooks/use-files";
+import { fileTypePillLabel, searchLibraryFiles } from "@/lib/contracts";
 import { usePreferencesStore } from "@/stores/preferences-store";
 import { DETAIL_LEVEL_OPTIONS } from "@/components/Settings/DetailLevelToggle";
-import type { PendingTemplate } from "@/types";
+import type { LibraryFilePick, PendingTemplate } from "@/types";
 
 interface ComposerPlusMenuProps {
   /** Disables the whole «+» trigger (streaming / conversation being created). */
@@ -55,6 +59,12 @@ interface ComposerPlusMenuProps {
    * (ChatInput) dedups, caps, and rides the create-on-attach flow.
    */
   onAddBlogTokens: (tokens: string[]) => void;
+  /**
+   * «الملفات» on for this user (my_files.md §3.5): «مرفق» becomes a submenu —
+   * «رفع ملف» (the file picker, unchanged) and «من الملفات» (the user's
+   * library). Absent → «مرفق» stays the plain item it is today.
+   */
+  onPickLibraryFiles?: (picks: LibraryFilePick[]) => void;
 }
 
 /**
@@ -146,6 +156,72 @@ function MyBlogMenuList({ onPick }: { onPick: (token: string) => void }) {
 }
 
 /**
+ * «الملفات» list — mounts (and therefore fetches) only when the مرفق submenu
+ * opens. Newest first, as the library returns it; a typed filter narrows long
+ * libraries (the largest has ~170 files).
+ */
+function MyFilesMenuList({ onPick }: { onPick: (pick: LibraryFilePick) => void }) {
+  const { data, isPending, isError } = useLibraryFiles();
+  const [query, setQuery] = useState("");
+
+  if (isPending) return <MenuStatus text="جارٍ التحميل..." loading />;
+  if (isError) return <MenuStatus text="تعذّر تحميل الملفات" />;
+
+  const files = data.files;
+  if (files.length === 0) return <MenuStatus text="لا توجد ملفات بعد" />;
+  const shown = query.trim() ? searchLibraryFiles(files, query) : files;
+
+  return (
+    <>
+      {files.length > 6 && (
+        <div className="px-1.5 pb-1">
+          <input
+            dir="rtl"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            // Keep the menu's type-ahead and arrow keys out of the box.
+            onKeyDown={(e) => e.stopPropagation()}
+            placeholder="ابحث في ملفاتك"
+            aria-label="ابحث في ملفاتك"
+            className="w-full rounded-md border bg-muted/50 px-2 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+      )}
+      <div className="max-h-60 overflow-y-auto">
+        {shown.length === 0 ? (
+          <MenuStatus text="لا نتائج" />
+        ) : (
+          shown.map((file) => (
+            <DropdownMenuItem
+              key={file.file_id ?? file.item_id}
+              className="gap-2"
+              onSelect={() =>
+                onPick({
+                  fileId: file.file_id ?? file.item_id,
+                  title: file.title,
+                  filename: file.filename,
+                  mimeType: file.mime_type,
+                })
+              }
+            >
+              <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">
+                {file.title.trim() || file.filename || "ملف"}
+              </span>
+              {fileTypePillLabel(file.doc_type) && (
+                <span className="shrink-0 text-[11px] text-muted-foreground">
+                  {fileTypePillLabel(file.doc_type)}
+                </span>
+              )}
+            </DropdownMenuItem>
+          ))
+        )}
+      </div>
+    </>
+  );
+}
+
+/**
  * The composer's «+» menu — replaces the old paperclip-only button. Three
  * appendable message add-ons, each ending as a removable pre-send indicator
  * above the input:
@@ -165,6 +241,7 @@ export function ComposerPlusMenu({
   onPickFiles,
   onPickTemplate,
   onAddBlogTokens,
+  onPickLibraryFiles,
 }: ComposerPlusMenuProps) {
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [linkValue, setLinkValue] = useState("");
@@ -227,14 +304,35 @@ export function ComposerPlusMenu({
         </DropdownMenuTrigger>
 
         <DropdownMenuContent side="top" align="start" className="w-52">
-          <DropdownMenuItem
-            className="gap-2"
-            disabled={!canAttach}
-            onSelect={onPickFiles}
-          >
-            <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span>مرفق</span>
-          </DropdownMenuItem>
+          {onPickLibraryFiles ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="gap-2" disabled={!canAttach}>
+                <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span>مرفق</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-72">
+                <DropdownMenuItem className="gap-2" onSelect={onPickFiles}>
+                  <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span>رفع ملف</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+                  <FolderOpen className="h-3.5 w-3.5" />
+                  من الملفات
+                </DropdownMenuLabel>
+                <MyFilesMenuList onPick={(pick) => onPickLibraryFiles([pick])} />
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : (
+            <DropdownMenuItem
+              className="gap-2"
+              disabled={!canAttach}
+              onSelect={onPickFiles}
+            >
+              <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span>مرفق</span>
+            </DropdownMenuItem>
+          )}
 
           <DropdownMenuSub>
             <DropdownMenuSubTrigger className="gap-2">

@@ -58,8 +58,10 @@ export function AttachmentUploadCard({
   // the card mounts. Runs once per file via the [file.file] dep. Null result
   // (encrypted PDF / render error) falls through to the FileText icon.
   const [pdfThumb, setPdfThumb] = useState<string | null>(null);
+  // A file picked from «الملفات» has no bytes in the browser: no thumbnail.
+  const fromLibrary = !!file.fromLibrary;
   useEffect(() => {
-    if (!isPdfType(file.mimeType)) return;
+    if (fromLibrary || !isPdfType(file.mimeType)) return;
     let cancelled = false;
     generatePdfThumbnail(file.file).then((url) => {
       if (!cancelled) setPdfThumb(url);
@@ -67,7 +69,7 @@ export function AttachmentUploadCard({
     return () => {
       cancelled = true;
     };
-  }, [file.file, file.mimeType]);
+  }, [file.file, file.mimeType, fromLibrary]);
 
   const hasVisualPreview =
     (isImageType(file.mimeType) && !!file.previewUrl) ||
@@ -91,7 +93,9 @@ export function AttachmentUploadCard({
         type="button"
         onClick={() => onRemove(file.id)}
         className="absolute top-1.5 start-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/80 text-background hover:bg-foreground transition-colors"
-        aria-label={isUploading ? "إلغاء الرفع" : "حذف الملف"}
+        aria-label={
+          fromLibrary ? "إزالة من الرسالة" : isUploading ? "إلغاء الرفع" : "حذف الملف"
+        }
       >
         <X className="h-3 w-3" />
       </button>
@@ -132,7 +136,8 @@ export function AttachmentUploadCard({
         </div>
       ) : (
         <div className="h-20 w-full flex items-center justify-center">
-          {isUploading || (isPdfType(file.mimeType) && pdfThumb === null && !isFailed) ? (
+          {isUploading ||
+          (isPdfType(file.mimeType) && pdfThumb === null && !isFailed && !fromLibrary) ? (
             <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
           ) : (
             <FileText
@@ -153,7 +158,11 @@ export function AttachmentUploadCard({
           {file.displayName ?? file.name}
         </p>
 
-        {isUploading && (
+        {isUploading && fromLibrary && (
+          <p className="text-xs text-muted-foreground">جارٍ الإرفاق…</p>
+        )}
+
+        {isUploading && !fromLibrary && (
           <>
             {/* Progress bar — width tracks uploadProgress 0..1. */}
             <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
@@ -170,7 +179,8 @@ export function AttachmentUploadCard({
 
         {isCompleted && (
           <span className="inline-block rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
-            {getFileExtension(file.name)} · {formatBytes(file.size)}
+            {getFileExtension(file.name)} ·{" "}
+            {fromLibrary ? "من الملفات" : formatBytes(file.size)}
           </span>
         )}
 

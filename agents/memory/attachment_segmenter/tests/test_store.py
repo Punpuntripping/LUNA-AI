@@ -155,3 +155,56 @@ def test_failed_map_insert_raises():
     db = FakeSupabase({"workspace_items": [_item()]}, fail={("attachment_segment_maps", "insert")})
     with pytest.raises(StoreError):
         write_segment_map(db, _map_row(), _seg_rows())
+
+
+# ── one file in two conversations (migrations 223 + 227) ─────────────────────
+# The file's first item has file_id = item_id; a library file attached to a
+# second conversation is a new item with the SAME file_id. Pages and maps hang
+# on the file, so both items must find the one map.
+
+COPY = "cccccccc-0000-0000-0000-000000000003"
+
+
+def _two_copies(**kw):
+    return FakeSupabase({"workspace_items": [
+        _item(ITEM_A, file_id=ITEM_A, **kw),
+        _item(COPY, file_id=ITEM_A, **kw),
+    ]})
+
+
+def test_second_copy_finds_the_files_map():
+    db = _two_copies()
+    write_segment_map(db, _map_row(), _seg_rows())
+    out = load_segment_maps(db, [ITEM_A, COPY])
+    assert set(out) == {ITEM_A, COPY}                     # keyed by the ids asked for
+    assert out[COPY].item_id == COPY
+    assert [s.seq for s in out[COPY].segments] == [1, 2, 3]
+    assert load_segment_map(db, COPY) is not None
+    assert map_state(db, COPY) == (len(CONTENT), True)
+    assert len(db.tables["attachment_segment_maps"]) == 1  # one map, not one per copy
+
+
+def test_a_write_through_the_second_copy_lands_on_the_file():
+    db = _two_copies()
+    write_segment_map(db, _map_row(COPY), _seg_rows(COPY))
+    assert {r["item_id"] for r in db.tables["attachment_segment_maps"]} == {ITEM_A}
+    assert {r["item_id"] for r in db.tables["attachment_segments"]} == {ITEM_A}
+    assert map_state(db, ITEM_A) == (len(CONTENT), True)
+
+
+def test_second_copy_reads_the_files_pages():
+    from agents.memory.attachment_segmenter.store import load_pages
+
+    db = _two_copies()
+    db.tables["attachment_pages"] = [
+        {"item_id": ITEM_A, "page_no": 2, "char_start": 10, "content_md": "ب"},
+        {"item_id": ITEM_A, "page_no": 1, "char_start": 0, "content_md": "أ"},
+    ]
+    assert [p["page_no"] for p in load_pages(db, COPY)] == [1, 2]
+
+
+def test_map_state_raises_when_the_file_lookup_fails():
+    db = _two_copies()
+    db.fail.add("workspace_items")
+    with pytest.raises(Exception):
+        map_state(db, COPY)
