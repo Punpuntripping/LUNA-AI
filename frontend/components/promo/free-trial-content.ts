@@ -6,10 +6,13 @@
  *
  * Two plans, told apart by length (the server sends `days`, see
  * `free_trial_days()`):
- *   - 7 days  → `marketing_lawyer_v2` (migration 219): 10 / session, 50 / week, 25 pages
- *   - 14 days → `marketing_lawyer_14`: 15 / session, 74 / week, 50 pages
+ *   - 3 days → `marketing_lawyer_3` (migration 232): 10 / session, 50 / week, 25 pages
+ *   - 7 days → `marketing_lawyer_7` (migration 232): 15 / session, 74 / week, 50 pages
+ * 14 days (`marketing_lawyer_14`, the 232b rollback) keeps the 7-day limits.
+ * Before 232b, 7 days meant `marketing_lawyer_v2` (10 / 50 / 25), so 232b must be
+ * applied right after this copy goes live.
  * Keep `freeTrialLength` in step with those rows. An unknown length falls back to
- * 7 days, the smaller limits, so the card can never promise more than the claim
+ * 3 days, the smaller limits, so the card can never promise more than the claim
  * grants.
  */
 
@@ -24,24 +27,33 @@ export const FREE_TRIAL_PLAN_ID = "basic" as const;
 export const FREE_OCR_PAGES = 3;
 
 export function freeTrialOcrPages(days: number): number {
-  return days >= 14 ? 50 : 25;
+  return days >= 7 ? 50 : 25;
 }
 
 /** The server sets the length per account. This is only the fallback. */
-export const FREE_TRIAL_DEFAULT_DAYS = 7;
+export const FREE_TRIAL_DEFAULT_DAYS = 3;
+
+/** «لمدة …» and the badge for a length. Only 3, 7 and 14 are ever served. */
+function trialSpan(days: number): { span: string; badge: string } {
+  if (days >= 14) return { span: "أسبوعين", badge: "أسبوعان مجاناً" };
+  if (days >= 7) return { span: "أسبوع", badge: "أسبوع مجاني" };
+  return { span: `${days} أيام`, badge: `${days} أيام مجاناً` };
+}
 
 /** The wording, and the limits, that change with the trial's length. */
 export function freeTrialLength(days: number) {
-  const twoWeeks = days >= 14;
-  const span = twoWeeks ? "أسبوعين" : "أسبوع";
+  const full = days >= 7; // the 15 / 74 / 50 plans
+  const { span, badge } = trialSpan(days);
   return {
     title: `جرّب ريحان مجاناً لمدة ${span}`,
-    badge: twoWeeks ? "أسبوعان مجاناً" : "أسبوع مجاني",
+    badge,
     period: `لمدة ${span}`,
     /** The card's limit lines, in display order. */
     limits: [
-      twoWeeks ? "74 نقطة استخدام أسبوعياً" : "50 نقطة استخدام طوال الأسبوع",
-      twoWeeks ? "15 نقطة لكل جلسة (5 ساعات)" : "10 نقاط لكل جلسة (5 ساعات)",
+      days >= 14
+        ? "74 نقطة استخدام أسبوعياً"
+        : `${full ? 74 : 50} نقطة استخدام طوال مدة العرض`,
+      full ? "15 نقطة لكل جلسة (5 ساعات)" : "10 نقاط لكل جلسة (5 ساعات)",
       `${freeTrialOcrPages(days)} صفحة استخراج نص`,
     ],
   };
