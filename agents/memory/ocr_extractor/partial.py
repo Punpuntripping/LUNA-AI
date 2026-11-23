@@ -35,9 +35,20 @@ def _gap_marker(first: int, last: int | None) -> str:
     return f"〔[نظام] الصفحات {first}–{last} ({last - first + 1} صفحة) لم تُستخرج.〕"
 
 
-def partial_header(read: Sequence[int], total_pages: int | None) -> str:
+def partial_header(
+    read: Sequence[int], total_pages: int | None, *, overflow: bool = False,
+) -> str:
     """The notice that opens a partial read's text (owner's wording 2026-11-16:
-    «استخراج», not «قراءة»)."""
+    «استخراج», not «قراءة»). ``overflow``: the pages past the budget were read
+    from the text layer, so what is still missing had no text there (or was past
+    ``TEXT_LAYER_MAX_PAGES``)."""
+    if overflow and total_pages is not None:
+        return (
+            f"〔[نظام] استُخرجت {len(read)} صفحة فقط من أصل {total_pages} صفحة في هذا "
+            f"الملف. الصفحات المستخرجة: {format_ranges(read)}. بقية الصفحات تجاوزت حدّ "
+            "رصيد الاستخراج لدى المستخدم ولم يُستخرج لها نص من الملف، فلا يُبنى على "
+            "محتواها ولا يُفترض.〕"
+        )
     if total_pages is None:
         return (
             f"〔[نظام] استُخرجت أول {len(read)} صفحة فقط من هذا الملف بسبب حدّ رصيد "
@@ -52,13 +63,30 @@ def partial_header(read: Sequence[int], total_pages: int | None) -> str:
     )
 
 
+#: What every agent must know about text-layer pages (owner, 2026-11-23: do not
+#: trust their dates, numbers or order of events). Shared by the notices here and
+#: the segmenter's per-section warning.
+TEXT_LAYER_CAUTION = (
+    "كلماتها في الغالب صحيحة، لكن التواريخ والأرقام والمبالغ وأرقام المواد والقضايا "
+    "وترتيب الأحداث فيها غير موثوقة (قد تكون مبعثرة أو مقلوبة)، فلا يُعتمد على شيء "
+    "منها ولا يُبنى عليه إلا مع التنبيه إلى أنه غير مؤكد، أو بعد تأكيده من المستخدم."
+)
+
+
 def text_layer_header(pages: Sequence[int]) -> str:
     """The notice for pages read from the PDF's own text layer (Mistral failed)."""
     return (
         f"〔[نظام] تعذّر OCR على الصفحات {format_ranges(pages)} فاستُخرج نصها من "
-        "طبقة النص المخزّنة في الملف نفسه: كلماتها دقيقة، لكن الأرقام والتواريخ "
-        "والجداول فيها قد تكون مبعثرة أو مقلوبة الترتيب، فلا يُعتمد على ترتيبها "
-        "دون تحقّق.〕"
+        f"طبقة النص المخزّنة في الملف نفسه لا بـOCR: {TEXT_LAYER_CAUTION}〕"
+    )
+
+
+def overflow_header(pages: Sequence[int]) -> str:
+    """The notice for pages past the OCR page budget, read from the text layer."""
+    return (
+        f"〔[نظام] الصفحات {format_ranges(pages)} تجاوزت حدّ رصيد الاستخراج (OCR) لدى "
+        "المستخدم، فاستُخرج نصها من طبقة النص المخزّنة في الملف نفسه لا بـOCR: "
+        f"{TEXT_LAYER_CAUTION}〕"
     )
 
 
@@ -90,6 +118,7 @@ def assemble_marked(
     budget_partial: bool,
     text_layer_pages: Sequence[int] = (),
     lost_pages: Sequence[int] = (),
+    overflow_pages: Sequence[int] = (),
 ) -> tuple[str, list[OcrPage]]:
     """``content_md`` for a read that is partial (budget), mixed (some pages
     from the text layer) or lossy (pages neither source could read), plus each
@@ -97,6 +126,9 @@ def assemble_marked(
 
     ``pages`` are the pages read, from either source (any ``char_start`` on
     them is ignored). ``total_pages`` None = the document's length is unknown.
+    ``overflow_pages`` — the text-layer pages read because the budget did not
+    cover them (the rest of ``text_layer_pages`` are Mistral failures); each
+    reason gets its own notice.
     Missing pages are marked as never extracted (budget) or as failed (lost);
     a run of text-layer pages is announced where it starts.
     """
@@ -104,14 +136,17 @@ def assemble_marked(
     read = [p.page_no for p in ordered]
     lost = set(lost_pages)
     from_layer = set(text_layer_pages)
+    past_budget = set(overflow_pages) & from_layer
     layer_starts = {first for first, _ in _runs(from_layer)}
     layer_run_end = dict(_runs(from_layer))
 
     parts: list[str] = []
     if budget_partial:
-        parts.append(partial_header(read, total_pages))
-    if from_layer:
-        parts.append(text_layer_header(sorted(from_layer)))
+        parts.append(partial_header(read, total_pages, overflow=bool(past_budget)))
+    if from_layer - past_budget:
+        parts.append(text_layer_header(sorted(from_layer - past_budget)))
+    if past_budget:
+        parts.append(overflow_header(sorted(past_budget)))
 
     def gap(first: int, last: int | None) -> None:
         if last is None:

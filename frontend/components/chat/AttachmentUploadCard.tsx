@@ -190,18 +190,21 @@ export function AttachmentUploadCard({
           </p>
         )}
 
+        {/* Previews exist for PDFs only. Pages past the OCR budget are read
+            from the PDF's own text layer, free (OCR_TEXT_LAYER_OVERFLOW_ENABLED,
+            2026-11-23) — so a PDF is never left unread for want of pages. */}
         {partialRead && !isFailed && (
           <p
             className="text-xs text-warning-fg tabular-nums"
             title={
               partialRead.pages.length > 0
-                ? `الصفحات التي سنستخرجها: ${formatRanges(partialRead.pages)} — حسب رصيدك`
-                : "نفد رصيد استخراج الملفات"
+                ? `الصفحات التي سنستخرجها بـOCR حسب رصيدك: ${formatRanges(partialRead.pages)}. بقية الصفحات نستخرجها من طبقة النص المخزّنة في الملف دون أن تُحسب من رصيدك، وقد تكون أرقامها وتواريخها غير دقيقة.`
+                : "نفد رصيد استخراج الملفات (OCR)، فسنستخرج النص المخزّن في الملف نفسه دون أن يُحسب من رصيدك. قد تكون الأرقام والتواريخ فيه غير دقيقة، وإن كان الملف صوراً ممسوحة فلن نستخرج منه شيئاً."
             }
           >
             {partialRead.pages.length > 0
-              ? `سنستخرج ${partialRead.pages.length} من ${partialRead.totalPages} صفحة`
-              : "نفد رصيد استخراج الملفات"}
+              ? `${partialRead.pages.length} من ${partialRead.totalPages} صفحة بـOCR، والبقية من نص الملف`
+              : "نفد رصيد OCR: سنستخرج نص الملف"}
           </p>
         )}
       </div>

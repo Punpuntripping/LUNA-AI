@@ -7,7 +7,14 @@ dispatched agent can see the document's text. See
 """
 from __future__ import annotations
 
-from .models import FallbackRead, OcrDocumentResult, OcrExtractionStats, OcrPage, PartialRead
+from .models import (
+    FallbackRead,
+    OcrDocumentResult,
+    OcrExtractionStats,
+    OcrPage,
+    OverflowRead,
+    PartialRead,
+)
 from .runner import (
     OCR_FAILED_NOTICE,
     budget_notices,
@@ -25,4 +32,5 @@ __all__ = [
     "OcrPage",
     "PartialRead",
     "FallbackRead",
+    "OverflowRead",
 ]

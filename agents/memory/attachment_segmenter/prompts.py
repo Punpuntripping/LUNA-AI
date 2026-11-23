@@ -484,6 +484,12 @@ def _user_words(user_words: str | None) -> list[str]:
     return ["", USER_WORDS_HEADING, text] if text else []
 
 
+def _layer_note(note: str | None) -> list[str]:
+    """The text-layer notice (``text_layer.call_notice``) — omitted when empty."""
+    text = (note or "").strip()
+    return ["", text] if text else []
+
+
 def build_user_message(
     paragraphs: Sequence[Paragraph],
     *,
@@ -492,15 +498,18 @@ def build_user_message(
     summary: str,
     chars: int,
     user_words: str | None = None,
+    text_layer_note: str | None = None,
 ) -> str:
     """Whole-document message: header line, the summary and the user's words (context
-    only), the numbered paragraphs."""
+    only), the text-layer notice when some pages came from the PDF's text layer,
+    the numbered paragraphs."""
     return "\n".join([
         _head(doc_type, title, chars, len(paragraphs)),
         "",
         SUMMARY_HEADING,
         _summary(summary),
         *_user_words(user_words),
+        *_layer_note(text_layer_note),
         "",
         PARAGRAPHS_HEADING,
         render_numbered(paragraphs),
@@ -522,6 +531,7 @@ def build_part_message(
     chars: int,
     user_words: str | None = None,
     parts: int = 2,
+    text_layer_note: str | None = None,
 ) -> str:
     """One part of a split document (``experiments/run_split.py`` layout).
 
@@ -529,6 +539,7 @@ def build_part_message(
     Later parts: summary, user's words, the shared first page, ``overlap`` read-only
     paragraphs before it (never repeating first-page paragraphs), YOUR PART — and,
     for a middle part (``parts`` > 2), ``overlap`` read-only paragraphs after it too.
+    ``text_layer_note`` (this part's own paragraphs only) follows the user's words.
     """
     n = len(paragraphs)
     lines = [
@@ -537,6 +548,7 @@ def build_part_message(
         SUMMARY_HEADING,
         _summary(summary),
         *_user_words(user_words),
+        *_layer_note(text_layer_note),
     ]
     if part >= 2:
         lines += [
@@ -632,15 +644,17 @@ def build_bundle_message(
     doc_type: str | None,
     chars: int,
     user_words: str | None = None,
+    text_layer_note: str | None = None,
 ) -> str:
     """A bundle in one call: header line (total chars and paragraphs), each file's
-    summary, the user's words, then every file's numbered paragraphs under its
-    boundary line."""
+    summary, the user's words, the text-layer notice (if any), then every file's
+    numbered paragraphs under its boundary line."""
     return "\n".join([
         _bundle_head(doc_type, files, chars, len(paragraphs)),
         "",
         *_bundle_summaries(files),
         *_user_words(user_words),
+        *_layer_note(text_layer_note),
         "",
         PARAGRAPHS_HEADING,
         render_bundle(paragraphs, files),
@@ -660,6 +674,7 @@ def build_bundle_part_message(
     doc_type: str | None,
     chars: int,
     user_words: str | None = None,
+    text_layer_note: str | None = None,
 ) -> str:
     """One part of a split bundle — ``build_part_message``'s layout with boundary lines."""
     n = len(paragraphs)
@@ -668,6 +683,7 @@ def build_bundle_part_message(
         "",
         *_bundle_summaries(files),
         *_user_words(user_words),
+        *_layer_note(text_layer_note),
     ]
     if part == 2:
         lines += [

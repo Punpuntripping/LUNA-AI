@@ -85,6 +85,7 @@ from .repair import (
 )
 from .joins import join_page_breaks, merge_short_cores
 from .repeats import find_repeats
+from .text_layer import Marks, call_notice, marks_for, stamp_rows, text_layer_pages
 
 logger = logging.getLogger(__name__)
 
@@ -399,18 +400,22 @@ def _plans(
     encode: Any,
     user_words: str = "",
     parts: int | None = None,
+    marks: Marks | None = None,
 ) -> tuple[list[_CallPlan], dict[str, Any]]:
     """The calls for one document. ``parts=None`` = the production rule: one parallel
     call per started 150,000 characters (:func:`parts_for`). ``parts=N`` forces N
-    parallel parts (test tool; 1 = one call whatever the size)."""
+    parallel parts (test tool; 1 = one call whatever the size). ``marks``: the
+    paragraphs from the PDF's text layer — every call whose own paragraphs
+    include some is told which (``text_layer.call_notice``)."""
     n = len(paragraphs)
+    marks = marks or {}
     if parts is None:
         parts = parts_for(content_chars)
     parts = max(1, min(int(parts), n))
     if parts == 1:
         msg = build_user_message(
             paragraphs, doc_type=doc_type, title=title, summary=summary, chars=content_chars,
-            user_words=user_words,
+            user_words=user_words, text_layer_note=call_notice(1, n, marks),
         )
         return [_CallPlan(None, 1, n, build_instructions(doc_type), encode(msg), 15)], {}
     cuts, how = choose_cuts(paragraphs, parts)
@@ -422,7 +427,7 @@ def _plans(
         msg = build_part_message(
             paragraphs, part=part, a=a, b=b, first_end=first_end, overlap=OVERLAP_PARAGRAPHS,
             doc_type=doc_type, title=title, summary=summary, chars=content_chars,
-            user_words=user_words, parts=parts,
+            user_words=user_words, parts=parts, text_layer_note=call_notice(a, b, marks),
         )
         plans.append(_CallPlan(
             part, a, b,
@@ -578,6 +583,10 @@ async def _run(
     user_words = await asyncio.to_thread(_load_user_words, supabase, row)
     result.user_words_chars = len(user_words)
 
+    # Pages read from the PDF's text layer, not by OCR (owner, 2026-11-23): the
+    # calls are told, and the sections are stamped below.
+    layer = text_layer_pages(metadata)
+
     # وضع السرية — encode everything the model reads (the user's words included, since
     # they are part of the message), persist new fakes first.
     codec = _codec_for(supabase, user_id)
@@ -590,6 +599,7 @@ async def _run(
         encode=lambda text: _enc(codec, text),
         user_words=user_words,
         parts=parts,
+        marks=marks_for(paragraphs, layer),
     )
     if not preview:  # a preview keeps its fakes in memory only
         _persist_fakes(supabase, user_id, codec)
@@ -663,7 +673,10 @@ async def _run(
     smap = _decode_map(codec, smap)
     seg_rows, result.page_joins, result.short_merges = _join_rows(
         _segment_rows(item_id, smap, paragraphs, content_md), smap)
+    seg_rows, stamped = stamp_rows(seg_rows, layer)
     _set(span, page_joins=result.page_joins, short_merges=result.short_merges)
+    if layer:
+        _set(span, text_layer_pages=len(layer), text_layer_sections=stamped)
     map_row = {
         "item_id": item_id,
         "user_id": user_id,
@@ -740,10 +753,15 @@ def _bundle_plans(
     doc_type: str,
     encode: Any,
     user_words: str = "",
+    marks: Marks | None = None,
 ) -> tuple[list[_CallPlan], dict[str, Any]]:
     n, n_files = len(paragraphs), len(files)
+    marks = marks or {}
     if chars <= SPLIT_THRESHOLD_CHARS or n < 2:
-        msg = build_bundle_message(paragraphs, files, doc_type=doc_type, chars=chars, user_words=user_words)
+        msg = build_bundle_message(
+            paragraphs, files, doc_type=doc_type, chars=chars, user_words=user_words,
+            text_layer_note=call_notice(1, n, marks),
+        )
         return [_CallPlan(None, 1, n, build_instructions(doc_type, bundle_files=n_files, bundle_types=[f.doc_type for f in files]), encode(msg), 15)], {}
     cut, how = choose_cut(paragraphs)
     first_end = first_page_end(paragraphs, cut)
@@ -752,6 +770,7 @@ def _bundle_plans(
         msg = build_bundle_part_message(
             paragraphs, files, part=part, a=a, b=b, first_end=first_end, overlap=OVERLAP_PARAGRAPHS,
             doc_type=doc_type, chars=chars, user_words=user_words,
+            text_layer_note=call_notice(a, b, marks),
         )
         plans.append(_CallPlan(
             part, a, b,
@@ -962,10 +981,17 @@ async def _run_bundle(
     for i in member_ids:
         results[i].user_words_chars = len(user_words)
 
+    # Pages read from the PDF's text layer, per member (owner, 2026-11-23). The
+    # global paragraphs' pages are synthetic — each member's real pages are used.
+    layers = [text_layer_pages(r.get("metadata")) for r in live]
+    marks: dict = {}
+    for paras, span_k, layer_k in zip(local, spans, layers):
+        marks.update(marks_for(paras, layer_k, first_n=span_k.first_p))
+
     codec = _codec_for(supabase, user_id)
     plans, split_info = _bundle_plans(
         paragraphs, files, chars=total_chars, doc_type=doc_type,
-        encode=lambda text: _enc(codec, text), user_words=user_words,
+        encode=lambda text: _enc(codec, text), user_words=user_words, marks=marks,
     )
     if not preview:
         _persist_fakes(supabase, user_id, codec)
@@ -1047,6 +1073,7 @@ async def _run_bundle(
         local_map = cut_back(smap, span_k)
         seg_rows, member_joins, member_short = _join_rows(
             _segment_rows(item_id, local_map, local[k], contents[k]), local_map)
+        seg_rows, _stamped = stamp_rows(seg_rows, layers[k])
         map_row = {
             "item_id": item_id,
             "user_id": user_id,

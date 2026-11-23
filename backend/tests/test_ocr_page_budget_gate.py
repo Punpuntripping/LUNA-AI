@@ -119,6 +119,58 @@ def test_page_counts_skip_what_ocr_never_reads():
     assert ms._estimate_ocr_pages(db, ["big", "unknown"]) == 607
 
 
+# ── a PDF is never refused: past the budget it is read from its text layer ───
+
+_PDF_ROWS = [
+    {"item_id": "pdf", "kind": "attachment",
+     "metadata": {"page_count": 606, "mime_type": "application/pdf"}},
+    {"item_id": "img", "kind": "attachment", "metadata": {"mime_type": "image/png"}},
+    {"item_id": "old", "kind": "attachment",
+     "metadata": {"page_count": 9, "mime_type": "application/pdf", "ocr_status": "done"}},
+]
+
+
+def _overflow(monkeypatch, on):
+    from agents.memory.ocr_extractor import runner as ocr_runner
+
+    monkeypatch.setattr(
+        ocr_runner, "get_settings",
+        lambda: SimpleNamespace(OCR_TEXT_LAYER_OVERFLOW_ENABLED=on),
+    )
+
+
+def test_gate_counts_nothing_for_a_send_with_a_new_pdf(monkeypatch):
+    _overflow(monkeypatch, True)
+    db = _DB(_PDF_ROWS)
+    assert ms._attachment_page_counts(db, ["pdf", "img"], for_gate=True) == []
+    # images alone are still counted — no text layer to fall back on
+    assert ms._attachment_page_counts(db, ["img"], for_gate=True) == [1]
+    # a PDF extracted before is not read again: it cannot open the gate
+    assert ms._attachment_page_counts(db, ["old", "img"], for_gate=True) == [1]
+    # nor can a scan already found to have no text layer
+    scan = {"item_id": "scan", "kind": "attachment",
+            "metadata": {"page_count": 4, "mime_type": "application/pdf", "ocr_no_text_layer": True}}
+    assert ms._attachment_page_counts(_DB([scan]), ["scan"], for_gate=True) == [4]
+    # the plain count (eval scripts) is unchanged
+    assert ms._attachment_page_counts(db, ["pdf", "img"]) == [606, 1]
+
+
+def test_gate_counts_pdfs_as_before_with_the_flag_off(monkeypatch):
+    _overflow(monkeypatch, False)
+    assert ms._attachment_page_counts(_DB(_PDF_ROWS), ["pdf", "img"], for_gate=True) == [606, 1]
+
+
+@pytest.mark.asyncio
+async def test_no_page_left_a_pdf_passes_images_alone_are_refused(gate, monkeypatch):
+    _overflow(monkeypatch, True)
+    db = _DB(_PDF_ROWS)
+    await gate(_state(150, used=150),
+               ocr_page_counts=ms._attachment_page_counts(db, ["pdf"], for_gate=True))
+    with pytest.raises(quota.QuotaExceeded):
+        await gate(_state(150, used=150),
+                   ocr_page_counts=ms._attachment_page_counts(db, ["img"], for_gate=True))
+
+
 MB = 1024 * 1024
 
 

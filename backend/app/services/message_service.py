@@ -546,7 +546,11 @@ def _insert_attachment_links(
 
 
 def _attachment_page_counts(
-    supabase: SupabaseClient, attachment_ids: list, user_id: Optional[str] = None,
+    supabase: SupabaseClient,
+    attachment_ids: list,
+    user_id: Optional[str] = None,
+    *,
+    for_gate: bool = False,
 ) -> list[int]:
     """One entry per attachment this send will OCR: its page count (the
     upload-time client estimate, ``metadata.page_count``), or a 1-page floor
@@ -557,6 +561,12 @@ def _attachment_page_counts(
         ``attachment_ids`` array;
       * attachments that already carry ``metadata.ocr_status`` — OCR attempts a
         file once (``ocr_extractor.runner``), so a re-sent file costs nothing.
+
+    ``for_gate`` (owner, 2026-11-23): with ``OCR_TEXT_LAYER_OVERFLOW_ENABLED`` a
+    PDF is never refused for OCR pages — what the budget cannot cover is read
+    from its own text layer, free. So a send carrying a new PDF returns ``[]``
+    (nothing for the gate to refuse); only a send of images alone, with not one
+    page left, is still refused.
 
     A failed lookup counts one page per id — the gate must still run.
 
@@ -586,6 +596,7 @@ def _attachment_page_counts(
         )
     }
     counts: list[int] = []
+    has_pdf = False
     for aid in attachment_ids:
         row = rows_by_id.get(aid)
         if row is not None and row.get("kind") != "attachment":
@@ -593,11 +604,20 @@ def _attachment_page_counts(
         meta = (row or {}).get("metadata") or {}
         if "ocr_status" in meta:
             continue  # already attempted — OCR never reads it again
+        # a PDF already found to have no text layer can only wait for OCR pages
+        has_pdf = has_pdf or (
+            meta.get("mime_type") == "application/pdf" and not meta.get("ocr_no_text_layer")
+        )
         try:
             pages = int(meta.get("page_count"))
         except (TypeError, ValueError):
             pages = 0
         counts.append(pages if pages > 0 else 1)  # unknown → 1-page floor
+    if for_gate and has_pdf:
+        from agents.memory.ocr_extractor.runner import text_layer_overflow_enabled
+
+        if text_layer_overflow_enabled():
+            return []
     return counts
 
 
@@ -785,12 +805,14 @@ async def send_message_stream(
     # file this send will OCR and refuses only when NOT ONE page can be read. A
     # file bigger than what is left is no longer refused — the OCR runner reads
     # the pages the budget allows and tells the user which. The post-OCR ledger
-    # row stays the authoritative billing count.
+    # row stays the authoritative billing count. A send with a PDF is never
+    # refused (2026-11-23): its pages past the budget come from its text layer.
     ocr_page_counts: list[int] = []
     if attachment_ids:
         try:
             ocr_page_counts = await run_db(
-                _attachment_page_counts, supabase, attachment_ids, user_id=user_id
+                _attachment_page_counts, supabase, attachment_ids,
+                user_id=user_id, for_gate=True,
             )
         except Exception:  # noqa: BLE001
             ocr_page_counts = [1] * len(attachment_ids)

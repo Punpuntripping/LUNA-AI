@@ -201,7 +201,7 @@ def env(monkeypatch):
     async def mistral_down(*_a, **_k):
         raise TimeoutError()
 
-    async def layer(url, pages, planned_total):
+    async def layer(url, pages, planned_total, **_k):
         calls["layer"].append((tuple(pages) if pages is not None else None, planned_total))
         return _layer_result(list(pages), planned_total)
 
@@ -242,7 +242,7 @@ async def test_whole_file_mistral_failure_reads_the_text_layer_free(env):
 
 @pytest.mark.asyncio
 async def test_mixed_cut_bills_only_mistral_pages(env, monkeypatch):
-    async def mixed(url, pages, planned_total):
+    async def mixed(url, pages, planned_total, **_k):
         md = {p: f"m{p}" for p in pages}
         layer = tuple(p for p in pages if p > 60)
         text, offs = join_pages(list(md.values()))
@@ -263,7 +263,7 @@ async def test_mixed_cut_bills_only_mistral_pages(env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scanned_file_with_mistral_down_fails(env, monkeypatch):
-    async def nothing(url, pages, planned_total):
+    async def nothing(url, pages, planned_total, **_k):
         return OcrDocumentResult(text="", page_count=0, model=big_file.TEXT_LAYER_MODEL,
                                  pages=[], total_pages=planned_total, lost_pages=tuple(pages))
 

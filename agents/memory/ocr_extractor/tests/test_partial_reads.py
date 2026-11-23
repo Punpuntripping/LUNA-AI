@@ -155,7 +155,7 @@ async def test_at_most_two_files_cut_at_once(monkeypatch):
 
     live, peak = 0, 0
 
-    async def slow(*_a):
+    async def slow(*_a, **_k):
         nonlocal live, peak
         live += 1
         peak = max(peak, live)
@@ -184,7 +184,7 @@ def _row(item, pages, size=10, name="ملف.pdf"):
 
 @pytest.fixture
 def env(monkeypatch):
-    calls = {"url": [], "big": [], "ledger": []}
+    calls = {"url": [], "big": [], "ledger": [], "overflow": []}
 
     async def fake_ocr(url, mime, pages=None, **_k):
         calls["url"].append(tuple(pages) if pages is not None else None)
@@ -193,8 +193,9 @@ def env(monkeypatch):
         return OcrDocumentResult(text=text, page_count=len(md), model="m",
                                  pages=[OcrPage(n, m, o) for n, m, o in zip(pages, md, offs)])
 
-    async def fake_big(url, pages, planned_total):
+    async def fake_big(url, pages, planned_total, *, overflow=False):
         calls["big"].append((tuple(pages) if pages is not None else None, planned_total))
+        calls["overflow"].append(overflow)
         md = [f"p{n}" for n in pages]
         text, offs = join_pages(md)
         return OcrDocumentResult(text=text, page_count=len(md), model="m",
@@ -267,8 +268,13 @@ async def test_smallest_first_across_files(monkeypatch, env):
 
 
 @pytest.mark.asyncio
-async def test_no_pages_left_leaves_the_file_for_later(monkeypatch, env):
+async def test_no_pages_left_leaves_the_file_for_later_with_overflow_off(monkeypatch, env):
     _budget(monkeypatch, OcrBudget(total=150, used=150, per_file_cap=100))
+    monkeypatch.setattr(
+        ocr_runner, "get_settings",
+        lambda: SimpleNamespace(MISTRAL_API_KEY="k", STORAGE_BUCKET_DOCUMENTS="docs",
+                                OCR_TEXT_LAYER_OVERFLOW_ENABLED=False),
+    )
     db = FakeSupabase({"workspace_items": [_row("big", 606)]})
     stats = await ocr_runner.run_ocr_extraction(db, "c1", USER)
     assert "ocr_status" not in db.tables["workspace_items"][0]["metadata"]

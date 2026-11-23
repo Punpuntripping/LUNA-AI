@@ -19,6 +19,11 @@ over either limit, or has an unknown page count, this module:
    (text_layer.py) — free, never billed; its pages that have no text layer
    (image pages) are reported as lost.
 
+With ``overflow`` (owner, 2026-11-23) the pages the budget did NOT choose are
+read from the text layer too — free, alongside the Mistral cuts — up to
+``TEXT_LAYER_MAX_PAGES`` pages for the whole file. A file with no budget left
+comes here with no pages chosen and is read from its text layer alone.
+
 Memory stays bounded: cuts are made as their turn comes (``CONCURRENCY`` in
 flight), not all up front.
 
@@ -73,6 +78,12 @@ _file_slots: dict[int, asyncio.Semaphore] = {}
 MISTRAL_DEADLINE_S = 480.0
 #: A call needs at least this much of the deadline left to be worth starting.
 MIN_CALL_S = 30.0
+#: Pages extracted from one file at most, OCR and text layer together, when the
+#: text layer fills in past the budget. The largest read the pipeline already
+#: handled (Max plan 666, or 1,000 within 7 days of the plan's end; Mistral's own
+#: per-document limit). Past it a 10,000-page PDF would outrun the 10-minute OCR
+#: wait (~0.1 s a page) and fan out into ~120 segmenter calls.
+TEXT_LAYER_MAX_PAGES = 1_000
 
 
 def _slots() -> asyncio.Semaphore:
@@ -157,24 +168,47 @@ def choose_pages(total: int, pages: Sequence[int] | None, planned_total: int | N
     return tuple(pages)
 
 
+def overflow_pages(
+    total: int, chosen: Sequence[int], ceiling: int | None = None,
+) -> tuple[int, ...]:
+    """The pages the budget did not choose, in page order, so that ``chosen``
+    plus these come to at most ``ceiling`` pages (``TEXT_LAYER_MAX_PAGES``)."""
+    room = max(0, (TEXT_LAYER_MAX_PAGES if ceiling is None else ceiling) - len(chosen))
+    taken = set(chosen)
+    out: list[int] = []
+    for p in range(1, total + 1):
+        if len(out) >= room:
+            break
+        if p not in taken:
+            out.append(p)
+    return tuple(out)
+
+
 async def ocr_big_pdf(
     file_url: str,
     pages: Sequence[int] | None,
     planned_total: int | None,
+    *,
+    overflow: bool = False,
 ) -> OcrDocumentResult:
     """OCR the chosen ``pages`` of the PDF at ``file_url`` by cutting them out.
 
-    ``pages``: 1-based page numbers the budget chose (None = every page).
+    ``pages``: 1-based page numbers the budget chose (None = every page; ``()``
+    = none — with ``overflow`` the file is then read from its text layer alone).
     ``planned_total``: the page count the plan was made against (None = unknown).
+    ``overflow``: also read the pages the budget did not choose, from the text
+    layer (see :func:`overflow_pages`).
     """
     async with _slots():
-        return await _ocr_big_pdf(file_url, pages, planned_total)
+        return await _ocr_big_pdf(file_url, pages, planned_total, overflow=overflow)
 
 
 async def _ocr_big_pdf(
     file_url: str,
     pages: Sequence[int] | None,
     planned_total: int | None,
+    *,
+    overflow: bool = False,
 ) -> OcrDocumentResult:
     from pypdf import PdfReader
 
@@ -186,6 +220,7 @@ async def _ocr_big_pdf(
             reader = await asyncio.to_thread(PdfReader, fh)
             total = await asyncio.to_thread(lambda: len(reader.pages))
             chosen = choose_pages(total, pages, planned_total)
+            extra = overflow_pages(total, chosen) if overflow else ()
             groups = [chosen[i:i + CHUNK_MAX_PAGES] for i in range(0, len(chosen), CHUNK_MAX_PAGES)]
 
             sem = asyncio.Semaphore(CONCURRENCY)
@@ -195,17 +230,26 @@ async def _ocr_big_pdf(
             # Set by the first outage-type failure: the rest of the file skips
             # Mistral. The digit order is decided once per file, on first use.
             state: dict = {"mistral_down": False, "flip_digits": None}
+            every_read = tuple(sorted({*chosen, *extra}))
 
-            async def text_layer(cut_pages: tuple[int, ...]) -> _CutResult:
+            async def text_layer(cut_pages: tuple[int, ...], *, past_budget: bool = False) -> _CutResult:
                 async with pdf_lock:
                     if state["flip_digits"] is None:
                         state["flip_digits"] = await asyncio.to_thread(
-                            sample_digits_reversed, reader, chosen,
+                            sample_digits_reversed, reader, every_read,
                         )
                     read = await asyncio.to_thread(
                         read_pages, reader, cut_pages, reverse_digits=state["flip_digits"],
                     )
-                return _from_text_layer(read)
+                return _from_text_layer(read, past_budget=past_budget)
+
+            async def run_overflow() -> list[_CutResult]:
+                # One piece at a time: never more than one piece queued for the
+                # reader lock ahead of a Mistral cut.
+                return [
+                    await text_layer(extra[i:i + CHUNK_MAX_PAGES], past_budget=True)
+                    for i in range(0, len(extra), CHUNK_MAX_PAGES)
+                ]
 
             async def one_cut(cut_pages: tuple[int, ...], data: bytes) -> _CutResult:
                 left = deadline - loop.time()
@@ -233,14 +277,14 @@ async def _ocr_big_pdf(
                         cuts = await asyncio.to_thread(cut_group, reader, group)
                     return [await one_cut(cut_pages, data) for cut_pages, data in cuts]
 
-            batches = await asyncio.gather(*(run(g) for g in groups))
+            batches = await asyncio.gather(run_overflow(), *(run(g) for g in groups))
     finally:
         try:
             os.remove(path)
         except OSError:
             pass
 
-    return _assemble([c for batch in batches for c in batch], total, len(groups))
+    return _assemble([c for batch in batches for c in batch], total, len(groups), chosen)
 
 
 def _is_outage(exc: BaseException) -> bool:
@@ -257,12 +301,15 @@ async def text_layer_document(
     file_url: str,
     pages: Sequence[int] | None,
     planned_total: int | None,
+    *,
+    overflow: bool = False,
 ) -> OcrDocumentResult:
     """The chosen ``pages`` of the PDF at ``file_url``, read from its own text
     layer only — the fallback when Mistral failed on the whole file (the URL
     path, files within Mistral's 50 MB). Free: nothing here is billed. Not
     queued behind the big-file slots, which a Mistral outage keeps busy.
-    Raises if the file cannot be opened."""
+    ``overflow``: also the pages the plan left out (the file turned out longer
+    than the client counted). Raises if the file cannot be opened."""
     from pypdf import PdfReader
 
     fd, path = tempfile.mkstemp(suffix=".pdf")
@@ -273,14 +320,24 @@ async def text_layer_document(
             reader = await asyncio.to_thread(PdfReader, fh)
             total = await asyncio.to_thread(lambda: len(reader.pages))
             chosen = choose_pages(total, pages, planned_total)
-            flip = await asyncio.to_thread(sample_digits_reversed, reader, chosen)
+            extra = overflow_pages(total, chosen) if overflow else ()
+            flip = await asyncio.to_thread(
+                sample_digits_reversed, reader, tuple(sorted({*chosen, *extra})),
+            )
             read = await asyncio.to_thread(read_pages, reader, chosen, reverse_digits=flip)
+            read_extra = (
+                await asyncio.to_thread(read_pages, reader, extra, reverse_digits=flip)
+                if extra else []
+            )
     finally:
         try:
             os.remove(path)
         except OSError:
             pass
-    return _assemble([_from_text_layer(read)], total, 1)
+    return _assemble(
+        [_from_text_layer(read), _from_text_layer(read_extra, past_budget=True)],
+        total, 1, chosen,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +351,8 @@ class _CutResult:
     model: str = ""
     text_layer: tuple[int, ...] = ()  # pages taken from the text layer
     lost: tuple[int, ...] = ()        # planned pages with no text at all
+    overflow: tuple[int, ...] = ()    # text-layer pages past the budget
+    blank: tuple[int, ...] = ()       # pages past the budget with no text layer
 
 
 def _from_mistral(cut_pages: tuple[int, ...], res: OcrDocumentResult) -> _CutResult:
@@ -306,27 +365,41 @@ def _from_mistral(cut_pages: tuple[int, ...], res: OcrDocumentResult) -> _CutRes
     return _CutResult(pages=numbered, model=res.model)
 
 
-def _from_text_layer(read: Sequence[TextLayerPage]) -> _CutResult:
-    usable = [p for p in read if p.usable]
+def _from_text_layer(read: Sequence[TextLayerPage], *, past_budget: bool = False) -> _CutResult:
+    """``past_budget``: pages the budget did not choose — a blank one is simply
+    not extracted (a budget gap), never "lost" (a planned page that failed)."""
+    usable = tuple(p.page_no for p in read if p.usable)
+    unusable = tuple(p.page_no for p in read if not p.usable)
     return _CutResult(
-        pages=[(p.page_no, p.text) for p in usable],
+        pages=[(p.page_no, p.text) for p in read if p.usable],
         model=TEXT_LAYER_MODEL,
-        text_layer=tuple(p.page_no for p in usable),
-        lost=tuple(p.page_no for p in read if not p.usable),
+        text_layer=usable,
+        lost=() if past_budget else unusable,
+        overflow=usable if past_budget else (),
+        blank=unusable if past_budget else (),
     )
 
 
-def _assemble(cuts: Sequence[_CutResult], total: int, groups: int) -> OcrDocumentResult:
+def _assemble(
+    cuts: Sequence[_CutResult], total: int, groups: int, chosen: Sequence[int],
+) -> OcrDocumentResult:
     numbered = sorted((pg for c in cuts for pg in c.pages), key=lambda t: t[0])
     text_layer = tuple(sorted(p for c in cuts for p in c.text_layer))
     lost = tuple(sorted(p for c in cuts for p in c.lost))
+    overflow = tuple(sorted(p for c in cuts for p in c.overflow))
+    blank = tuple(sorted(p for c in cuts for p in c.blank))
+    # Not extracted because of the budget: neither chosen nor read past it.
+    covered = {*chosen, *overflow}
+    unread = tuple(p for p in range(1, total + 1) if p not in covered)
     # The Mistral model id when any cut used it, else the text-layer marker.
     model = next((c.model for c in cuts if c.model and c.model != TEXT_LAYER_MODEL), "") \
         or (TEXT_LAYER_MODEL if text_layer else "")
     text, offsets = join_pages([md for _, md in numbered])
     logger.info(
-        "OCR big-file: %d of %d pages in %d group(s) (%d from the text layer, %d lost), %d chars",
-        len(numbered), total, groups, len(text_layer), len(lost), len(text),
+        "OCR big-file: %d of %d pages in %d group(s) (%d from the text layer, %d of them "
+        "past the budget, %d lost, %d not extracted), %d chars",
+        len(numbered), total, groups, len(text_layer), len(overflow), len(lost),
+        len(unread), len(text),
     )
     return OcrDocumentResult(
         text=text,
@@ -339,4 +412,7 @@ def _assemble(cuts: Sequence[_CutResult], total: int, groups: int) -> OcrDocumen
         total_pages=total,
         text_layer_pages=text_layer,
         lost_pages=lost,
+        overflow_pages=overflow,
+        overflow_blank=blank,
+        unread_pages=unread,
     )

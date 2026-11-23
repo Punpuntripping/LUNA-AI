@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: Optional[str] = None
     MISTRAL_MODEL: str = "pixtral-large-latest"
     MISTRAL_OCR_MODEL: str = "mistral-ocr-latest"
+    # Pages of a PDF that the user's OCR pages do not cover are read from the
+    # PDF's own text layer (free) instead of being skipped, and the message gate
+    # no longer refuses a send that carries a PDF (owner, 2026-11-23). False =
+    # the page budget as before: those pages skipped, a send refused at 0 left.
+    OCR_TEXT_LAYER_OVERFLOW_ENABLED: bool = True
 
     # OpenAI (embeddings + agents)
     OPENAI_API_KEY: Optional[str] = None

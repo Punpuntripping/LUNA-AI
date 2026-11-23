@@ -14,6 +14,12 @@ run of pages (``partial.py``) and the stats carry a notice for the user. A file
 with no budget left is left untouched (no ``ocr_status``), so it is read on a
 later turn once pages are available again.
 
+With ``OCR_TEXT_LAYER_OVERFLOW_ENABLED`` (owner, 2026-11-23) a PDF's pages past
+the budget are read from its own text layer instead (free, ``big_file.py``) —
+a PDF with no budget left at all is read from its text layer alone — and the
+text warns every later agent not to trust their dates and numbers. A PDF whose
+text layer has nothing (a scan) with no budget left is still left for later.
+
 Best-effort by contract — it must **never raise**. Every per-candidate failure
 is caught, logged, and recorded on the row as an ``ocr_status`` marker so the
 file is never re-attempted. The function returns whatever succeeded.
@@ -34,13 +40,14 @@ from shared.observability import get_logfire
 from shared.quota.ocr_budget import FilePlan, OcrBudget, format_ranges, page_ranges, plan_files
 from shared.storage.client import get_signed_url
 
-from .big_file import ocr_big_pdf, text_layer_document
+from .big_file import TEXT_LAYER_MAX_PAGES, ocr_big_pdf, text_layer_document
 from .mistral_ocr import MISTRAL_MAX_BYTES, MISTRAL_MAX_PAGES, ocr_document
 from .models import (
     FallbackRead,
     OcrDocumentResult,
     OcrExtractionStats,
     OcrPage,
+    OverflowRead,
     PartialRead,
 )
 from .partial import assemble_marked
@@ -61,10 +68,22 @@ __all__ = [
     "OCR_FAILED_NOTICE",
     "budget_notices",
     "has_unread_attachments",
+    "text_layer_overflow_enabled",
 ]
 
 _SUPPORTED_MIME_TYPES = {"application/pdf", "image/png", "image/jpeg"}
 _SIGNED_URL_EXPIRY_S = 3600  # ~1 hour — Mistral fetches the file server-side
+_PDF = "application/pdf"
+
+
+def text_layer_overflow_enabled(settings=None) -> bool:
+    """``OCR_TEXT_LAYER_OVERFLOW_ENABLED`` — pages past the budget come from the
+    PDF's text layer. Shared with the message gate (``message_service``)."""
+    try:
+        settings = settings or get_settings()
+        return bool(getattr(settings, "OCR_TEXT_LAYER_OVERFLOW_ENABLED", True))
+    except Exception:  # noqa: BLE001 — settings unreadable: the default
+        return True
 
 
 def _mark_status(
@@ -103,6 +122,27 @@ def _mark_status(
             item_id,
             exc_info=True,
         )
+
+
+#: Set (WITHOUT ``ocr_status``) on a PDF whose text layer gave nothing while no
+#: OCR pages were left: later turns do not download it again for the text
+#: layer, and OCR still reads it once pages are back.
+_NO_TEXT_LAYER_KEY = "ocr_no_text_layer"
+
+
+def _mark_no_text_layer(
+    supabase: SupabaseClient, item_id: str, metadata: dict, user_id: str | None,
+) -> None:
+    """Best-effort: a failed write only costs another text-layer attempt."""
+    try:
+        files_store.write_attachment(
+            supabase, item_id,
+            metadata={**(metadata or {}), _NO_TEXT_LAYER_KEY: True},
+            metadata_patch={_NO_TEXT_LAYER_KEY: True},
+            owner_id=user_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("OCR: failed to mark item %s as having no text layer", item_id, exc_info=True)
 
 
 def _store_pages(
@@ -188,27 +228,36 @@ def _needs_cutting(metadata: dict, plan: FilePlan) -> bool:
 
 async def _ocr(
     signed_url: str, mime_type: str, metadata: dict, plan: FilePlan, item_id: str,
+    *, overflow: bool = False,
 ) -> OcrDocumentResult:
     """Mistral first; the PDF's own text layer when Mistral fails (owner,
     2026-11-16). The cutting path falls back per cut inside ``ocr_big_pdf``;
-    a whole-file call that fails falls back here. Raises when nothing at all
-    could be read — the caller marks the row ``failed``."""
+    a whole-file call that fails falls back here. ``overflow``: the PDF's
+    pages past the budget come from its text layer too (2026-11-23). Raises
+    when nothing at all could be read — the caller marks the row ``failed``."""
     if not _needs_cutting(metadata, plan):
         try:
             result = await ocr_document(signed_url, mime_type, plan.pages)
         except Exception:  # noqa: BLE001
-            if mime_type != "application/pdf":
+            if mime_type != _PDF:
                 raise
             logger.warning("OCR: Mistral failed for item %s — text layer", item_id, exc_info=True)
-            result = await text_layer_document(signed_url, plan.pages, plan.total_pages)
+            result = await text_layer_document(
+                signed_url, plan.pages, plan.total_pages, overflow=overflow,
+            )
         return _readable_or_raise(result)
     try:
-        return _readable_or_raise(await ocr_big_pdf(signed_url, plan.pages, plan.total_pages))
+        return _readable_or_raise(await ocr_big_pdf(
+            signed_url, plan.pages, plan.total_pages, overflow=overflow,
+        ))
     except _NothingReadable:
         raise
     except Exception:  # noqa: BLE001
         # A PDF pypdf cannot open (encrypted, damaged) can still go to Mistral
-        # whole, with the page list — when it is within Mistral's limits.
+        # whole, with the page list — when it is within Mistral's limits, and
+        # when the budget chose a page at all (``()`` = text layer only).
+        if plan.pages == ():
+            raise
         if _file_size(metadata) > MISTRAL_MAX_BYTES or (plan.total_pages or 0) > MISTRAL_MAX_PAGES:
             raise
         logger.warning("OCR: cutting failed for item %s — sending the whole file", item_id, exc_info=True)
@@ -232,10 +281,15 @@ def _partial_total(plan: FilePlan, result: OcrDocumentResult) -> int | None | bo
     document's page total for the budget notice (None = not known).
 
     Decided from the PLAN, not from what came back: pages Mistral and the text
-    layer both failed on are a loss, not the budget's doing."""
+    layer both failed on are a loss, not the budget's doing. The cutting path
+    says exactly which pages the budget left unread (``unread_pages``) — pages
+    the text layer filled in past the budget are not among them."""
     total = result.total_pages if result.total_pages is not None else plan.total_pages
     if plan.pages is None:
         return False
+    unread = getattr(result, "unread_pages", None)
+    if unread is not None and total is not None:
+        return total if unread else False
     if total is not None:
         return False if len(plan.pages) >= total else total
     # Unknown length: fewer pages back than asked for means the document ended.
@@ -275,6 +329,8 @@ def budget_notices(stats: OcrExtractionStats | None) -> list[str]:
                 f"استخرجنا {len(pr.pages)} صفحة من أصل {pr.total_pages} من «{pr.name}» "
                 f"حسب رصيدك: {format_ranges(pr.pages)}. بقية الصفحات لم تُستخرج."
             )
+    for ov in getattr(stats, "overflow", None) or []:
+        lines.extend(_overflow_notices(ov))
     for fb in getattr(stats, "fallback", None) or []:
         if fb.text_layer_pages:
             lines.append(
@@ -289,6 +345,55 @@ def budget_notices(stats: OcrExtractionStats | None) -> list[str]:
             )
     for name in getattr(stats, "no_budget", None) or []:
         lines.append(f"لم نستخرج «{name}» لأن رصيد استخراج الملفات نفد.")
+    return lines
+
+
+#: The user's caution for pages read from the text layer.
+_LAYER_CAUTION = "قد تكون الأرقام والتواريخ فيها غير دقيقة، فراجعها في الملف الأصلي."
+
+
+def _overflow_notices(ov: OverflowRead) -> list[str]:
+    """A PDF whose pages past the budget came from its text layer (2026-11-23)."""
+    lines: list[str] = []
+    layer = ov.text_layer_pages
+    if layer and ov.ocr_pages:
+        lines.append(
+            f"استخرجنا {len(ov.ocr_pages)} صفحة من «{ov.name}» حسب رصيدك "
+            f"({format_ranges(ov.ocr_pages)})، واستخرجنا الصفحات {format_ranges(layer)} "
+            f"من طبقة النص المخزّنة في الملف دون أن تُحسب من رصيدك. {_LAYER_CAUTION}"
+        )
+    elif layer and not ov.had_budget and ov.total_pages is not None and len(layer) == ov.total_pages:
+        lines.append(
+            f"نفد رصيد استخراج الملفات، فاستخرجنا نص «{ov.name}» من طبقة النص المخزّنة "
+            "في الملف دون أن يُحسب من رصيدك. قد تكون الأرقام والتواريخ فيه غير دقيقة، "
+            "فراجعها في الملف الأصلي."
+        )
+    elif layer and not ov.had_budget:
+        lines.append(
+            f"نفد رصيد استخراج الملفات، فاستخرجنا الصفحات {format_ranges(layer)} من "
+            f"«{ov.name}» من طبقة النص المخزّنة في الملف دون أن تُحسب من رصيدك. {_LAYER_CAUTION}"
+        )
+    elif layer:  # the budget's own pages were lost (see the fallback notice)
+        lines.append(
+            f"استخرجنا الصفحات {format_ranges(layer)} من «{ov.name}» من طبقة النص المخزّنة "
+            f"في الملف دون أن تُحسب من رصيدك. {_LAYER_CAUTION}"
+        )
+    elif ov.ocr_pages:  # nothing past the budget had a text layer
+        of_total = f" من أصل {ov.total_pages}" if ov.total_pages is not None else ""
+        lines.append(
+            f"استخرجنا {len(ov.ocr_pages)} صفحة{of_total} من «{ov.name}» حسب رصيدك: "
+            f"{format_ranges(ov.ocr_pages)}."
+        )
+    if ov.blank_pages:
+        lines.append(
+            f"لم تُستخرج الصفحات {format_ranges(ov.blank_pages)} من «{ov.name}»: تجاوزت "
+            "رصيدك وليس فيها نص مخزّن، والغالب أنها صور."
+        )
+    if ov.beyond_pages:
+        lines.append(
+            f"لم تُستخرج الصفحات {format_ranges(ov.beyond_pages)} من «{ov.name}»: نستخرج "
+            f"من الملف الواحد {TEXT_LAYER_MAX_PAGES} صفحة على الأكثر."
+        )
     return lines
 
 
@@ -379,6 +484,7 @@ async def run_ocr_extraction(
                 "pages_stored": stats.pages_stored,
                 "partial": len(stats.partial),
                 "text_layer_fallback": len(stats.fallback),
+                "text_layer_overflow": len(stats.overflow),
                 "no_budget": len(stats.no_budget),
                 "budget_unavailable": stats.budget_unavailable,
             })
@@ -491,6 +597,7 @@ async def _run_inner(
         [(row.get("item_id"), _page_count(row.get("metadata") or {})) for row in readable],
         budget,
     )
+    overflow_on = text_layer_overflow_enabled(settings)
 
     for row, plan in zip(readable, plans):
         item_id = row.get("item_id")
@@ -498,9 +605,13 @@ async def _run_inner(
         storage_path = row.get("storage_path")
         mime_type = metadata.get("mime_type")
         name = _display_name(row)
+        overflow = overflow_on and mime_type == _PDF
 
-        # --- No pages left: leave it for a later turn (no ocr_status) -------
-        if plan.pages == ():
+        # --- No pages left: an image waits for a later turn (no ocr_status);
+        #     a PDF is read from its own text layer (overflow) — once: a PDF
+        #     whose text layer gave nothing waits for OCR pages, unread -------
+        no_budget = plan.pages == ()
+        if no_budget and (not overflow or metadata.get(_NO_TEXT_LAYER_KEY)):
             stats.no_budget.append(name)
             continue
 
@@ -510,8 +621,11 @@ async def _run_inner(
                 bucket, storage_path, expires_in=_SIGNED_URL_EXPIRY_S, supabase=supabase,
             )
         except Exception as exc:  # noqa: BLE001
-            stats.failed += 1
             logger.warning("OCR: signed URL failed for item %s", item_id, exc_info=True)
+            if no_budget:  # nothing spent: try again once pages are back
+                stats.no_budget.append(name)
+                continue
+            stats.failed += 1
             _mark_status(
                 supabase, item_id, metadata, "failed", {"ocr_error": str(exc)},
                 user_id=user_id,
@@ -520,10 +634,14 @@ async def _run_inner(
 
         # --- Mistral OCR call --------------------------------------------
         try:
-            ocr_result = await _ocr(signed_url, mime_type, metadata, plan, item_id)
+            ocr_result = await _ocr(signed_url, mime_type, metadata, plan, item_id, overflow=overflow)
         except Exception as exc:  # noqa: BLE001
-            stats.failed += 1
             logger.warning("OCR: Mistral call failed for item %s", item_id, exc_info=True)
+            if no_budget:  # the text layer could not be read: wait for pages
+                _mark_no_text_layer(supabase, item_id, metadata, user_id)
+                stats.no_budget.append(name)
+                continue
+            stats.failed += 1
             _mark_status(
                 supabase, item_id, metadata, "failed", {"ocr_error": str(exc)},
                 user_id=user_id,
@@ -531,6 +649,10 @@ async def _run_inner(
             continue
 
         if not (ocr_result.text or "").strip():
+            if no_budget:  # a scan with no text layer: wait for OCR pages
+                _mark_no_text_layer(supabase, item_id, metadata, user_id)
+                stats.no_budget.append(name)
+                continue
             stats.empty += 1
             _mark_status(supabase, item_id, metadata, "empty", user_id=user_id)
             continue
@@ -541,6 +663,11 @@ async def _run_inner(
         read_pages = [p.page_no for p in ocr_result.pages]
         layer_pages = tuple(ocr_result.text_layer_pages)
         lost_pages = tuple(ocr_result.lost_pages)
+        past_budget = tuple(ocr_result.overflow_pages)
+        past_set = set(past_budget)
+        fallback_layer = tuple(p for p in layer_pages if p not in past_set)
+        blank_pages = tuple(ocr_result.overflow_blank)
+        unread_pages = ocr_result.unread_pages
         billed = ocr_result.billed_pages
         if budget_partial or layer_pages or lost_pages:
             doc_total = (
@@ -550,22 +677,37 @@ async def _run_inner(
             text, anchored = assemble_marked(
                 ocr_result.pages, doc_total, budget_partial=budget_partial,
                 text_layer_pages=layer_pages, lost_pages=lost_pages,
+                overflow_pages=past_budget,
             )
             ocr_result = OcrDocumentResult(
                 text=text, page_count=ocr_result.page_count,
                 model=ocr_result.model, pages=anchored,
                 total_pages=ocr_result.total_pages,
                 text_layer_pages=layer_pages, lost_pages=lost_pages,
+                overflow_pages=past_budget, overflow_blank=blank_pages,
+                unread_pages=unread_pages,
             )
-        if budget_partial:
+        if past_budget or blank_pages:
+            # The text layer filled in past the budget: one notice says it all.
+            blank_set = set(blank_pages)
+            stats.overflow.append(OverflowRead(
+                item_id=item_id, name=name,
+                ocr_pages=tuple(p for p in read_pages if p not in past_set),
+                text_layer_pages=past_budget,
+                blank_pages=blank_pages,
+                beyond_pages=tuple(p for p in (unread_pages or ()) if p not in blank_set),
+                total_pages=ocr_result.total_pages or plan.total_pages,
+                had_budget=not no_budget,
+            ))
+        elif budget_partial:
             stats.partial.append(PartialRead(
                 item_id=item_id, name=name, pages=tuple(read_pages),
                 total_pages=partial_total,
             ))
-        if layer_pages or lost_pages:
+        if fallback_layer or lost_pages:
             stats.fallback.append(FallbackRead(
                 item_id=item_id, name=name,
-                text_layer_pages=layer_pages, lost_pages=lost_pages,
+                text_layer_pages=fallback_layer, lost_pages=lost_pages,
             ))
         text = (ocr_result.text or "").strip()
 
@@ -579,8 +721,11 @@ async def _run_inner(
             merged["ocr_page_total"] = partial_total
             merged["ocr_page_ranges"] = [list(r) for r in page_ranges(read_pages)]
         if layer_pages:
-            # Read from the PDF's own text layer (Mistral failed) — not billed.
+            # Read from the PDF's own text layer (Mistral failed, or past the
+            # budget) — not billed. The segmenter warns on these pages.
             merged["ocr_text_layer_ranges"] = [list(r) for r in page_ranges(layer_pages)]
+        if past_budget:
+            merged["ocr_overflow_ranges"] = [list(r) for r in page_ranges(past_budget)]
         if lost_pages:
             merged["ocr_lost_ranges"] = [list(r) for r in page_ranges(lost_pages)]
         try:

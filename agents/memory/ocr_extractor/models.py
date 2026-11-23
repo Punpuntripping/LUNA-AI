@@ -36,9 +36,18 @@ class OcrDocumentResult:
         total_pages: The document's real page count when it was counted (the
             big-file path parses the PDF); None otherwise.
         text_layer_pages: Pages whose text came from the PDF's own text layer
-            because Mistral failed on them (text_layer.py). Never billed.
+            (text_layer.py) — because Mistral failed on them, or because the
+            OCR page budget did not cover them (``overflow_pages``). Never billed.
         lost_pages: Planned pages neither source could read (Mistral failed
             and the page has no text layer — an image page).
+        overflow_pages: The part of ``text_layer_pages`` read because the page
+            budget did not cover them (owner, 2026-11-23).
+        overflow_blank: Pages past the budget whose text layer had nothing (image
+            pages) — not extracted.
+        unread_pages: Every page of the document not extracted because of the
+            budget: past it and blank, or past ``TEXT_LAYER_MAX_PAGES``. None when
+            the path that produced the result does not know (the whole-file URL
+            path) — the runner then decides from the plan.
     """
 
     text: str
@@ -48,6 +57,9 @@ class OcrDocumentResult:
     total_pages: int | None = None
     text_layer_pages: tuple[int, ...] = ()
     lost_pages: tuple[int, ...] = ()
+    overflow_pages: tuple[int, ...] = ()
+    overflow_blank: tuple[int, ...] = ()
+    unread_pages: tuple[int, ...] | None = None
 
     @property
     def billed_pages(self) -> int:
@@ -90,6 +102,33 @@ class FallbackRead:
     lost_pages: tuple[int, ...] = ()
 
 
+@dataclass(frozen=True)
+class OverflowRead:
+    """A PDF whose pages past the OCR page budget were read from its own text
+    layer (owner, 2026-11-23) — free, with a warning for the agents.
+
+    Attributes:
+        item_id: The attachment's ``workspace_items.item_id``.
+        name: Its filename, for the user's notice.
+        ocr_pages: Pages read by OCR within the budget (may be empty).
+        text_layer_pages: Pages past the budget read from the text layer.
+        blank_pages: Pages past the budget with no text layer — not extracted.
+        beyond_pages: Pages past ``TEXT_LAYER_MAX_PAGES`` — not extracted.
+        total_pages: The document's page count.
+        had_budget: The budget chose at least one page of this file (False =
+            no pages were left at all).
+    """
+
+    item_id: str
+    name: str
+    ocr_pages: tuple[int, ...]
+    text_layer_pages: tuple[int, ...]
+    blank_pages: tuple[int, ...] = ()
+    beyond_pages: tuple[int, ...] = ()
+    total_pages: int | None = None
+    had_budget: bool = True
+
+
 @dataclass
 class OcrExtractionStats:
     """Per-run tally of how ``run_ocr_extraction`` handled the candidates.
@@ -111,6 +150,8 @@ class OcrExtractionStats:
     partial: list[PartialRead] = field(default_factory=list)
     #: Files read from their text layer because Mistral failed (one notice each).
     fallback: list[FallbackRead] = field(default_factory=list)
+    #: PDFs whose pages past the budget came from their text layer (one notice each).
+    overflow: list[OverflowRead] = field(default_factory=list)
     #: Names of files left unread this turn: no OCR pages left.
     no_budget: list[str] = field(default_factory=list)
     #: The quota could not be read; every file was left for the next turn.

@@ -261,3 +261,47 @@ backend suite 3,262 pass — 5 `test_payments.py` failures are pre-existing on m
 - The free-week composer offer (`ChatInput.maybeOfferFreeWeek`) still assumes a file past the trial's
   pages "would still be refused" — now it is read in part. Left as is.
 - Mobile composer preview not built.
+
+## 11. Text layer past the budget (owner, 2026-11-23) — BUILT, not deployed
+
+Owner: "if a user has consumed the OCR, then we move to copy and paste (the fallback)… use that also to
+extract the rest of the pages", plus "give a warning to the agents that work after that — don't trust
+dates or any numbers", and "make the warning reach each segmenter, this is the most reliable way".
+Flag `OCR_TEXT_LAYER_OVERFLOW_ENABLED` (default **on**; false = §10 behaviour exactly).
+
+**Extraction** (`big_file.py`, `runner.py`)
+- PDFs only. The budget still picks the OCR pages (D2–D6 unchanged, billed as before); every other page is
+  read from the PDF's text layer (`overflow_pages`), free, in the same download, alongside the Mistral cuts.
+- No pages left: the PDF goes through the cutting path with no OCR pages and is read from its text layer
+  alone. Images still wait (no `ocr_status`), as before.
+- Ceiling `TEXT_LAYER_MAX_PAGES = 1000` per file, OCR + text layer together (the largest read the pipeline
+  already handled; a 10,000-page PDF would outrun the 10-min wait and fan out into ~120 segmenter calls).
+  Past it: «لم تُستخرج الصفحات … نستخرج من الملف الواحد 1000 صفحة على الأكثر».
+- Blank pages past the budget (no text layer) are budget gaps («لم تُستخرج»), never "lost".
+- No pages left and nothing in the text layer (a scan) or pypdf cannot open it: left WITHOUT `ocr_status`
+  (OCR reads it once pages return) and marked `ocr_no_text_layer` so later turns do not download it again.
+- Metadata: `ocr_text_layer_ranges` = every text-layer page (both reasons — the segmenter reads it);
+  `ocr_overflow_ranges` = the ones past the budget. `ocr_partial` only when pages are still unread.
+
+**Gate** (`message_service._attachment_page_counts(for_gate=True)`): a send carrying a new PDF is never
+refused for OCR pages (`[]` to the gate). Images alone — or a PDF already marked `ocr_no_text_layer` —
+at 0 pages left are refused as before.
+
+**Warnings to the agents**
+- `content_md`: own header per reason — `overflow_header` (past the budget) / `text_layer_header` (Mistral
+  failed), both ending in `partial.TEXT_LAYER_CAUTION` (dates, numbers, amounts, article/case numbers,
+  order of events: not to be relied on without saying so or the user confirming).
+- Segmenter (`attachment_segmenter/text_layer.py`): every call whose OWN paragraphs include text-layer
+  pages gets a «Pages taken from the PDF's text layer» block naming those paragraphs (single, each split
+  part, bundles — real pages per member); and every stored section overlapping those pages is stamped by
+  code with `〔[نظام] نص الصفحات … في هذا المقطع مستخرج من طبقة النص … لا بـOCR: …〕` at the top of its
+  text — so deep search (core) and the writer (core + supporting) read it, trimmed or not. Maps made before
+  this change are not redone.
+- Summarizer (`SYSTEM_PROMPT_ATTACHMENT_AR`): one bullet — name the pages, never state their dates /
+  numbers / amounts as facts. The router reads summaries.
+
+**User copy (draft — owner to approve)**: notices in `runner._overflow_notices`; composer card
+(`AttachmentUploadCard.tsx`) «100 من 606 صفحة بـOCR، والبقية من نص الملف» / «نفد رصيد OCR: سنستخرج نص الملف».
+
+**Tests**: `ocr_extractor/tests/test_text_layer_overflow.py` (new, in CI), `attachment_segmenter/tests/
+test_text_layer_notice.py` (new), gate cases in `backend/tests/test_ocr_page_budget_gate.py` (now in CI).
