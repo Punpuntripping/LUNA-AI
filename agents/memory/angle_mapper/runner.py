@@ -73,7 +73,9 @@ stale group never use them up.
 in this process, was joined) · ``skipped_group_pending`` (another candidate is
 still being segmented — its run maps the group) · ``skipped_fresh`` (the group's
 stored map still fits) · ``skipped_not_found`` · ``skipped_not_attachment`` ·
-``skipped_disabled`` · ``skipped_too_large`` (the group's text is over
+``skipped_disabled`` · ``skipped_free_plan`` (the user's effective plan is free or
+none — owner 2026-11-23: free users get no map; a map costs ≈ 2 of their 5 monthly
+points and nothing reads it yet) · ``skipped_too_large`` (the group's text is over
 :data:`MAX_GROUP_CHARS`) · a member reason when the group has NO member (the
 item's own: ``skipped_no_map`` · ``skipped_old_segments`` (older than seg-v5.2: no
 owners) · ``skipped_paragraph_rule`` (its paragraphs can no longer be rebuilt) ·
@@ -528,6 +530,8 @@ async def run_message_angle_map(
                     user_id = str(anchor.get("user_id") or "")
                     if not preview and not angle_map_enabled(user_id):
                         result.outcome = "skipped_disabled"
+                    elif not preview and not await _plan_allows(supabase, user_id):
+                        result.outcome = "skipped_free_plan"
                     else:
                         group = await asyncio.to_thread(load_group, supabase, message_id, ids, user_id=user_id)
                         _describe_group(result, group)
@@ -545,6 +549,22 @@ async def run_message_angle_map(
             )
         _finish_span(span, result, t0)
     return result
+
+
+async def _plan_allows(supabase: Any, user_id: str) -> bool:
+    """Whether the user's EFFECTIVE plan maps (owner 2026-11-23: free users get no
+    map). The same ``get_user_quota_state`` read the quota gate makes (through
+    ``shared.quota.library_state``, whose ``is_paid`` is "effective plan is neither
+    free nor none"), so an expired paid plan that fell back to free is free here
+    too; trials and every paid plan map. A failed read = no map (off is the
+    safe side: nothing is charged). Never raises."""
+    try:
+        from shared.quota import library_state
+
+        return bool((await library_state(supabase, user_id)).is_paid)
+    except Exception:  # noqa: BLE001
+        logger.warning("angle_mapper: plan read failed user=%s — no map", user_id[:8], exc_info=True)
+        return False
 
 
 def _row_skip(row: Mapping[str, Any] | None) -> str | None:
@@ -579,6 +599,9 @@ async def _run_item(
     user_id = str(row.get("user_id") or "")
     if not preview and not angle_map_enabled(user_id):
         result.outcome = "skipped_disabled"
+        return
+    if not preview and not await _plan_allows(supabase, user_id):
+        result.outcome = "skipped_free_plan"
         return
     if preview:
         _set(span, preview=True)

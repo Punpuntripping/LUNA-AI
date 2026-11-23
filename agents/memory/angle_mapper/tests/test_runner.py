@@ -116,9 +116,18 @@ def place_all(*docs: F.Doc) -> dict:
             "gaps": [], "no_angle": [], "unrelated_documents": []}
 
 
+#: The real plan gate — the autouse fixture below stubs ``runner_mod._plan_allows``.
+_REAL_PLAN_ALLOWS = runner_mod._plan_allows
+
+
+async def _paid(supabase, user_id) -> bool:
+    return True
+
+
 @pytest.fixture(autouse=True)
 def _defaults(monkeypatch):
     monkeypatch.setattr(runner_mod, "angle_map_enabled", lambda uid: True)
+    monkeypatch.setattr(runner_mod, "_plan_allows", _paid)
     monkeypatch.setattr(runner_mod, "_codec_for", lambda supabase, uid: None)
     monkeypatch.setattr(runner_mod, "_GROUP_TASKS", {})
 
@@ -504,6 +513,89 @@ async def test_flag_off_is_skipped(monkeypatch, store_calls):
     assert (await run_angle_mapper(db, A)).outcome == "skipped_disabled"
     assert (await run_message_angle_map(db, F.MSG, [A, B])).outcome == "skipped_disabled"
     assert seen == [F.USER, F.USER] and script.calls == [] and store_calls == []
+
+
+@pytest.mark.asyncio
+async def test_free_plan_is_skipped(monkeypatch, store_calls, ledger):
+    """Owner 2026-11-23: free users get no map — no model call, nothing stored, no
+    ledger row, on both entry points; the plan is asked for the group's user."""
+    asked: list = []
+
+    async def free(supabase, user_id):
+        asked.append(user_id)
+        return False
+
+    monkeypatch.setattr(runner_mod, "_plan_allows", free)
+    db = db_for(J, O)
+    script = use(monkeypatch, two)
+    assert (await run_angle_mapper(db, A)).outcome == "skipped_free_plan"
+    assert (await run_message_angle_map(db, F.MSG, [A, B])).outcome == "skipped_free_plan"
+    assert asked == [F.USER, F.USER]
+    assert script.calls == [] and store_calls == [] and ledger == [] and db.writes() == []
+
+
+@pytest.mark.asyncio
+async def test_flag_off_skips_before_the_plan_read(monkeypatch, store_calls):
+    """The flag is checked first: with it off the plan is never read."""
+    async def boom(supabase, user_id):
+        raise AssertionError("plan read with the flag off")
+
+    monkeypatch.setattr(runner_mod, "angle_map_enabled", lambda uid: False)
+    monkeypatch.setattr(runner_mod, "_plan_allows", boom)
+    db = db_for(J, O)
+    use(monkeypatch, two)
+    assert (await run_angle_mapper(db, A)).outcome == "skipped_disabled"
+    assert (await run_message_angle_map(db, F.MSG, [A, B])).outcome == "skipped_disabled"
+
+
+@pytest.mark.asyncio
+async def test_preview_ignores_the_plan(monkeypatch):
+    """A preview skips the plan gate like the flag gate (the preview tool maps any
+    user's files and stores / bills nothing)."""
+    async def free(supabase, user_id):
+        raise AssertionError("plan read in a preview")
+
+    monkeypatch.setattr(runner_mod, "_plan_allows", free)
+    db = db_for(J, O)
+    use(monkeypatch, two)
+    res = await run_message_angle_map(db, F.MSG, [A, B], preview=True)
+    assert res.outcome == "preview"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row, allowed",
+    [
+        ({"effective_plan_id": "pro", "locked": False}, True),
+        ({"effective_plan_id": "max", "locked": False}, True),
+        ({"effective_plan_id": "marketing_lawyer_v2", "locked": False}, True),  # a trial maps
+        ({"effective_plan_id": "dev", "locked": False}, True),
+        ({"effective_plan_id": "free", "locked": False}, False),
+        ({"plan_id": "pro", "effective_plan_id": "free", "locked": False}, False),  # expired → free
+        ({"effective_plan_id": None, "locked": True}, False),
+        (None, False),  # no subscription row
+    ],
+)
+async def test_plan_allows_reads_the_effective_plan(monkeypatch, row, allowed):
+    import shared.quota as quota
+
+    async def state(supabase, user_id):
+        assert user_id == F.USER
+        return row
+
+    monkeypatch.setattr(quota, "_quota_state", state)
+    assert await _REAL_PLAN_ALLOWS(object(), F.USER) is allowed
+
+
+@pytest.mark.asyncio
+async def test_plan_allows_failed_read_is_no_map(monkeypatch):
+    import shared.quota as quota
+
+    async def broken(supabase, user_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(quota, "_quota_state", broken)
+    assert await _REAL_PLAN_ALLOWS(object(), F.USER) is False
 
 
 # ── the trigger rule: pending, joined, fresh, late ───────────────────────────

@@ -30,6 +30,10 @@ A, B = F.ITEM_A, F.ITEM_B
 DOCS = {A: F.JUDGMENT, B: F.OBJECTION}
 
 
+async def _paid(supabase, user_id) -> bool:
+    return True
+
+
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     monkeypatch.setattr(_runtime, "_INFLIGHT", {})
@@ -37,6 +41,7 @@ def _clean(monkeypatch):
     monkeypatch.setattr(runner_mod, "_GROUP_TASKS", {})
     monkeypatch.setattr(runner_mod, "_codec_for", lambda supabase, uid: None)
     monkeypatch.setattr(runner_mod, "angle_map_enabled", lambda uid: True)
+    monkeypatch.setattr(runner_mod, "_plan_allows", _paid)
     monkeypatch.setattr(angle_map_flags, "angle_map_enabled", lambda uid: True)  # the frame's gate
 
 
