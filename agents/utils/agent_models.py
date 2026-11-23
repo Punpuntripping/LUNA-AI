@@ -340,6 +340,14 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # slot), its own slot so it can move independently.
     # See .claude/plans/attachment_segmentation.md §4.4.
     "attachment_segmenter":       _FLASH,
+    # Tier_2 DeepSeek-primary — Layer-4 angle mapper (خريطة الأوجه): reads one
+    # segmented attachment and names the lines of argument worth a deep search
+    # (strengthen / attack / answer), each pointing at the segmenter's sections.
+    # V4.1 on Wafer (Baseten V4.1 backup) — the model every angle run was tested on
+    # (2026-11-21). Wafer's output maximum is 65,536: the agent sends it as
+    # max_tokens; the shared OUTPUT_TOKENS_CAP still bounds the run.
+    # See .claude/plans/relationship_map.md §4.1.
+    "angle_mapper":               _WAFER_V41_DEFAULT,
     # Tier_2 DeepSeek-primary — Layer-4 librarian that verdicts workspace_items
     # against a caller's query. Two LLM calls max per analyze() invocation
     # (one per family: refs vs meta). Short structured outputs — reasoning

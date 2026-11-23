@@ -108,6 +108,14 @@ class HelperSpec:
     #: Runs per item (same ``version``) before the frame gives up on it.
     max_attempts: int = 3
     version: str = "1"
+    #: ``False`` (default): every claimed run counts against ``max_attempts``,
+    #: whatever it ended as (a result that went stale later counts too). ``True``: a
+    #: previous run that ended ``done`` starts the count over, so only FAILURES IN A
+    #: ROW use the attempts up — for a helper whose runs end ``done`` without a
+    #: stored result by design (``angle_map``: a member waiting on another member's
+    #: segmenter, a joined group run) and whose stored result goes stale whenever an
+    #: input changes (a re-mapped group is new work, not a retry).
+    attempts_count_failures_only: bool = False
     #: At most this many runs of the helper at once in this process (provider
     #: rate limits). ``None`` = no limit.
     concurrency: Optional[int] = None

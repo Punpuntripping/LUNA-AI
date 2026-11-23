@@ -106,6 +106,7 @@ jobs:
             agents/tests/test_helper_frame_orchestrator.py \
             agents/helpers/tests/ \
             agents/memory/attachment_segmenter/tests/ \
+            agents/memory/angle_mapper/tests/ \
             agents/memory/ocr_extractor/tests/test_page_rows.py \
             agents/memory/ocr_extractor/tests/test_text_layer_overflow.py \
             backend/tests/test_ocr_page_budget_gate.py \

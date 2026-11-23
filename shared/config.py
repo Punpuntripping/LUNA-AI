@@ -531,6 +531,15 @@ class Settings(BaseSettings):
     ATTACHMENT_SEGMENT_DELIVERY_ENABLED: bool = False
     ATTACHMENT_SEGMENT_DELIVERY_USERS: Optional[str] = None
 
+    # ── Angle map (خريطة الأوجه) — .claude/plans/relationship_map.md §4.7 ────
+    # The angle-map helper runs after the segmenter on each segmented attachment
+    # and stores its angles (migration 228 must be applied first). It also needs
+    # the segmenter on for that user. Nobody reads the maps yet (critical for no
+    # consumer). *_USERS: comma-separated users.user_id; empty = everyone.
+    # Env var name == field name (no validation_alias).
+    ANGLE_MAP_ENABLED: bool = False
+    ANGLE_MAP_USERS: Optional[str] = None
+
     # ── «ملفاتي» — .claude/plans/my_files.md §7 ─────────────────────────────
     # Off: every /api/v1/files route answers 404. *_USERS: comma-separated
     # users.user_id; empty = everyone. Env var name == field name.

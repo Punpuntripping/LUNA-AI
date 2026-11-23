@@ -7,6 +7,10 @@
 | pre_router_memory   | message | —          | router (everyone after it is covered upstream)     | 180 s   |
 | memory              | message | —          | everyone but the router; expanders + aggregator covered upstream | 60 s |
 | segmenter           | item    | ocr, summary | case expander, reg expander, aggregator, writer  | 300 s   |
+| angle_map           | item    | segmenter  | — (nobody waits; relationship_map.md Q3)           | —       |
+
+``angle_map`` is started per item but maps the item's whole MESSAGE group in one
+run (relationship_map.md D17; the runner decides which member runs it).
 
 Adding a helper = one :class:`HelperSpec` here (or :func:`register`) + its wait
 point. A test checks every consumer used at a wait point exists and that
@@ -241,7 +245,133 @@ SEGMENTER = HelperSpec(
     fallback="the full text within the caps (100k per document, 300k overall)",
 )
 
-_SPECS: tuple[HelperSpec, ...] = (OCR, SUMMARY, PRE_ROUTER_MEMORY, MEMORY, SEGMENTER)
+# --------------------------------------------------------------------------- #
+# Angle map (خريطة الأوجه) — .claude/plans/relationship_map.md §4.1 (D3), D16–D17
+# --------------------------------------------------------------------------- #
+# ONE map per message group (angles-v4): the frame still starts this helper per
+# item after that item's segmenter run — a turn's run (``TurnHelpers._after``) or a
+# consumer's (``ensure_ready``: ``status.CONSUMER_RUN_DEPENDENTS``, which names this
+# helper only); the runner resolves the item's message group
+# and makes the group run once (agents/memory/angle_mapper/runner.py, top): the
+# member segmented last runs it, members still waiting on another member's
+# segmenter return ``skipped_group_pending``, members starting together join one
+# in-process run (``joined_group``). Neither is a failure.
+#
+# Attempts (``max_attempts`` per item and version): the version is the prompt AND
+# the segmenter's version (its input), and only failures in a row count
+# (``attempts_count_failures_only``) — a skip, a join, or a re-map of a group whose
+# map went stale ends ``done`` and starts the count over. A FAILED group run is not
+# retried by itself (no sweep job): the group is mapped again when the segmenter
+# of ANY member ends again (that member's run finds no fresh map), or else when
+# the extended-search planner asks for it through ``ensure_ready`` (phase 2, not
+# built yet). ``helper_runs`` rows hang on the item's FILE (migration 223), so a
+# library file attached to two conversations shares one row.
+
+#: Angle-map runs at once in this process — one V4.1 call per group (49–150 s
+#: tested per file; a 165k-char group ≈ 3–4 min), plus at most one re-attempt and
+#: one repair call. Each member that JOINS a group's run holds a slot while it
+#: waits on that one run (the segmenter's bundle reason), so the limit is set
+#: above the member count of a busy message.
+ANGLE_MAP_CONCURRENCY = 8
+
+
+def _angle_map_enabled(user_id: str) -> bool:
+    from agents.utils.angle_map_flags import angle_map_enabled
+
+    return angle_map_enabled(user_id)
+
+
+async def angle_map_applies_to(ctx: HelperContext) -> bool:
+    """An attachment the segmenter maps — over 5,000 characters or in its
+    message's qualifying bundle, any document type (D16). The group, its members'
+    maps and freshness are the runner's call. A failed read = not applicable (the
+    planner then plans without angles)."""
+    import asyncio
+
+    from agents.memory.angle_mapper import angle_mapper_applies_to_item
+
+    try:
+        return bool(
+            await asyncio.to_thread(angle_mapper_applies_to_item, ctx.supabase, str(ctx.item_id))
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("angle_map applies_to: read failed: %s", type(exc).__name__)
+        return False
+
+
+async def run_angle_map(ctx: HelperContext) -> Any:
+    """Make sure this item's message group is mapped into angles and stored — once
+    per group. Never raises (its contract). Only the member whose run ended
+    without a map it was responsible for (failed_llm / failed_invalid /
+    failed_store / error) is recorded as failed; ``joined_group``,
+    ``skipped_group_pending`` and ``skipped_*`` are done."""
+    from agents.memory.angle_mapper import run_angle_mapper
+
+    result = await run_angle_mapper(ctx.supabase, str(ctx.item_id))
+    outcome = str(getattr(result, "outcome", "") or "")
+    if outcome.startswith("failed") or outcome == "error":
+        # helper_runs = failed (error = this class name). Nothing retries it by
+        # itself: the next start — a member's segmenter ending again, or (phase 2)
+        # the planner's ensure_ready — runs it again, up to max_attempts failures
+        # in a row (the comment above ANGLE_MAP_CONCURRENCY).
+        raise AngleMapFailed(f"{outcome}:{getattr(result, 'error', '') or ''}")
+    return result
+
+
+class AngleMapFailed(RuntimeError):
+    """An angle-map run that ended without a stored map (failed_llm / failed_invalid
+    / failed_store / error)."""
+
+
+def load_angle_map(supabase: Any, item_id: str) -> Any:
+    """The stored map of the item's message group while it is fresh (same members,
+    same lengths and segment versions)."""
+    from agents.memory.angle_mapper import load_fresh_angle_map_for_item
+
+    return load_fresh_angle_map_for_item(supabase, item_id)
+
+
+def _angle_map_version() -> str:
+    """``<prompt version>/<segmenter version>`` — the map's own prompt and its input
+    (the segmenter's prompt + paragraph rule), so a new segmenter starts the
+    attempts over too. Built at import of this registry, so a broken angle_mapper
+    package must not break the orchestrator import (see ``_segmenter_version``)."""
+    try:
+        from agents.memory.angle_mapper import PROMPT_VERSION
+
+        return f"{PROMPT_VERSION}/{SEGMENTER.version}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("angle_map version unavailable: %s", type(exc).__name__)
+        return "unavailable"
+
+
+ANGLE_MAP = HelperSpec(
+    name="angle_map",
+    scope="item",
+    # Its input is the segmenter's sections; it starts when the segmenter ends.
+    depends_on=("segmenter",),
+    # Critical for nobody (plan Q3 default): the planner uses a stored map and
+    # plans without angles when there is none — nobody waits.
+    critical_for=frozenset(),
+    run=run_angle_map,
+    load=load_angle_map,
+    applies_to=angle_map_applies_to,
+    enabled=_angle_map_enabled,
+    stored=True,
+    # Renewed every third of it while the run is alive. One group call reads up to
+    # ~165k chars (≈ 3–4 min, CALL_TIMEOUT_S 480 s); a killed run is noticed
+    # within one lease.
+    lease_s=600.0,
+    # The runner already re-attempts once inside a run. Only failures in a row
+    # count: skips, joins and re-maps of a stale group end done and start over.
+    max_attempts=2,
+    attempts_count_failures_only=True,
+    version=_angle_map_version(),
+    concurrency=ANGLE_MAP_CONCURRENCY,
+    fallback="the planner plans without angles",
+)
+
+_SPECS: tuple[HelperSpec, ...] = (OCR, SUMMARY, PRE_ROUTER_MEMORY, MEMORY, SEGMENTER, ANGLE_MAP)
 
 REGISTRY: dict[str, HelperSpec] = {spec.name: spec for spec in _SPECS}
 

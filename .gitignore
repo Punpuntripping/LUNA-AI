@@ -95,6 +95,10 @@ agents/tests/*
 !agents/tests/test_helper_frame_orchestrator.py
 !agents/helpers/tests/
 !agents/memory/attachment_segmenter/tests/
+# the angle map (relationship_map.md §4, 2026-11-21): masking round trip, section-id
+# drops, coverage repair, contract-party labels and the store's rollback all fail
+# silently in production — same reason as the segmenter's suite
+!agents/memory/angle_mapper/tests/
 !agents/memory/ocr_extractor/tests/
 !agents/deep_search_v4/tests/
 agents/deep_search_v4/tests/*

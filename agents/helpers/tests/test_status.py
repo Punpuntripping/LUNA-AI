@@ -226,6 +226,39 @@ def test_a_done_row_with_nothing_to_load_is_rerun():
     assert seg.calls == [("a", 2)]
 
 
+def test_by_default_a_done_row_counts_against_the_attempts_too():
+    seg, store = Segmenter(), FakeStore()
+    store.put("a", "segmenter", status="done", attempt=3, version="v1")
+    out = asyncio.run(_ensure(_registry(seg.spec()), store))
+    assert out == {"a": Readiness.fallback("attempts_exhausted")}
+    assert seg.calls == []
+
+
+@pytest.mark.parametrize("status_, attempt, expected_attempt", [
+    ("done", 3, 1),       # a done run starts the count over — even at max_attempts
+    ("done", 1, 1),
+    ("failed", 2, 3),     # failures in a row still count …
+])
+def test_a_helper_that_counts_failures_only_starts_over_after_a_done_run(status_, attempt, expected_attempt):
+    seg, store = Segmenter(), FakeStore()
+    store.put("a", "segmenter", status=status_, attempt=attempt, version="v1")
+    out = asyncio.run(_ensure(_registry(seg.spec(attempts_count_failures_only=True)), store))
+    assert out == {"a": Readiness.ready("map-a")}
+    assert seg.calls == [("a", expected_attempt)]
+    assert store.get("a", "segmenter").attempt == expected_attempt
+
+
+@pytest.mark.parametrize("status_", ["failed", "running"])
+def test_a_helper_that_counts_failures_only_still_gives_up_on_failures(status_):
+    """… and a spent failure (or a killed run at max_attempts) is still the end."""
+    seg, store = Segmenter(), FakeStore()
+    store.put("a", "segmenter", status=status_, attempt=3, version="v1",
+              lease_until=utcnow() - timedelta(seconds=1))
+    out = asyncio.run(_ensure(_registry(seg.spec(attempts_count_failures_only=True)), store))
+    assert out == {"a": Readiness.fallback("attempts_exhausted")}
+    assert seg.calls == []
+
+
 def test_a_failing_run_is_stored_failed_and_reaches_the_consumer_as_a_fallback(caplog):
     seg, store = Segmenter(fail=True), FakeStore()
     out = asyncio.run(_ensure(_registry(seg.spec()), store))
@@ -412,6 +445,233 @@ def test_the_turn_does_not_rerun_what_another_process_holds():
     report = asyncio.run(go())
     assert report.items == {"a": Readiness.fallback("running_elsewhere")}
     assert seg.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Dependents of a run a CONSUMER started (CONSUMER_RUN_DEPENDENTS)
+# --------------------------------------------------------------------------- #
+
+
+class AngleMap:
+    """A fake ``angle_map``: a stored item helper after the segmenter."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls: list[HelperContext] = []
+        self.scoped: list[bool] = []
+        self.fail = fail
+        self.done: dict[str, str] = {}
+
+    async def run(self, ctx: HelperContext) -> str:
+        from agents.utils import usage_sink
+
+        self.calls.append(ctx)
+        self.scoped.append(usage_sink.in_scope())
+        await asyncio.sleep(0.01)
+        if self.fail:
+            raise RuntimeError("provider down")
+        self.done[ctx.item_id] = f"angles-{ctx.item_id}"
+        return self.done[ctx.item_id]
+
+    def load(self, _supabase: Any, item_id: str) -> str | None:
+        return self.done.get(item_id)
+
+    def spec(self, **kw: Any) -> HelperSpec:
+        fields = dict(
+            name="angle_map", scope="item", stored=True, depends_on=("segmenter",),
+            run=self.run, load=self.load, lease_s=30.0, max_attempts=2, version="a1",
+        )
+        fields.update(kw)
+        return HelperSpec(**fields)
+
+
+async def _drain(helper: str, ids: tuple[str, ...] = ("a",)) -> None:
+    """Wait for the fire-and-forget runs of ``helper`` (they are not the consumer's)."""
+    tasks = {t for t in (runtime.inflight(helper, i) for i in ids) if t is not None}
+    if tasks:
+        await asyncio.wait(tasks, timeout=5)
+
+
+def test_a_consumer_started_run_starts_the_angle_map_when_it_ends():
+    seg, angle, store = Segmenter(), AngleMap(), FakeStore()
+    reg = _registry(seg.spec(), angle.spec())
+
+    async def go() -> Any:
+        out = await _ensure(reg, store, ids=("a", "b"))
+        await _drain("angle_map", ("a", "b"))
+        return out
+
+    assert asyncio.run(go()) == {"a": Readiness.ready("map-a"), "b": Readiness.ready("map-b")}
+    assert sorted(c.item_id for c in angle.calls) == ["a", "b"]
+    # its own context: the consumer's user, no conversation (own ledger scope, below)
+    assert all((c.user_id, c.conversation_id, c.message_id, c.attempt) == (USER, None, None, 1) for c in angle.calls)
+    assert store.get("a", "angle_map").status == "done" and store.get("b", "angle_map").status == "done"
+
+
+def test_its_run_is_detached_from_the_consumers_ledger_scope():
+    from agents.utils import usage_sink
+
+    seg, angle, store = Segmenter(), AngleMap(), FakeStore()
+    reg = _registry(seg.spec(), angle.spec(own_ledger_scope=True))
+
+    async def go() -> None:
+        token = usage_sink._buffer.set([])  # the consumer's open llm_calls scope
+        try:
+            await _ensure(reg, store)
+        finally:
+            usage_sink._buffer.reset(token)
+        await _drain("angle_map")
+
+    asyncio.run(go())
+    assert angle.scoped == [False]  # not the consumer's buffer — the runner opens its own
+
+
+def test_flag_off_starts_nothing():
+    seg, angle, store = Segmenter(), AngleMap(), FakeStore()
+    reg = _registry(seg.spec(), angle.spec(enabled=lambda uid: False))
+
+    async def go() -> Any:
+        out = await _ensure(reg, store)
+        assert runtime.inflight("angle_map", "a") is None
+        return out
+
+    assert asyncio.run(go()) == {"a": Readiness.ready("map-a")}
+    assert angle.calls == [] and store.get("a", "angle_map") is None
+
+
+def test_only_the_named_dependents_start_other_helpers_are_unchanged():
+    """A consumer-started run starts ``angle_map`` only — any other dependent
+    (here one with ``auto_start``) still starts only from a turn, as before."""
+    seg, angle, store = Segmenter(), AngleMap(), FakeStore()
+    other_calls: list[str] = []
+
+    async def other(ctx: HelperContext) -> str:
+        other_calls.append(ctx.item_id)
+        return "x"
+
+    reg = _registry(
+        seg.spec(), angle.spec(),
+        HelperSpec(name="other", scope="item", depends_on=("segmenter",), run=other, own_ledger_scope=False),
+    )
+    assert status.CONSUMER_RUN_DEPENDENTS == frozenset({"angle_map"})
+
+    async def go() -> None:
+        await _ensure(reg, store)
+        assert runtime.inflight("other", "a") is None
+        await _drain("angle_map")
+
+    asyncio.run(go())
+    assert [c.item_id for c in angle.calls] == ["a"] and other_calls == []
+
+
+def test_a_failed_run_starts_it_too_like_a_turn_does():
+    """The member whose segmenter ends last maps the group even when its own
+    segmentation failed (the angle mapper's trigger rule) — so a failed run starts
+    it as well, as ``TurnHelpers._after`` does."""
+    seg, angle, store = Segmenter(fail=True), AngleMap(), FakeStore()
+    reg = _registry(seg.spec(), angle.spec())
+
+    async def go() -> Any:
+        out = await _ensure(reg, store)
+        await _drain("angle_map")
+        return out
+
+    assert asyncio.run(go()) == {"a": Readiness.fallback("failed")}
+    assert [c.item_id for c in angle.calls] == ["a"]
+
+
+def test_a_run_of_it_already_going_is_not_started_twice():
+    seg, angle, store = Segmenter(), AngleMap(), FakeStore()
+    reg = _registry(seg.spec(), angle.spec())
+
+    async def go() -> None:
+        going = asyncio.get_running_loop().create_future()
+        runtime._INFLIGHT[("angle_map", "a")] = going
+        await _ensure(reg, store)
+        assert runtime._INFLIGHT[("angle_map", "a")] is going
+        going.set_result(None)
+
+    asyncio.run(go())
+    assert angle.calls == [] and store.claims == 1  # the segmenter's lease only
+
+
+def test_a_fresh_stored_result_is_not_redone_and_a_lease_elsewhere_is_left_alone():
+    seg, angle, store = Segmenter(), AngleMap(), FakeStore()
+    angle.done["a"] = "angles-a"  # the group's map is stored and fresh
+    store.put("b", "angle_map", status="running", attempt=1,
+              lease_until=utcnow() + timedelta(seconds=60), version="a1")  # another process maps b
+    reg = _registry(seg.spec(), angle.spec())
+
+    async def go() -> None:
+        await _ensure(reg, store, ids=("a", "b"))
+        await _drain("angle_map", ("a", "b"))
+
+    asyncio.run(go())
+    assert angle.calls == []
+    assert store.get("a", "angle_map") is None and store.get("b", "angle_map").status == "running"
+
+
+def test_a_failing_dependent_never_reaches_the_run_or_its_consumer(monkeypatch):
+    import agents.helpers.registry as registry_mod
+
+    seg, angle, store = Segmenter(), AngleMap(fail=True), FakeStore()
+    reg = _registry(seg.spec(), angle.spec())
+
+    async def go() -> Any:
+        out = await _ensure(reg, store)
+        await _drain("angle_map")
+        return out
+
+    # its run fails: stored failed, the segmenter's readiness untouched
+    assert asyncio.run(go()) == {"a": Readiness.ready("map-a")}
+    assert store.get("a", "angle_map").status == "failed"
+
+    # its gate raises / the graph lookup raises: nothing starts, nothing leaks out
+    runtime._INFLIGHT.clear()
+
+    def boom(_uid: str) -> bool:
+        raise RuntimeError("flag bug")
+
+    reg = _registry(Segmenter().spec(), AngleMap().spec(enabled=boom))
+    assert asyncio.run(_ensure(reg, FakeStore())) == {"a": Readiness.ready("map-a")}
+
+    runtime._INFLIGHT.clear()
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise ValueError("graph bug")
+
+    monkeypatch.setattr(registry_mod, "dependents", broken)
+    reg = _registry(Segmenter().spec(), AngleMap().spec())
+    assert asyncio.run(_ensure(reg, FakeStore())) == {"a": Readiness.ready("map-a")}
+
+
+def test_a_turn_started_run_still_starts_it_once_from_the_turn():
+    """Unchanged path: the turn's run starts it (turn context); a consumer that
+    joins that run starts nothing more."""
+    seg, angle, store = Segmenter(delay=0.03), AngleMap(), FakeStore()
+    reg = _registry(seg.spec(), angle.spec())
+
+    async def go() -> Any:
+        turn = TurnHelpers(supabase=None, user_id=USER, conversation_id=CONVO,
+                           message_id="m1", registry=reg, store=store)
+        bind_turn(turn)
+        turn.start("segmenter", ["a"])
+        out = await ensure_ready("segmenter", ["a"], consumer="aggregator",
+                                 supabase=None, user_id=USER, registry=reg, store=store)
+        await _drain("angle_map")
+        return out
+
+    assert asyncio.run(go()) == {"a": Readiness.ready("map-a")}
+    assert [(c.item_id, c.conversation_id, c.message_id) for c in angle.calls] == [("a", CONVO, "m1")]
+
+
+def test_in_the_real_registry_it_is_the_angle_map_after_the_segmenter_only():
+    from agents.helpers.registry import REGISTRY, dependents
+
+    starters = {
+        spec.name: [d.name for d in dependents(spec.name) if d.name in status.CONSUMER_RUN_DEPENDENTS]
+        for spec in REGISTRY.values()
+    }
+    assert {k: v for k, v in starters.items() if v} == {"segmenter": ["angle_map"]}
 
 
 # --------------------------------------------------------------------------- #

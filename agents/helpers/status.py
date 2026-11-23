@@ -15,7 +15,9 @@ OCR and the summary keep their ``workspace_items.metadata`` markers
 (``ocr_status``, ``summary_attempt``), which other code reads. The memory agent
 is message-scoped and keeps its own per-conversation queue.
 
-Public entry point: :func:`ensure_ready`.
+Public entry point: :func:`ensure_ready`. A run it starts (step 4) starts the
+helpers in :data:`CONSUMER_RUN_DEPENDENTS` (``angle_map``) when it ends, as a
+turn does for its own runs (:func:`start_consumer_run_dependents`).
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Any, Callable, Iterable, Literal, Mapping, Optional, Protocol
 
 from .spec import Consumer, HelperContext, HelperSpec, Readiness
@@ -279,8 +282,10 @@ async def decide(
     if row is not None:
         # Done but nothing loads (a stale or missing result), failed, or a lease
         # that expired (the run was killed). Same version → counts against the
-        # attempts; a new version starts over.
-        if row.version == spec.version:
+        # attempts; a new version starts over — and so does a done run of a helper
+        # that counts failures only (``spec.attempts_count_failures_only``).
+        fresh_count = spec.attempts_count_failures_only and row.status == "done"
+        if row.version == spec.version and not fresh_count:
             if row.attempt >= spec.max_attempts:
                 return "give_up", "attempts_exhausted"
             attempt = row.attempt + 1
@@ -371,6 +376,99 @@ async def auto_run(
 
 
 # --------------------------------------------------------------------------- #
+# Dependents of a run a CONSUMER started
+# --------------------------------------------------------------------------- #
+# Why (relationship_map.md D17, 2026-11-22). A turn starts the ``auto_start``
+# dependents of the runs IT started (``TurnHelpers._after``). A run a consumer
+# starts — ``ensure_ready`` claiming the lease for the aggregator / writer
+# (``start_claimed`` below), in a turn or not — had no ``after``, so its dependents
+# never started: a message whose attachments were segmented that way never got its
+# angle map.
+#
+# The choice: a frame hook on that one path, limited to the helpers named here
+# (``angle_map`` only), rather than a generic "start every dependent" (that would
+# change other helpers — a consumer-started summary would start the segmenter) or a
+# call inside the segmenter's own run (it would also fire on turn runs, before the
+# segmenter's lease is closed, and change how the turn's angle map is started).
+# Each dependent starts the way a turn starts a stored helper — ``auto_run``: the
+# gate, the fresh-result ``load``, ``applies_to``, the ``helper_runs`` lease, then
+# ``execute`` (the helper's ``concurrency``, its own ledger scope) — as its own
+# kept-alive task (``spawn``), fire-and-forget:
+#
+# * once: a dependent already running for the item in this process is left alone
+#   (``inflight``); across processes the item's lease decides; the angle mapper's
+#   runner makes the map once per message GROUP (pending / joined / fresh);
+# * detached from the consumer: its context has no conversation, so
+#   ``_ledger_scope`` runs it outside the consumer's ``llm_calls`` buffer (which
+#   may flush first) and the angle mapper opens its own scope, keyed to the item's
+#   group — conversation, user, message (``runner._run_group``);
+# * whatever the run's outcome, like the turn: the member whose segmenter ends last
+#   maps the group even when its own segmentation failed (the runner's trigger
+#   rule); the gate (``enabled``) is checked first, so with the flag off for the
+#   user nothing is started;
+# * never raising into the run or its consumer: ``execute`` already guards
+#   ``after``, this guards itself too, and the run's outcome is decided before.
+
+#: Item helpers a consumer-started run also starts when it ends (see above).
+CONSUMER_RUN_DEPENDENTS: frozenset[str] = frozenset({"angle_map"})
+
+
+def start_consumer_run_dependents(
+    spec: HelperSpec,
+    ctx: HelperContext,
+    outcome: HelperOutcome,
+    *,
+    store: HelperRunStore | None,
+    registry: Mapping[str, HelperSpec] | None = None,
+) -> None:
+    """``after`` of a consumer-started run of ``spec`` on ``ctx.item_id``: start its
+    dependents named in :data:`CONSUMER_RUN_DEPENDENTS`. Never raises; returns at
+    once (it only creates tasks)."""
+    try:
+        from .registry import REGISTRY, dependents
+
+        reg = REGISTRY if registry is None else registry
+        key = str(ctx.item_id or "")
+        if spec.scope != "item" or not key:
+            return
+        for dep in dependents(spec.name, reg):
+            try:
+                if dep.name not in CONSUMER_RUN_DEPENDENTS or not dep.auto_start or dep.scope != "item":
+                    continue
+                if dep.enabled is not None and not dep.enabled(ctx.user_id):
+                    continue
+                if inflight(dep.name, key) is not None:
+                    continue  # a run of it is going for this item: leave it
+                if any(inflight(d, key) is not None for d in dep.depends_on if d != spec.name):
+                    continue  # another input still running: its own end starts it
+                turn = current_turn()
+                runner = (turn.runner_for(dep.name) if turn is not None else None) or dep.run
+                if runner is None:
+                    continue
+                # No conversation: detached from the consumer's ledger scope (above).
+                dep_ctx = HelperContext(
+                    helper=dep.name, supabase=ctx.supabase, user_id=ctx.user_id, item_id=key,
+                )
+                if dep.stored:
+                    dep_store = store if store is not None else SupabaseHelperRunStore(ctx.supabase)
+                    coro = auto_run(dep, dep_ctx, runner, store=dep_store)
+                else:
+                    coro = execute(dep, dep_ctx, runner)
+                try:
+                    spawn(dep.name, key, coro)
+                except Exception:
+                    coro.close()  # never started: no "never awaited" coroutine left behind
+                    raise
+            except Exception as exc:  # noqa: BLE001 - one dependent never stops the next
+                logger.warning(
+                    "helper %s: dependent %s not started for item_id=%s: %s",
+                    spec.name, dep.name, key, type(exc).__name__,
+                )
+    except Exception as exc:  # noqa: BLE001 - never into the run or its consumer
+        logger.warning("helper %s: starting dependents failed: %s", spec.name, type(exc).__name__)
+
+
+# --------------------------------------------------------------------------- #
 # ensure_ready
 # --------------------------------------------------------------------------- #
 
@@ -388,9 +486,12 @@ async def _ensure_item(
     runner: Callable[[HelperContext], Any] | None,
     store: HelperRunStore | None,
     deadline: float | None,
+    *,
+    registry: Mapping[str, HelperSpec] | None = None,
 ) -> Readiness:
     """One item, §5.3 steps 1–4, until ready or the deadline. Never raises
-    (except the caller's own cancellation)."""
+    (except the caller's own cancellation). A run it starts starts its
+    :data:`CONSUMER_RUN_DEPENDENTS` when it ends."""
     critical = spec.waits(consumer)
     key = str(ctx.item_id)
     try:
@@ -417,7 +518,8 @@ async def _ensure_item(
             if verdict == "missing":
                 return Readiness.fallback("not_critical" if not critical else "not_started")
             if verdict == "run":
-                start_claimed(spec, ctx, runner, store=store, row=value)
+                after = partial(start_consumer_run_dependents, spec, ctx, store=store, registry=registry)
+                start_claimed(spec, ctx, runner, store=store, row=value, after=after)
                 continue  # step 1 now finds it and waits
             # verdict == "wait": another process holds a live lease.
             if not critical:
@@ -467,7 +569,8 @@ async def ensure_ready(
     try:
         from .registry import REGISTRY
 
-        spec = (REGISTRY if registry is None else registry).get(helper)
+        reg = REGISTRY if registry is None else registry
+        spec = reg.get(helper)
         if spec is None:
             return {i: Readiness.fallback("unknown_helper") for i in ids}
         if spec.scope != "item":
@@ -485,7 +588,7 @@ async def ensure_ready(
 
         with wait_span(consumer, helper, len(ids)) as out:
             gathered = asyncio.ensure_future(asyncio.gather(*(
-                _ensure_item(spec, _ctx(i), consumer, runner, store, deadline) for i in ids
+                _ensure_item(spec, _ctx(i), consumer, runner, store, deadline, registry=reg) for i in ids
             )))
             try:
                 done, _ = await asyncio.wait({gathered}, timeout=ON_WAIT_AFTER_S)
@@ -507,6 +610,7 @@ async def ensure_ready(
 
 
 __all__ = [
+    "CONSUMER_RUN_DEPENDENTS",
     "HelperRunStore",
     "ON_WAIT_AFTER_S",
     "POLL_S",
@@ -518,4 +622,5 @@ __all__ = [
     "decide",
     "ensure_ready",
     "start_claimed",
+    "start_consumer_run_dependents",
 ]

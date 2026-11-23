@@ -18,6 +18,9 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 #: Files that read (or write) attachment content — each must use shared.files.
 READS_THROUGH_FILES: dict[str, str] = {
     "agents/memory/agent.py": "S2 _load_compaction_context, resummarize_dirty_items",
+    "agents/memory/angle_mapper/group.py": "S2 item_titles (titles of the attachments a map leaves out); "
+                                           "pointer_rows reads pointer columns only; lengths, maps and text "
+                                           "through the segmenter's files-aware loaders",
     "agents/memory/attachment_segmenter/bundles.py": "S2 message_members, _item_row",
     "agents/memory/attachment_segmenter/runner.py": "S2 _load_item, _load_items",
     "agents/memory/attachment_segmenter/store.py": "S2 _content_lengths (content_chars)",
@@ -35,6 +38,7 @@ READS_THROUGH_FILES: dict[str, str] = {
     "backend/app/services/upload_reconciler.py": "S3 promote / soft-delete (its scan stays until contract)",
     "backend/app/services/workspace_service.py": "S2 list / get; S3 finalize / cancel / legacy promote",
     "backend/app/services/writer_planner_context.py": "S2 load_writer_planner_context",
+    "scripts/angle_map_preview.py": "S2 _load_rows (dev tool; _by_prefix / _conversation_ids list pointers)",
     "scripts/my_files_type_backfill.py": "S3 apply; its label read is a one-off dev tool (A6)",
     "shared/files/flags.py": "the schema probe",
     "shared/files/store.py": "the module itself",
