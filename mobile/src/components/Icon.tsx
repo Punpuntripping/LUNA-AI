@@ -31,6 +31,8 @@ const ICONS = {
   chevronDown: { ios: "chevron.down", android: "keyboard_arrow_down" },
   arrowDown: { ios: "arrow.down", android: "arrow_downward" },
   question: { ios: "questionmark.circle", android: "help" },
+  // «بحث موسّع» plan card header (web PlanCard: lucide ListChecks).
+  planList: { ios: "checklist", android: "checklist" },
   info: { ios: "info.circle", android: "info" },
   error: { ios: "exclamationmark.circle", android: "error" },
   sparkles: { ios: "sparkles", android: "auto_awesome" },

@@ -45,6 +45,8 @@ import { useAnswerSeen } from "@/components/analytics/useAnswerSeen";
 import { parseLibraryLinks, type LibraryLink } from "@/lib/contracts/library-links";
 import { parseQuoteRefs, withQuoteRefs } from "@/lib/contracts/quote-refs";
 import { QuoteRefMarker } from "@/components/chat/QuoteRefMarker";
+import { PlanCard, type PlanChoiceHandler } from "@/components/chat/PlanCard";
+import { parseExtendedPlan } from "@/lib/contracts/extended-plan";
 import type {
   Attachment,
   Message,
@@ -124,6 +126,12 @@ interface MessageBubbleProps {
    * passed for the latest assistant message.
    */
   nextSteps?: NextStep[];
+  /**
+   * «بحث موسّع» plan-card button → sends the choice as a normal message
+   * (ChatContainer → useSendMessage). Only the card row uses it; it is live
+   * only while that row is the latest message (``isLatestAssistant``).
+   */
+  onPlanChoice?: PlanChoiceHandler;
 }
 
 export const MessageBubble = memo(function MessageBubble({
@@ -141,6 +149,7 @@ export const MessageBubble = memo(function MessageBubble({
   templatesUsed,
   isLatestAssistant,
   nextSteps,
+  onPlanChoice,
 }: MessageBubbleProps) {
   const [feedback, setFeedback] = useState<FeedbackState>("none");
   const [isEditing, setIsEditing] = useState(false);
@@ -159,6 +168,18 @@ export const MessageBubble = memo(function MessageBubble({
   const isAgentQuestion = metadataKind === "agent_question";
   const isAgentAnswer = metadataKind === "agent_answer";
   const agentSuggestions = isAgentQuestion ? message.metadata?.suggestions : undefined;
+  // «بحث موسّع» plan card (extended_search.md §4.4): an agent_question row
+  // paused with ``pause_reason = "extended_plan"``. A malformed card falls
+  // back to the row's text (the same plan in words). Memoized on the raw value
+  // so the card's props keep their identity while another message streams.
+  const rawExtendedPlan =
+    isAgentQuestion && message.metadata?.pause_reason === "extended_plan"
+      ? message.metadata?.extended_plan
+      : undefined;
+  const planCard = useMemo(
+    () => (rawExtendedPlan === undefined ? null : parseExtendedPlan(rawExtendedPlan)),
+    [rawExtendedPlan]
+  );
   // Window C: assistant messages whose agent run produced one or more
   // workspace_items get an inline source chip + clickable citations.
   // Defensive check — backend may not yet populate this field.
@@ -527,8 +548,8 @@ export const MessageBubble = memo(function MessageBubble({
               "border-primary/40 bg-primary/[0.04] border-s-4 border-s-primary/70"
           )}
         >
-          {/* Agent question header */}
-          {isAgentQuestion && (
+          {/* Agent question header (the plan card carries its own title) */}
+          {isAgentQuestion && !planCard && (
             <div className="flex items-center gap-1.5 mb-1.5">
               <HelpCircle className="h-3.5 w-3.5 text-primary" />
               <span className="text-xs font-semibold text-primary">
@@ -550,8 +571,15 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           )}
 
-          {/* Content */}
-          {isCurrentlyStreaming ? (
+          {/* Content — a plan card replaces the row's text */}
+          {planCard ? (
+            <PlanCard
+              card={planCard}
+              conversationId={message.conversation_id}
+              isLatest={isLatestAssistant === true}
+              onChoose={onPlanChoice}
+            />
+          ) : isCurrentlyStreaming ? (
             <StreamingText content={streamingContent ?? ""} />
           ) : (
             <MarkdownRenderer
@@ -592,7 +620,7 @@ export const MessageBubble = memo(function MessageBubble({
 
           {/* Agent question suggestions (read-only chips — the user types their reply
               into the normal chat input; clicking a chip is a future enhancement) */}
-          {isAgentQuestion && agentSuggestions && agentSuggestions.length > 0 && (
+          {isAgentQuestion && !planCard && agentSuggestions && agentSuggestions.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2.5">
               {agentSuggestions.map((s, i) => (
                 <span

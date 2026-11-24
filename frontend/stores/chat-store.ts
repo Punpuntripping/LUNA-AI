@@ -154,6 +154,12 @@ export interface DeepSearchProgressState {
    * («الاستعلام 3») before the authoritative phase-end ``queries`` count lands.
    */
   topicsSeen: number;
+  /**
+   * «بحث موسّع» only (``data.searches``): the run's parallel searches — how
+   * many in all and how many have finished. ``null`` on an ordinary deep
+   * search; kept when a later event omits it.
+   */
+  searches: { total: number; done: number } | null;
   /** Client clock at the first progress event — drives the elapsed timer. */
   startedAt: number;
   /** Stage detail lines + ``status`` lines, in arrival order (capped). */
@@ -170,6 +176,30 @@ export interface DeepSearchSummary {
   sources: number;
   elapsedMs: number;
   log: string[];
+}
+
+/**
+ * «بحث موسّع» ``data.searches`` → progress state: N parallel searches, M
+ * finished. ``done`` is monotonic and never above ``total``; an event without
+ * a valid block keeps the previous value.
+ */
+function mergeSearches(
+  prev: DeepSearchProgressState["searches"],
+  raw: unknown,
+): DeepSearchProgressState["searches"] {
+  if (typeof raw !== "object" || raw === null) return prev;
+  const { total, done } = raw as { total?: unknown; done?: unknown };
+  if (
+    typeof total !== "number" ||
+    typeof done !== "number" ||
+    !Number.isFinite(total) ||
+    !Number.isFinite(done) ||
+    total < 1
+  ) {
+    return prev;
+  }
+  const t = Math.round(total);
+  return { total: t, done: Math.min(t, Math.max(prev?.done ?? 0, Math.round(done), 0)) };
 }
 
 /** Hard cap on the log so a chatty run can't grow the store without bound. */
@@ -1135,6 +1165,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         sources: 0,
         queries: 0,
         topicsSeen: 0,
+        searches: null,
         startedAt: Date.now(),
         log: [],
       };
@@ -1150,6 +1181,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         typeof event.data?.queries === "number"
           ? Math.max(base.queries, event.data.queries)
           : base.queries;
+      const nextSearches = mergeSearches(base.searches, event.data?.searches);
 
       // Stage is MONOTONIC. The two executors (reg_compliance/case) run in
       // parallel, so a slow phase can report `searching` (its phase-end counts) after a
@@ -1183,6 +1215,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             text: nextText,
             sources: nextSources,
             queries: nextQueries,
+            searches: nextSearches,
             log,
           },
         })) ?? state

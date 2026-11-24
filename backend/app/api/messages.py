@@ -72,6 +72,7 @@ async def send_message(
             content=body.content,
             request=request,
             attachment_ids=body.attachment_ids,
+            plan_choice=body.plan_choice,
         ),
         media_type="text/event-stream",
         headers={

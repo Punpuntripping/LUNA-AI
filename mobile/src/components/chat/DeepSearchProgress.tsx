@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, View } from "react-native";
 
 import type { DeepSearchStage } from "@contracts";
 
-import { DEEP_SEARCH_TOPIC_PREFIX, type DeepSearchSummary } from "@/chat/deep-search-progress";
+import { DEEP_SEARCH_TOPIC_PREFIX, formatSearches, type DeepSearchSummary } from "@/chat/deep-search-progress";
 import { useDeepSearchProgress } from "@/chat/stream-store";
 import { AppText } from "@/components/AppText";
 import { Icon } from "@/components/Icon";
@@ -139,6 +139,12 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({ conversatio
           <AppText variant="sm" weight={600} style={styles.flex}>
             {TITLE}
           </AppText>
+          {/* «بحث موسّع»: «4 بحوث متوازية · اكتمل 1» before the stopwatch (web header). */}
+          {progress.searches ? (
+            <AppText variant="xs" numberOfLines={1} style={styles.searches}>
+              {formatSearches(progress.searches)}
+            </AppText>
+          ) : null}
           <AppText variant="xs" tone="muted">
             {formatElapsed(elapsed)}
           </AppText>
@@ -234,6 +240,7 @@ const styles = StyleSheet.create({
   note: { flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 12, borderWidth: 1 },
   card: { gap: 10, padding: 14, borderWidth: 1 },
   head: { flexDirection: "row", alignItems: "center", gap: 8 },
+  searches: { flexShrink: 1 },
   track: { height: 6, overflow: "hidden" },
   fill: { height: 6 },
   steps: { gap: 4 },

@@ -5,7 +5,9 @@ import {
   type Attachment,
   type Message,
   type MessageListResponse,
+  type MessageMetadata,
   type NextStep,
+  type PlanChoicePayload,
   type SendMessagePayload,
   type SSETypedEvent,
   type TemplateUsed,
@@ -89,6 +91,10 @@ export interface SendParams {
   /** `message_start` (or an adopted send): the server took the send — release
    *  the composer chips now, never earlier. */
   onCommitted?: () => void;
+  /** «بحث موسّع» plan-card button (`SendMessagePayload.plan_choice`): `content`
+   *  is then the button's label. Sent with no attachments; a refusal hands no
+   *  text back (it was never typed — the card's buttons come back instead). */
+  planChoice?: PlanChoicePayload | null;
 }
 
 export type RefusalReason = "quota" | "parallel_limit" | "duplicate";
@@ -170,6 +176,24 @@ interface RecoveryWatch {
 
 const ARABIC_LETTER = /[؀-ۿ]/;
 
+/** A plan-card answer looks like the row the backend saves for it
+ *  (`{kind: "agent_answer", run_id, plan_choice}`): the bubble shows «(جواب)»
+ *  and a failed send retries with the same choice (web use-chat runSend). */
+function planAnswerMetadata(choice: PlanChoicePayload | null | undefined): MessageMetadata | undefined {
+  return choice ? { kind: "agent_answer", run_id: choice.run_id, plan_choice: choice.option } : undefined;
+}
+
+/** The choice a failed plan-card answer carried (its optimistic metadata). */
+function planChoiceOf(message: Message): PlanChoicePayload | null {
+  const meta = message.metadata;
+  const option = meta?.plan_choice;
+  return meta?.kind === "agent_answer" &&
+    typeof meta.run_id === "string" &&
+    (option === "plan" || option === "cheaper" || option === "ordinary")
+    ? { run_id: meta.run_id, option }
+    : null;
+}
+
 function arabicOr(value: unknown, fallback: string): string {
   return typeof value === "string" && ARABIC_LETTER.test(value) ? value.trim() : fallback;
 }
@@ -236,7 +260,9 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
     release(ctx);
     cache.setMessages(ctx.conversationId, (d) => removeMessage(d, ctx.optimisticId));
     store.setNotice(ctx.conversationId, notice);
-    return { status: "refused", reason, notice, restoreText: ctx.params.content.trim() ? ctx.params.content : null };
+    // A plan-card click was never typed: nothing goes back into the composer.
+    const restoreText = ctx.params.content.trim() && !ctx.params.planChoice ? ctx.params.content : null;
+    return { status: "refused", reason, notice, restoreText };
   };
 
   const watch = (conversationId: string, assistantId: string) => {
@@ -356,6 +382,7 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
             attachments: ctx.attachments,
             conversationId: conv,
             createdAt: new Date(now()).toISOString(),
+            metadata: planAnswerMetadata(ctx.params.planChoice),
           }),
         );
         store.start(conv, sid, d.assistant_message_id);
@@ -489,6 +516,7 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
     const before = cache.getMessages(conv);
     ctx.knownIds = messageIds(before);
     ctx.hasBaseline = !!before;
+    const metadata = planAnswerMetadata(ctx.params.planChoice);
     const optimistic: Message = {
       message_id: ctx.optimisticId,
       conversation_id: conv,
@@ -496,6 +524,7 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       content: ctx.content,
       attachments: ctx.attachments,
       created_at: new Date(now()).toISOString(),
+      ...(metadata ? { metadata } : {}),
       isOptimistic: true,
     };
     cache.setMessages(conv, (d) => addOptimistic(d, optimistic));
@@ -504,11 +533,12 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
 
     let body: ReadableStream<Uint8Array>;
     try {
-      body = await openStream(
-        conv,
-        { content: ctx.content, attachment_ids: ctx.params.attachmentIds?.length ? ctx.params.attachmentIds : null },
-        ctx.stream.signal,
-      );
+      const payload: SendMessagePayload = {
+        content: ctx.content,
+        attachment_ids: ctx.params.attachmentIds?.length ? ctx.params.attachmentIds : null,
+      };
+      if (ctx.params.planChoice) payload.plan_choice = ctx.params.planChoice;
+      body = await openStream(conv, payload, ctx.stream.signal);
     } catch (err) {
       if (ctx.cancelled) return onCancelled(ctx);
       if (err instanceof StreamNotSentError) return fail(ctx, err.message || MSG_UNKNOWN);
@@ -608,6 +638,8 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
         content: failed.content,
         attachmentIds: ids.length ? ids : undefined,
         optimisticAttachments: failed.attachments,
+        // A failed plan-card click retries as the same choice.
+        planChoice: planChoiceOf(failed),
       });
       if (result.status !== "refused" || result.reason === "duplicate") return result;
       // Not optimistic (same as markFailed): an adopt merge drops optimistic rows.

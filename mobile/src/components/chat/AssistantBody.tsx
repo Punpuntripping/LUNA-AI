@@ -1,7 +1,7 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
-import { parseNextSteps, parseTemplatesUsed, type Message } from "@contracts";
+import { parseExtendedPlan, parseNextSteps, parseTemplatesUsed, type Message } from "@contracts";
 
 import { useDeepSearchSummary, useIsConversationRunning } from "@/chat/stream-store";
 import { citationTarget } from "@/chat/use-workspace-lookup";
@@ -18,12 +18,15 @@ import { DeepSearchSummaryChip } from "./DeepSearchProgress";
 import { RetryButton } from "./FailedBubble";
 import { NextStepChips } from "./NextStepChips";
 import { OpenArtifactButton, viewableArtifacts } from "./OpenArtifactButton";
+import { PlanCard } from "./PlanCard";
 import { TemplatesUsedLine } from "./TemplatesUsedLine";
 
 // M4 — an assistant answer: unframed full-width markdown (port of the web's
 // MessageBubble assistant branch). Settled extras: «القوالب المستخدمة»,
 // next-step chips (latest answer only), نسخ + «إعادة التوليد». An
-// `agent_question` turn renders as the framed «السؤال» callout instead.
+// `agent_question` turn renders as the framed «السؤال» callout instead — or,
+// paused with `pause_reason = "extended_plan"`, as the «بحث موسّع» plan card in
+// the same frame (a malformed card falls back to the row's text).
 // «افتح ال…» reopens the turn's agent output over the chat; referenced-item
 // chips arrive with the workspace (2b).
 
@@ -37,8 +40,17 @@ export interface AssistantBodyProps {
 
 export const AssistantBody = memo(function AssistantBody({ message, streamingContent = null, isLatest = false }: AssistantBodyProps) {
   const { colours } = useTheme();
-  const { conversationId, isDemo, artifactKinds, artifactInfo, pasteIntoComposer, regenerate, openCitation, openArtifact } =
-    useChatRow();
+  const {
+    conversationId,
+    isDemo,
+    artifactKinds,
+    artifactInfo,
+    pasteIntoComposer,
+    regenerate,
+    openCitation,
+    openArtifact,
+    choosePlan,
+  } = useChatRow();
   const running = useIsConversationRunning(conversationId);
   const summary = useDeepSearchSummary(message.message_id);
   const [menu, setMenu] = useState(false);
@@ -47,6 +59,10 @@ export const AssistantBody = memo(function AssistantBody({ message, streamingCon
   const content = streaming ? streamingContent : message.content;
   const settled = !streaming && !message.isOptimistic;
   const isQuestion = message.metadata?.kind === "agent_question";
+  // Memoized on the raw value so the card keeps its props while another row streams.
+  const rawPlan =
+    isQuestion && message.metadata?.pause_reason === "extended_plan" ? message.metadata?.extended_plan : undefined;
+  const planCard = useMemo(() => (rawPlan === undefined ? null : parseExtendedPlan(rawPlan)), [rawPlan]);
 
   // Copy reads at tap time: the live stream while it arrives (Y2).
   const getText = useCallback(() => content ?? "", [content]);
@@ -81,8 +97,26 @@ export const AssistantBody = memo(function AssistantBody({ message, streamingCon
         ريحان
       </AppText>
 
-      <Pressable onLongPress={() => setMenu(true)} delayLongPress={350} accessibilityHint="اضغط مطولاً لخيارات النسخ">
-        {isQuestion ? (
+      {/* A plan card's buttons must stay separately reachable by VoiceOver /
+          TalkBack — an accessible wrapper would fold them into one element. */}
+      <Pressable
+        onLongPress={() => setMenu(true)}
+        delayLongPress={350}
+        accessible={planCard === null}
+        accessibilityHint="اضغط مطولاً لخيارات النسخ"
+      >
+        {isQuestion && planCard ? (
+          <AgentQuestion suggestions={undefined} header={false}>
+            <PlanCard
+              key={planCard.run_id}
+              card={planCard}
+              conversationId={conversationId}
+              isLatest={isLatest}
+              // The demo conversation refuses sends — its card stays read-only.
+              onChoose={isDemo ? undefined : choosePlan}
+            />
+          </AgentQuestion>
+        ) : isQuestion ? (
           <AgentQuestion suggestions={message.metadata?.suggestions}>{body}</AgentQuestion>
         ) : message.isFailed ? (
           <View style={[styles.failedFrame, { borderColor: colours.destructive }]}>{body}</View>

@@ -1,0 +1,242 @@
+"""``publish_extended`` (reports through today's publisher + the merged item with
+``children``, D14) and ``write_chat_summary`` (today's responder fed the merged answer).
+Fakes for every DB write and model — nothing leaves the process."""
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+import agents.agent_search as agent_search
+from agents.agent_search.models import SearchPublishOutput
+from agents.deep_search_v4.extended.models import MergedAnswer, Resolution
+from agents.deep_search_v4.extended.publish import (
+    PUBLISH_FAILED_AR,
+    REPORTS_HEADING_AR,
+    merged_agg_output,
+    publish_extended,
+    reports_footer,
+    write_chat_summary,
+)
+from agents.deep_search_v4.planner import agent as planner_agent
+from agents.deep_search_v4.planner import runner as planner_runner
+from agents.deep_search_v4.planner.models import PlannerResponse
+from agents.responder import wiring as responder_wiring
+from backend.app.services import references_service, workspace_service
+from backend.app.services.masking_service import reset_active_codec, set_active_codec
+
+from ._exec_fakes import FAKE_ID, REAL_ID, fixed_codec, make_agg, make_plan, make_ref, make_report, planner_deps
+
+
+def _reports():
+    r1 = make_report(1, make_agg([make_ref(1, "reg:a")], "أ [1]"), title="بحث الدين")
+    r1.ura = SimpleNamespace(high_results=["u1"], medium_results=["u2"])
+    r1.reg_rqrs, r1.per_executor_stats = ["rq1"], {"reg_search": {}}
+    r2 = make_report(2, make_agg([make_ref(1, "case:9", source_type="case")], "ب [1]"), title="بحث الاختصاص")
+    r2.ura = SimpleNamespace(high_results=["u3"], medium_results=[])
+    r3 = make_report(3, make_agg([], ""), title="فشل", ok=False)
+    return [r1, r2, r3]
+
+
+def _merged() -> MergedAnswer:
+    return MergedAnswer(
+        synthesis_md=f"## الخلاصة\nهويته {FAKE_ID} [1] و[2].",
+        references=[make_ref(1, "case:9", source_type="case").model_dump(mode="json"),
+                    make_ref(2, "reg:a").model_dump(mode="json")],
+        gaps=[f"فجوة {FAKE_ID}"],
+        confidence="medium",
+        resolved=[Resolution(topic="الميعاد", reports=[1, 2], decision=f"قرار {FAKE_ID}")],
+        report_titles=["بحث الدين", "بحث الاختصاص"],
+    )
+
+
+@pytest.fixture
+def codec():
+    token = set_active_codec(fixed_codec())
+    try:
+        yield
+    finally:
+        reset_active_codec(token)
+
+
+@pytest.fixture
+def db(monkeypatch):
+    calls: dict = {"reports": [], "created": [], "refs": []}
+    state = {"fail_reports": set(), "fail_merged": False}
+
+    async def _publish(inp, deps):
+        if inp.task_label in state["fail_reports"]:
+            raise RuntimeError("insert failed")
+        calls["reports"].append(inp)
+        item_id = f"wi-{len(calls['reports'])}"
+        return SearchPublishOutput(item_id=item_id, sse_events=[{"type": "workspace_item_created", "item_id": item_id}])
+
+    def _create(supabase, user_id, **kw):
+        if state["fail_merged"]:
+            raise RuntimeError("cap")
+        calls["created"].append(kw)
+        return {"item_id": "wi-merged", "title": kw["title"]}
+
+    monkeypatch.setattr(agent_search, "publish_search_result", _publish)
+    monkeypatch.setattr(workspace_service, "create_workspace_item", _create)
+    monkeypatch.setattr(references_service, "persist_item_references",
+                        lambda supabase, **kw: calls["refs"].append(kw) or 0)
+    calls["state"] = state
+    return calls
+
+
+def _publish_all(reports, merged, **kw):
+    args = dict(supabase=object(), user_id="u1", conversation_id="c1", case_id=None, message_id="m1",
+                query="ما موقفي؟", plan=make_plan(), detail_level="medium", task_label="تقييم الموقف",
+                run_id="run-1")
+    args.update(kw)
+    return asyncio.run(publish_extended(reports, merged, **args))
+
+
+# --------------------------------------------------------------------------- publish_extended
+
+
+def test_reports_then_the_merged_item_with_children(db, codec):
+    reports = _reports()
+    out = _publish_all(reports, _merged())
+
+    assert out.report_item_ids == ["wi-1", "wi-2"] and out.merged_item_id == "wi-merged"
+    assert [r.item_id for r in reports] == ["wi-1", "wi-2", None]
+    first = db["reports"][0]
+    assert first.task_label == "بحث الدين" and first.describe_query == "ما موقفي؟"
+    assert first.ura is reports[0].ura and first.reg_rqrs == ["rq1"] and first.message_id == "m1"
+
+    created = db["created"][0]
+    assert created["kind"] == "agent_search" and created["title"] == "تقييم الموقف"
+    md = created["metadata"]
+    assert md["children"] == ["wi-1", "wi-2"]
+    assert md["extended_search"]["run_id"] == "run-1"
+    assert md["extended_search"]["titles"] == ["بحث الدين", "بحث الاختصاص"]
+    assert md["extended_search"]["resolved"] == [{"topic": "الميعاد", "reports": [1, 2], "decision": f"قرار {REAL_ID}"}]
+    assert md["subtype"] == "legal_synthesis" and md["confidence"] == "medium"
+    assert md["gaps"] == [f"فجوة {REAL_ID}"]
+    # decoded before storing; the D14 list after the answer, the disclaimer last
+    content = created["content_md"]
+    assert REAL_ID in content and FAKE_ID not in content
+    assert content.index("[1] و[2].") < content.index(REPORTS_HEADING_AR) < content.index("تنبيه قانوني")
+    assert "1. بحث الدين\n2. بحث الاختصاص" in content
+
+    refs = db["refs"][0]
+    assert refs["wi_id"] == "wi-merged" and refs["cited_numbers"] == [1, 2]
+    assert [r.ref_id for r in refs["references"]] == ["case:9", "reg:a"]
+    assert refs["ura_results"] == ["u1", "u2", "u3"]
+    # Reports first, the merged answer LAST (the clients auto-open the newest item) and
+    # marked primary (message_service puts it first in artifact_ids — the citation target).
+    assert [e["item_id"] for e in out.sse_events] == ["wi-1", "wi-2", "wi-merged"]
+    assert out.sse_events[-1]["type"] == "workspace_item_created" and out.sse_events[-1]["primary"] is True
+    assert not any(e.get("primary") for e in out.sse_events[:-1])
+    assert not any(e.get("type") == "status" for e in out.sse_events)
+
+
+def test_one_usable_report_publishes_only_that_report(db):
+    r1, r2, r3 = _reports()
+    r2.ok = False
+    out = _publish_all([r1, r2, r3], _merged())     # a merged answer with < 2 reports is not stored
+    assert out.report_item_ids == ["wi-1"] and out.merged_item_id is None
+    assert db["created"] == []
+
+
+def test_no_merged_answer_publishes_the_reports(db):
+    out = _publish_all(_reports(), None)
+    assert out.report_item_ids == ["wi-1", "wi-2"] and out.merged_item_id is None
+
+
+def test_a_failed_report_publish_never_stops_the_others(db):
+    db["state"]["fail_reports"].add("بحث الدين")
+    out = _publish_all(_reports(), _merged())
+    assert out.report_item_ids == ["wi-1"] and out.merged_item_id == "wi-merged"
+    assert db["created"][0]["metadata"]["children"] == ["wi-1"]
+    assert [e.get("item_id") for e in out.sse_events] == ["wi-1", "wi-merged", None]
+    assert out.sse_events[-1] == {"type": "status", "text": PUBLISH_FAILED_AR}
+
+
+def test_a_failed_merged_publish_keeps_the_reports(db):
+    db["state"]["fail_merged"] = True
+    out = _publish_all(_reports(), _merged())
+    assert out.report_item_ids == ["wi-1", "wi-2"] and out.merged_item_id is None
+    assert out.sse_events[-1]["text"] == PUBLISH_FAILED_AR
+
+
+def test_merged_title_without_a_task_label(db, codec):
+    _publish_all(_reports(), _merged(), task_label=None, query=f"هويته {FAKE_ID}")
+    assert db["created"][0]["title"] == f"بحث موسّع: هويته {REAL_ID}"
+
+
+def test_reports_footer_and_merged_agg_output():
+    assert reports_footer([]) == ""
+    assert reports_footer(["أ", " ", "ب"]) == f"**{REPORTS_HEADING_AR}**\n1. أ\n2. ب"
+    merged = _merged()
+    merged.references.append({"n": 3, "bad": True})                  # no longer a Reference → dropped
+    agg = merged_agg_output(merged)
+    assert [r.n for r in agg.references] == [1, 2]
+    assert agg.validation.cited_numbers == [1, 2] and agg.confidence == "medium"
+
+
+# --------------------------------------------------------------------------- write_chat_summary
+
+
+class _Responder:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.prompts: list[str] = []
+
+    async def run(self, prompt, deps=None, usage_limits=None):
+        self.prompts.append(prompt)
+        if self.fail:
+            raise RuntimeError("responder down")
+        self.seen_agg = deps._agg_output
+        return SimpleNamespace(output=PlannerResponse(chat_summary_md="ملخص الجواب الموحّد"))
+
+
+def _deps_with_events():
+    events: list[dict] = []
+    deps = planner_deps([])
+    deps.emit_sse = events.append
+    return deps, events
+
+
+def test_chat_summary_on_the_legacy_responder(monkeypatch):
+    responder = _Responder()
+    monkeypatch.setattr(responder_wiring, "responder_unified", lambda family: False)
+    monkeypatch.setattr(planner_agent, "create_planner_responder", lambda model_override=None: responder)
+    deps, events = _deps_with_events()
+    turn = asyncio.run(write_chat_summary(_merged(), query="ما موقفي؟", deps=deps, mode="case_led"))
+
+    assert turn.kind == "completed" and turn.response.chat_summary_md == "ملخص الجواب الموحّد"
+    assert responder.seen_agg.synthesis_md == _merged().synthesis_md
+    assert deps._decision.mode == "case_led" and deps._decision.support is False
+    assert [e["event"] for e in events] == ["planner_retrieval_done", "planner_responded"]
+    assert "ما موقفي؟" in responder.prompts[0] and turn.retrieval_query == "ما موقفي؟"
+
+
+def test_chat_summary_falls_back_to_the_answer(monkeypatch):
+    monkeypatch.setattr(responder_wiring, "responder_unified", lambda family: False)
+    monkeypatch.setattr(planner_agent, "create_planner_responder",
+                        lambda model_override=None: _Responder(fail=True))
+    deps, events = _deps_with_events()
+    turn = asyncio.run(write_chat_summary(_merged(), query="q", deps=deps))
+    assert turn.degraded is True and turn.response.chat_summary_md.startswith("## الخلاصة")
+    assert events[-1]["event"] == "planner_error"
+    assert deps._decision.mode == "full"
+
+
+def test_chat_summary_on_the_unified_responder(monkeypatch):
+    seen: dict = {}
+
+    async def _phase3(query, deps, agg, decision, *, decider_result, t2):
+        seen.update(query=query, agg=agg, decision=decision, decider_result=decider_result)
+        return planner_runner.PlannerTurnResult(kind="completed", agg_output=agg, decision=decision)
+
+    monkeypatch.setattr(responder_wiring, "responder_unified", lambda family: True)
+    monkeypatch.setattr(planner_runner, "_phase3_unified", _phase3)
+    deps, _ = _deps_with_events()
+    turn = asyncio.run(write_chat_summary(_merged(), query="ما موقفي؟", deps=deps))
+    assert turn.kind == "completed"
+    assert seen["query"] == "ما موقفي؟" and seen["decider_result"] is None
+    assert seen["agg"].synthesis_md == _merged().synthesis_md and seen["decision"].mode == "full"

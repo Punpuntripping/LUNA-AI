@@ -943,6 +943,81 @@ describe("retry / regenerate", () => {
   });
 });
 
+describe("send — «بحث موسّع» plan choice", () => {
+  const CHOICE = { run_id: "r1", option: "plan" as const };
+  const TAG = { kind: "agent_answer", run_id: "r1", plan_choice: "plan" };
+  const QUOTA = { meter: "ord" as const, period: "daily" as const, used: 1, limit: 1, resets_at: "", message_ar: "حد" };
+
+  test("the POST carries plan_choice; the optimistic and the confirmed rows are tagged agent_answer", async () => {
+    const h = harness();
+    const promise = h.engine.send({ conversationId: C1, content: "نفّذ الخطة", planChoice: CHOICE });
+    await tick();
+    assert.deepEqual(h.posts[0].payload, { content: "نفّذ الخطة", attachment_ids: null, plan_choice: CHOICE });
+    assert.deepEqual(h.cache.rows(C1)[0].metadata, TAG);
+    h.streams[0].push(frame("message_start", START));
+    await tick();
+    assert.equal(h.cache.rows(C1)[0].message_id, "u1");
+    assert.deepEqual(h.cache.rows(C1)[0].metadata, TAG);
+    h.streams[0].push(frame("done", DONE));
+    await promise;
+  });
+
+  test("a typed send carries no plan_choice and no metadata", async () => {
+    const h = harness();
+    const { promise } = await startSend(h);
+    assert.equal("plan_choice" in h.posts[0].payload, false);
+    assert.equal(h.cache.rows(C1)[0].metadata, undefined);
+    h.streams[0].push(frame("quota_exceeded", QUOTA));
+    await promise;
+  });
+
+  test("refused → the label never goes back into the composer (the card's buttons come back)", async () => {
+    const h = harness();
+    const promise = h.engine.send({ conversationId: C1, content: "نفّذ الخطة", planChoice: CHOICE });
+    await tick();
+    h.streams[0].push(frame("quota_exceeded", QUOTA));
+    const result = await promise;
+    assert.equal(result.status === "refused" && result.restoreText, null);
+    assert.equal(h.cache.rows(C1).length, 0);
+  });
+
+  test("retrying a failed plan-card answer re-sends the same choice", async () => {
+    const h = harness();
+    h.cache.seed(C1, [
+      msg({
+        message_id: "f1",
+        role: "user",
+        content: "نفّذ الأوفر",
+        isFailed: true,
+        metadata: { kind: "agent_answer", run_id: "r1", plan_choice: "cheaper" },
+      }),
+    ]);
+    const p = h.engine.retry(C1, "f1");
+    await tick();
+    assert.deepEqual(h.posts[0].payload.plan_choice, { run_id: "r1", option: "cheaper" });
+    h.streams[0].push(frame("quota_exceeded", QUOTA));
+    await p;
+  });
+
+  test("agent_progress data.searches feeds the tracker: kept when omitted, done only goes up", async () => {
+    const h = harness();
+    const { promise } = await startSend(h);
+    const s = h.streams[0];
+    s.push(frame("message_start", START));
+    s.push(frame("agent_run_started", { agent_family: "deep_search" }));
+    s.push(frame("agent_progress", { stage: "searching", text: "", data: { searches: { total: 4, done: 0 } } }));
+    await tick();
+    assert.deepEqual(selectDeepSearchProgress(h.store.getState(), C1)?.searches, { total: 4, done: 0 });
+    s.push(frame("agent_progress", { stage: "searching", text: "", data: { sources: 9 } }));
+    s.push(frame("agent_progress", { stage: "searching", text: "", data: { searches: { total: 4, done: 2 } } }));
+    s.push(frame("agent_progress", { stage: "evaluating", text: "", data: { searches: { total: 4, done: 1 } } }));
+    await tick();
+    assert.deepEqual(selectDeepSearchProgress(h.store.getState(), C1)?.searches, { total: 4, done: 2 });
+    s.push(frame("done", DONE));
+    await promise;
+  });
+});
+
 test("reset aborts in-flight sends and clears state", async () => {
   const h = harness();
   const { promise } = await startSend(h);

@@ -115,6 +115,8 @@ jobs:
             agents/memory/ocr_extractor/tests/test_page_rows.py \
             agents/memory/ocr_extractor/tests/test_text_layer_overflow.py \
             backend/tests/test_ocr_page_budget_gate.py \
+            agents/deep_search_v4/extended/tests/ \
+            backend/tests/test_extended_plan_api.py \
             agents/deep_search_v4/tests/test_case_documents_segmented.py \
             agents/deep_search_v4/tests/test_segmented_delivery_wiring.py
 

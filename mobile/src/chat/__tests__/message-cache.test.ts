@@ -87,6 +87,14 @@ describe("cache transforms", () => {
     assert.deepEqual(swapped.pages[0].messages.map((m) => m.message_id), ["u1"]);
     const readded = confirmUserMessage({ pages: [{ messages: [], has_more: false }], pageParams: [undefined] }, "opt", real);
     assert.deepEqual(readded.pages[0].messages.map((m) => m.message_id), ["u1"]);
+    assert.equal(readded.pages[0].messages[0].metadata, undefined);
+    // A plan-card answer keeps its «(جواب)» tag when re-added.
+    const tag = { kind: "agent_answer" as const, run_id: "r1", plan_choice: "plan" as const };
+    const tagged = confirmUserMessage({ pages: [{ messages: [], has_more: false }], pageParams: [undefined] }, "opt", {
+      ...real,
+      metadata: tag,
+    });
+    assert.deepEqual(tagged.pages[0].messages[0].metadata, tag);
   });
 
   test("writeFinalAssistant never overwrites a row that already has content", () => {

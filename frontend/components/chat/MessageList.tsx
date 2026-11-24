@@ -26,6 +26,7 @@ import { DeepSearchProgress } from "@/components/chat/DeepSearchProgress";
 import { DeepSearchSummaryChip } from "@/components/chat/DeepSearchSummaryChip";
 import { FailedResponseBubble } from "@/components/chat/FailedResponseBubble";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
+import type { PlanChoiceHandler } from "@/components/chat/PlanCard";
 import type { Message, TemplateUsed } from "@/types";
 
 /**
@@ -55,6 +56,8 @@ interface MessageListProps {
   onEditResend?: (messageId: string, newContent: string) => void;
   /** Called when user clicks Retry on a failed message */
   onRetry?: (messageId: string) => void;
+  /** «بحث موسّع» plan-card button → send the choice (see PlanCard). */
+  onPlanChoice?: PlanChoiceHandler;
 }
 
 export function MessageList({
@@ -63,6 +66,7 @@ export function MessageList({
   onRegenerate,
   onEditResend,
   onRetry,
+  onPlanChoice,
 }: MessageListProps) {
   const {
     data,
@@ -567,6 +571,9 @@ export function MessageList({
                     ? latestNextSteps
                     : undefined
                 }
+                // The demo conversation has no composer and refuses sends —
+                // its plan card (if any) stays read-only.
+                onPlanChoice={isDemo ? undefined : onPlanChoice}
               />
             </Fragment>
           );

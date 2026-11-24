@@ -72,6 +72,7 @@ import type {
   OtpRequestResponse,
   PasswordForgotResponse,
   PasswordResetRequest,
+  PlanChoicePayload,
   WorkspaceItemReferencesResponse,
 } from "@/lib/contracts";
 import { supabase } from "@/lib/supabase";
@@ -735,7 +736,11 @@ export const messagesApi = {
     conversationId: string,
     content: string,
     signal?: AbortSignal,
-    options?: { attachment_ids?: string[] }
+    options?: {
+      attachment_ids?: string[];
+      /** «بحث موسّع» plan-card button (SendMessagePayload.plan_choice). */
+      plan_choice?: PlanChoicePayload | null;
+    }
   ): Promise<Response> => {
     const url = `${API_BASE}${API_PREFIX}/conversations/${conversationId}/messages`;
     const doFetch = () => {
@@ -747,6 +752,7 @@ export const messagesApi = {
       }
       const body: Record<string, unknown> = { content };
       if (options?.attachment_ids?.length) body.attachment_ids = options.attachment_ids;
+      if (options?.plan_choice) body.plan_choice = options.plan_choice;
       return fetch(url, {
         method: "POST",
         headers,

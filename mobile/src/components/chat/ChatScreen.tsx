@@ -451,6 +451,14 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
         router.push({ pathname: "/source/[itemId]/[n]", params: { itemId: artifactId, n: String(n) } });
       },
       openArtifact: setOpenedItemId,
+      choosePlan: async (choice, label) => {
+        if (!conversationId) return;
+        // No composer attachments, and the draft is left alone: the button
+        // answers the card, it is not the user's typed message.
+        const sending = chatEngine.send({ conversationId, content: label, planChoice: choice });
+        scrollToEnd();
+        await sending.catch(() => undefined);
+      },
     }),
     [conversationId, isDemo, artifactKinds, artifactInfo, draftKey, setDraft, setEditingMessage, startSend, scrollToEnd],
   );

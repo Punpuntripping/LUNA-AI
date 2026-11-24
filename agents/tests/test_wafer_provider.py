@@ -32,6 +32,7 @@ OPENROUTER = "or-deepseek-v4-flash"
 SYNTHESIS = ("aggregator", "agent_writer")
 WAFER_HEADED = (
     "router", "reg_compliance_expander", "case_search_expander", "artifact_analyzer", *SYNTHESIS,
+    "extended_planner", "extended_merger",
 )
 
 
@@ -58,6 +59,13 @@ def test_aggregator_and_writer_keep_max_reasoning(slot: str) -> None:
 def test_aggregator_usage_bills_at_the_wafer_head() -> None:
     # Aggregator usage entries without a model name are priced by the role's head.
     assert model_of_subagent("aggregator") == WAFER
+
+
+def test_extended_search_slots_follow_the_planner_and_aggregator_policies() -> None:
+    # «بحث موسّع»: the planner on V4.1 default (as tested 11-23), the merger = the aggregator's policy.
+    assert AGENT_MODELS["extended_planner"] == AGENT_MODELS["router"]
+    assert AGENT_MODELS["extended_planner"].reasoning == "default"
+    assert AGENT_MODELS["extended_merger"] == AGENT_MODELS["aggregator"]
 
 
 def test_reasoning_levels_are_unchanged_by_the_move() -> None:

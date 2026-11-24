@@ -95,12 +95,20 @@ export function addOptimistic(data: MessagesData | undefined, message: Message):
 /**
  * `message_start`: the optimistic row becomes the real user row. When an
  * empty first fetch of a brand-new conversation already wiped the optimistic
- * row, re-add it so the user's message never disappears mid-run.
+ * row, re-add it so the user's message never disappears mid-run (with its
+ * `metadata`, e.g. a plan-card answer's `agent_answer` tag).
  */
 export function confirmUserMessage(
   data: MessagesData | undefined,
   optimisticId: string,
-  real: { id: string; content: string; attachments: Attachment[]; conversationId: string; createdAt: string },
+  real: {
+    id: string;
+    content: string;
+    attachments: Attachment[];
+    conversationId: string;
+    createdAt: string;
+    metadata?: MessageMetadata;
+  },
 ): MessagesData {
   if (data && (hasMessage(data, optimisticId) || hasMessage(data, real.id))) {
     return mapMessages(data, (m) =>
@@ -114,6 +122,7 @@ export function confirmUserMessage(
     content: real.content,
     attachments: real.attachments,
     created_at: real.createdAt,
+    ...(real.metadata ? { metadata: real.metadata } : {}),
   });
 }
 

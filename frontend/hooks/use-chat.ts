@@ -10,6 +10,7 @@ import { workspaceKeys } from "@/hooks/use-workspace";
 import { isMobileViewport } from "@/hooks/use-media-query";
 import { parseNextSteps } from "@/lib/next-steps";
 import { parseTemplatesUsed } from "@/lib/templates-used";
+import type { PlanChoicePayload } from "@/lib/contracts/extended-plan";
 // Chat-depth analytics (product_analytics §3b). Every call below is
 // fire-and-forget and individually guarded inside the tracker — a tracking
 // failure must never touch the stream (T9).
@@ -61,6 +62,12 @@ interface SendMessageParams {
   conversationId: string;
   content: string;
   caseId?: string | null;
+  /**
+   * «بحث موسّع» plan-card button: `content` is then the button's label. The
+   * send carries no composer attachments and, if refused, puts nothing back
+   * in the composer (the card's buttons come back instead).
+   */
+  planChoice?: PlanChoicePayload | null;
 }
 
 interface RegenerateParams {
@@ -138,7 +145,7 @@ export function useSendMessage(): UseSendMessageReturn {
 
   const runSend = useCallback(
     async (
-      { conversationId, content }: SendMessageParams,
+      { conversationId, content, planChoice }: SendMessageParams,
       sendId: number,
       initialRunToken: number | null,
     ) => {
@@ -167,8 +174,13 @@ export function useSendMessage(): UseSendMessageReturn {
       // any upload is in flight). Failed / cancelled files contribute
       // no attachment_ids — we silently drop them so the message still
       // sends with whatever made it through.
-      const { pendingFiles, pendingBlogs, pendingLibraryItems } =
-        useChatStore.getState();
+      //
+      // A plan-card button answers the card — it never carries (or releases)
+      // the chips the user may have staged in the composer meanwhile.
+      const composer = useChatStore.getState();
+      const pendingFiles = planChoice ? [] : composer.pendingFiles;
+      const pendingBlogs = planChoice ? [] : composer.pendingBlogs;
+      const pendingLibraryItems = planChoice ? [] : composer.pendingLibraryItems;
       const attachmentIds: string[] = pendingFiles
         .filter((pf) => pf.uploadStatus === "completed" && pf.itemId)
         .map((pf) => pf.itemId as string);
@@ -269,6 +281,17 @@ export function useSendMessage(): UseSendMessageReturn {
       const messageContent = content || (optimisticAttachments.length > 0 ? "مرفق" : "");
       if (!messageContent) return;
 
+      // A plan-card answer looks like the row the backend saves for it
+      // ({kind: "agent_answer", run_id, plan_choice}) — the bubble shows
+      // «(جواب)» and a failed send can be retried with the same choice.
+      const optimisticMetadata: Message["metadata"] = planChoice
+        ? {
+            kind: "agent_answer",
+            run_id: planChoice.run_id,
+            plan_choice: planChoice.option,
+          }
+        : undefined;
+
       // 1. Create optimistic user message
       const optimisticId = `optimistic-${Date.now()}`;
       const optimisticMessage: Message = {
@@ -281,6 +304,7 @@ export function useSendMessage(): UseSendMessageReturn {
         // Window C: user messages never carry artifact_ids; explicit so the
         // shape stays consistent with backend MessageResponse.
         artifact_ids: undefined,
+        ...(optimisticMetadata ? { metadata: optimisticMetadata } : {}),
         isOptimistic: true,
       };
 
@@ -334,6 +358,7 @@ export function useSendMessage(): UseSendMessageReturn {
 
       const sendOptions = {
         attachment_ids: attachmentIds.length ? attachmentIds : undefined,
+        plan_choice: planChoice ?? undefined,
       };
 
       // Retry loop: attempt SSE connection up to (1 + maxReconnectAttempts) times.
@@ -554,6 +579,7 @@ export function useSendMessage(): UseSendMessageReturn {
                 payload.user_message_id,
                 messageContent,
                 optimisticAttachments,
+                optimisticMetadata,
               );
               // Start streaming the assistant message into THIS
               // conversation's slot — other conversations never see it.
@@ -606,7 +632,9 @@ export function useSendMessage(): UseSendMessageReturn {
               // public funnel's `quota_blocked`, not a chat-depth event.
               noteRunAborted(analyticsRunToken);
               removeOptimisticMessage(qc, conversationId, optimisticId);
-              if (content) {
+              // A plan-card click was never typed: its buttons come back
+              // (the card is the latest row again) — nothing to put back.
+              if (content && !planChoice) {
                 useChatStore
                   .getState()
                   .injectComposerText(content, conversationId);
@@ -631,7 +659,7 @@ export function useSendMessage(): UseSendMessageReturn {
               const payload = data as SSEParallelLimit;
               noteRunAborted(analyticsRunToken);
               removeOptimisticMessage(qc, conversationId, optimisticId);
-              if (content) {
+              if (content && !planChoice) {
                 useChatStore
                   .getState()
                   .injectComposerText(content, conversationId);
@@ -1110,6 +1138,17 @@ export function useSendMessage(): UseSendMessageReturn {
       const failedMsg = messages.find((m) => m.message_id === messageId);
       if (!failedMsg) return;
 
+      // A failed plan-card click retries as the same choice (its optimistic
+      // row carries {run_id, plan_choice}, see runSend).
+      const meta = failedMsg.metadata;
+      const option = meta?.plan_choice;
+      const planChoice: PlanChoicePayload | null =
+        meta?.kind === "agent_answer" &&
+        typeof meta.run_id === "string" &&
+        (option === "plan" || option === "cheaper" || option === "ordinary")
+          ? { run_id: meta.run_id, option }
+          : null;
+
       // Remove the failed message from cache before re-sending
       qc.setQueryData<{
         pages: MessageListResponse[];
@@ -1125,7 +1164,12 @@ export function useSendMessage(): UseSendMessageReturn {
         };
       });
 
-      await sendMessage({ conversationId, content: failedMsg.content, caseId });
+      await sendMessage({
+        conversationId,
+        content: failedMsg.content,
+        caseId,
+        planChoice,
+      });
     },
     [sendMessage, getMessagesFromCache, qc]
   );
@@ -1310,6 +1354,7 @@ function reinstateUserMessage(
   realId: string,
   content: string,
   attachments: Attachment[],
+  metadata?: Message["metadata"],
 ): void {
   qc.setQueryData<{ pages: MessageListResponse[]; pageParams: (string | undefined)[] }>(
     messageKeys.list(conversationId),
@@ -1344,6 +1389,7 @@ function reinstateUserMessage(
         attachments,
         created_at: new Date().toISOString(),
         artifact_ids: undefined,
+        ...(metadata ? { metadata } : {}),
       };
       const pages = base.pages.length ? base.pages : [{ messages: [], has_more: false }];
       const newPages = [...pages];

@@ -546,6 +546,15 @@ class Settings(BaseSettings):
     ANGLE_MAP_UI_ENABLED: bool = False
     ANGLE_MAP_UI_USERS: Optional[str] = None
 
+    # ── «بحث موسّع» (extended search) — .claude/plans/extended_search.md §4.8 ─
+    # On: an eligible deep-search turn (Pro / Pro Plus / Max, a fresh angle map
+    # of the turn's attachments, ≥ 10 points left) is planned by the angle-aware
+    # planner; a multi-search plan pauses on a plan card. Off: today's deep
+    # search, byte-identical. *_USERS: comma-separated users.user_id; empty =
+    # everyone. Env var name == field name (no validation_alias).
+    EXTENDED_SEARCH_ENABLED: bool = False
+    EXTENDED_SEARCH_USERS: Optional[str] = None
+
     # ── Completion Search — .claude/plans/completion_search.md §4.10 ────────
     # COMPLETION_SEARCH: the two planners get `complete_search` / `keep_results`
     # (the search planner in place of `fetch_article`). Off: the search planner

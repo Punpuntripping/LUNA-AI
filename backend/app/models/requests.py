@@ -3,7 +3,7 @@ Pydantic request models for API endpoints.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
@@ -175,10 +175,20 @@ class UpdateConversationRequest(BaseModel):
 
 # ── Messages ──────────────────────────────────────────
 
+class PlanChoice(BaseModel):
+    """A «بحث موسّع» plan-card button (frontend/lib/contracts/extended-plan.ts
+    ``PlanChoicePayload``): the card's paused run + the option pressed."""
+    run_id: str = Field(..., min_length=1, max_length=64)
+    option: Literal["plan", "cheaper", "ordinary"]
+
+
 class SendMessageRequest(BaseModel):
     """POST /api/v1/conversations/{conversation_id}/messages"""
     content: str = Field(..., min_length=1, max_length=10_000)
     attachment_ids: Optional[list[str]] = None  # document_ids to attach to the message
+    # Set only by a plan-card button (``content`` is then the button's label);
+    # absent / null for every typed message.
+    plan_choice: Optional[PlanChoice] = None
 
     @field_validator("content", mode="before")
     @classmethod

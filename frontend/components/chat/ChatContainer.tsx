@@ -14,6 +14,7 @@ import { ConversationNotFound } from "@/components/chat/ConversationNotFound";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { QuotaBanner, type FreeTrialBlock } from "@/components/chat/QuotaBanner";
 import { ConversationHeaderMenu } from "@/components/chat/ConversationHeaderMenu";
+import type { PlanChoicePayload } from "@/lib/contracts/extended-plan";
 
 interface ChatContainerProps {
   conversationId: string;
@@ -58,6 +59,15 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
     (content: string) => {
       void sendMessage({ conversationId, content, caseId });
     },
+    [sendMessage, conversationId, caseId]
+  );
+
+  // «بحث موسّع» plan card: a button is a normal send whose text is the
+  // button's label, plus the choice the backend resumes the paused run with.
+  // Resolves when the send ends, so the card can release its local lock.
+  const handlePlanChoice = useCallback(
+    (choice: PlanChoicePayload, label: string) =>
+      sendMessage({ conversationId, content: label, caseId, planChoice: choice }),
     [sendMessage, conversationId, caseId]
   );
 
@@ -180,6 +190,7 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         onRegenerate={handleRegenerate}
         onEditResend={handleEditResend}
         onRetry={handleRetry}
+        onPlanChoice={handlePlanChoice}
       />
 
       <ChatInput

@@ -7,13 +7,18 @@ import { useTheme } from "@/theme/ThemeProvider";
 
 // `agent_question` turn: the agent paused to ask. Framed «السؤال» callout with
 // the agent's suggested replies as READ-ONLY chips — the user types the reply
-// in the composer (web MessageBubble.tsx agent-question branch).
+// in the composer (web MessageBubble.tsx agent-question branch). A «بحث موسّع»
+// plan card brings its own title, so it renders here with `header={false}`
+// and no suggestions (AssistantBody).
 
 export const AgentQuestion = memo(function AgentQuestion({
   suggestions,
+  header = true,
   children,
 }: {
   suggestions: string[] | undefined;
+  /** The «السؤال» header (off for the plan card, which carries its own title). */
+  header?: boolean;
   children: ReactNode;
 }) {
   const { colours, radius } = useTheme();
@@ -30,12 +35,14 @@ export const AgentQuestion = memo(function AgentQuestion({
         },
       ]}
     >
-      <View style={styles.head}>
-        <Icon name="question" size={15} colour={colours.primary} />
-        <AppText variant="xs" weight={700} tone="link">
-          السؤال
-        </AppText>
-      </View>
+      {header ? (
+        <View style={styles.head}>
+          <Icon name="question" size={15} colour={colours.primary} />
+          <AppText variant="xs" weight={700} tone="link">
+            السؤال
+          </AppText>
+        </View>
+      ) : null}
       {children}
       {suggestions && suggestions.length > 0 ? (
         <View style={styles.chips}>

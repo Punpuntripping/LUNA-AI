@@ -85,6 +85,8 @@ from agents.deep_search_v4.planner.logger import (
     EVENT_RETRIEVAL_DONE,
 )
 from agents.deep_search_v4.planner.models import PriorSearchSummary
+# «بحث موسّع» plan card's pause_reason (the module is the shared contract — no logic).
+from agents.deep_search_v4.extended.models import PAUSE_REASON as _EXTENDED_PAUSE_REASON
 from agents.models import (
     ChatResponse,
     CheckPriorReports,
@@ -2639,6 +2641,7 @@ async def handle_message(
     codec: Any = None,
     pinned_plan: "PinnedPlan | None" = None,
     deep_search_gate: "DeepSearchGate | None" = None,
+    plan_choice: Any = None,
 ) -> AsyncGenerator[dict, None]:
     """Public entry point for all chat turns.
 
@@ -2675,6 +2678,9 @@ async def handle_message(
     a ContextVar for the turn; every deep_search entry point asks it before a
     new search starts (``_check_deep_search_gate``). ``None`` — the blog API's
     headless front door — means no gate.
+
+    ``plan_choice`` (``{"run_id", "option"}``): a «بحث موسّع» plan-card button
+    (``SendMessageRequest.plan_choice``); ``None`` for every typed message.
     """
     from backend.app.services.masking_service import (
         build_turn_codec,
@@ -2710,6 +2716,7 @@ async def handle_message(
                 assistant_message_id=assistant_message_id,
                 codec=codec,
                 pinned_plan=pinned_plan,
+                plan_choice=plan_choice,
             ):
                 yield guard.check(ev)
     finally:
@@ -2730,6 +2737,7 @@ async def _handle_message_inner(
     assistant_message_id: str | None = None,
     codec: Any = None,
     pinned_plan: "PinnedPlan | None" = None,
+    plan_choice: Any = None,
 ) -> AsyncGenerator[dict, None]:
     """Main entry point for all chat turns.
 
@@ -2883,6 +2891,31 @@ async def _handle_message_inner(
 
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
+    # «بحث موسّع» plan card (extended_search.md §4.4, D31/D32): a button or a label's
+    # exact text runs that option; a button of a card that is no longer live gets a
+    # short reply; anything else typed — or an expired card — resolves the card and
+    # this message goes to the router below as a normal turn.
+    if plan_choice is not None or (
+        pending and str(pending.get("pause_reason") or "") == _EXTENDED_PAUSE_REASON
+    ):
+        from agents.deep_search_v4.extended import wiring as _extended
+
+        card_reply = _extended.answer_card_reply(
+            supabase, pending, reply=question, plan_choice=plan_choice,
+            user_id=user_id, conversation_id=conversation_id,
+            user_message_id=user_message_id, current_placeholder_id=assistant_message_id,
+        )
+        if card_reply.kind != "route":
+            async for ev in _extended.run_card_reply(
+                card_reply, supabase=supabase, user_id=user_id,
+                conversation_id=conversation_id, case_id=case_id,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id, memory_task=memory_task,
+            ):
+                yield ev
+            return
+        if card_reply.pending_resolved:
+            pending = None  # the card is resolved — normal routing below
     # Defensive stale check: a pause whose resolve DELETE silently failed (or
     # whose question never surfaced) must not re-attach. _pause_is_current is
     # fail-open and excludes THIS turn's empty placeholder so legitimate resumes
@@ -3818,8 +3851,13 @@ async def _dispatch(
     analyzer_handoff: dict | None = None,
     analyzer_checked: bool = False,
     allow_handback: bool = False,
+    extended_allowed: bool = True,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
+
+    ``extended_allowed``: a deep_search dispatch may go to «بحث موسّع» (flag-gated
+    inside ``_run_deep_search``). False only for the plan card's «بحث عادي» (D31),
+    which must run today's deep search exactly.
 
     ``allow_handback`` (set by ``_route`` only): the deep_search planner may
     hand a request it finds too general to search back to the router, which
@@ -4016,6 +4054,16 @@ async def _dispatch(
                 # Painted before anything is awaited, so the bar appears at once.
                 yield _make_progress("planning", "تحليل السؤال وتخطيط البحث")
 
+                # «بحث موسّع»: what the extended planner needs from this dispatch
+                # to record a plan card under this run's id (None = never).
+                from agents.deep_search_v4.extended.wiring import ExtendedTurn
+
+                _extended_turn = (
+                    ExtendedTurn(
+                        run_id=run_id, user_message_id=user_message_id, task_label=task_label,
+                    )
+                    if extended_allowed and pinned_plan is None else None
+                )
                 # put_nowait: the sink is a SYNC callback (planner/logger.emit
                 # calls it inline) and the queue is unbounded → never blocks,
                 # never raises QueueFull.
@@ -4025,6 +4073,7 @@ async def _dispatch(
                         assistant_message_id=assistant_message_id,
                         emit_sse=progress_q.put_nowait,
                         pinned_plan=pinned_plan,
+                        extended=_extended_turn,
                     )
                 )
                 try:
@@ -4067,6 +4116,14 @@ async def _dispatch(
                     raise _RevertToAnalyzer()
                 if ds_outcome.kind == "handback":
                     raise _HandBackToRouter(ds_outcome.handback_note)
+                if ds_outcome.kind == "extended_paused":
+                    # «بحث موسّع» plan card — already recorded under this run_id
+                    # (pause row + card row); the turn ends like an ask_user pause.
+                    raise _SkipRunRecord(
+                        question=ds_outcome.question or "",
+                        run_id=run_id,
+                        pause_reason=_EXTENDED_PAUSE_REASON,
+                    )
                 if ds_outcome.kind == "paused":
                     # The pause-triggering decider's cost is emitted by
                     # handle_planner_turn (phase-1 pause path → deep_search.planner).
@@ -4542,13 +4599,17 @@ class _DeepSearchOutcome:
       ``deferred`` carry the pause state for :func:`_record_deferred`.
     - ``kind="handback"`` — phase 1 found the request too general to search;
       ``handback_note`` tells the router why. No search ran.
+    - ``kind="extended_paused"`` — «بحث موسّع»: the extended planner planned several
+      searches and the plan card is already recorded (pause row + card row);
+      ``question`` is the card's text for the ``agent_question`` event.
     """
 
-    kind: str  # "completed" | "paused" | "reverted" | "handback"
+    kind: str  # "completed" | "paused" | "reverted" | "handback" | "extended_paused"
     result: SpecialistResult | None = None
     planner_result: Any = None
     deferred: Any = None
     handback_note: str = ""
+    question: str | None = None
 
 
 async def _completion_pins_after_resume(resume_deps: Any, planner_result: Any) -> tuple[list[dict], list[dict]]:
@@ -4579,6 +4640,7 @@ async def _run_deep_search(
     pinned_plan: "PinnedPlan | None" = None,
     carried_pins: list[dict] | None = None,
     carried_events: list[dict] | None = None,
+    extended: Any = None,
 ) -> _DeepSearchOutcome:
     """Run the planner-driven deep_search_v4 loop.
 
@@ -4623,7 +4685,23 @@ async def _run_deep_search(
     was historically copied from the aggregator artifact; since Wave 10 the aggregator no longer emits it
     (the per-artifact agent-facing summary is written asynchronously by the
     Supabase-trigger-driven ``artifact_summarizer`` to ``workspace_items.summary``).
+
+    ``extended`` (``agents.deep_search_v4.extended.wiring.ExtendedTurn``): set by
+    ``_dispatch`` only — «بحث موسّع» may plan this fresh turn (flag off → nothing
+    happens, no read). Several planned searches → the plan card is recorded and
+    ``kind="extended_paused"`` comes back; anything else (one search, not eligible, a
+    failure) → today's turn below, exactly, with ``decision`` still ``None`` (D6).
     """
+    # «بحث موسّع» (extended_search.md §4.1, D30): an eligible fresh turn asks the
+    # angle-aware planner first. Any failure, "not eligible" or a one-search plan →
+    # today's path.
+    if extended is not None and decision is None and pinned_plan is None:
+        from agents.deep_search_v4.extended.wiring import plan_extended_turn
+
+        planned = await plan_extended_turn(input, supabase, turn=extended)
+        if planned is not None:
+            return _DeepSearchOutcome(kind="extended_paused", question=planned.question)
+
     import httpx
 
     from agents.agent_search import (

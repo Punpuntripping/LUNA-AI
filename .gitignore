@@ -409,3 +409,8 @@ agents/simple_search/tests/*
 # files-in-their-own-table (.claude/plans/my_files_phase2.md): the loader / writer and the
 # both-switch reader tests are durable; backend/tests/test_files_service.py imports their fake.
 !shared/files/tests/
+# «بحث موسّع» (.claude/plans/extended_search_build.md): the budget modes, eligibility, the planner's
+# validator, the plan card, the parallel searches' whole-file hook, the merger's citation remapping and
+# the pause / button / typed-text wiring — all in CI's durable list.
+!agents/deep_search_v4/extended/tests/
+!backend/tests/test_extended_plan_api.py

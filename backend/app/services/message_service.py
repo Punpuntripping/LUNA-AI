@@ -673,6 +673,14 @@ def _merged_message_metadata(
     return {**(existing if isinstance(existing, dict) else {}), **patch}
 
 
+def _plan_choice_dict(plan_choice: Any) -> dict:
+    """``{"run_id", "option"}`` from the request's ``PlanChoice`` (or a dict as-is) —
+    the orchestrator takes plain data, not a backend model."""
+    if hasattr(plan_choice, "model_dump"):
+        return plan_choice.model_dump()
+    return dict(plan_choice)
+
+
 def _update_conversation_meta(
     supabase: SupabaseClient,
     conversation_id: str,
@@ -695,11 +703,16 @@ async def send_message_stream(
     content: str,
     request: Request,
     attachment_ids: list[str] | None = None,
+    plan_choice: Any = None,
 ) -> AsyncGenerator[str, None]:
     """
     Main message pipeline. Yields SSE-formatted strings.
 
     Ownership is verified by the caller BEFORE this generator runs.
+
+    ``plan_choice`` (``requests.PlanChoice`` or a ``{"run_id", "option"}`` dict): a
+    «بحث موسّع» plan-card button, handed to the orchestrator; ``None`` for a typed
+    message (the orchestrator call is then exactly today's).
 
     1. Save user message + assistant placeholder in ONE atomic insert
        (BEFORE AI call — crash-safe)
@@ -1108,6 +1121,9 @@ async def send_message_stream(
                     assistant_message_id=assistant_msg_id,
                     codec=codec,
                     deep_search_gate=deep_search_gate,
+                    # «بحث موسّع» plan-card button only — a typed message passes
+                    # nothing, so its call is exactly today's.
+                    **({"plan_choice": _plan_choice_dict(plan_choice)} if plan_choice is not None else {}),
                 ):
                     event_type = event.get("type")
 
@@ -1141,7 +1157,12 @@ async def send_message_stream(
                         # one event per publish, but a future retry path could emit
                         # twice and we don't want duplicate uuids in the array.
                         if item_id and item_id not in captured_artifact_ids:
-                            captured_artifact_ids.append(item_id)
+                            if event.get("primary"):
+                                # «بحث موسّع»: the merged answer is the turn's primary
+                                # item (its citation target) though it is created last.
+                                captured_artifact_ids.insert(0, item_id)
+                            else:
+                                captured_artifact_ids.append(item_id)
                         payload = {
                             "item_id": item_id,
                             "kind": event.get("kind"),
@@ -1230,7 +1251,9 @@ async def send_message_stream(
                             "text": event.get("text", ""),
                             "data": {
                                 k: raw_data[k]
-                                for k in ("sources", "queries", "elapsed_s")
+                                # `searches` = {total, done}: «بحث موسّع»'s parallel
+                                # searches (absent on an ordinary deep search).
+                                for k in ("sources", "queries", "elapsed_s", "searches")
                                 if k in raw_data
                             },
                         }))
@@ -1266,11 +1289,22 @@ async def send_message_stream(
                         # planner input and can carry fakes. Decode before it
                         # reaches the user's screen (store-real applies to the
                         # matching messages row too — decoded in _record_deferred).
-                        await queue.put(_sse_event("agent_question", {
+                        # «بحث موسّع» plan card: its text was decoded once already
+                        # (record_extended_pause stores and returns it real), and
+                        # only this pause names its reason on the event — every
+                        # other pause relays exactly today's payload.
+                        is_plan_card = event.get("pause_reason") == "extended_plan"
+                        question_payload = {
                             "run_id": event.get("run_id", ""),
-                            "question": decode_text(codec, event.get("question", ""), emit=True),
+                            "question": (
+                                event.get("question", "") if is_plan_card
+                                else decode_text(codec, event.get("question", ""), emit=True)
+                            ),
                             "suggestions": event.get("suggestions", []),
-                        }))
+                        }
+                        if is_plan_card:
+                            question_payload["pause_reason"] = "extended_plan"
+                        await queue.put(_sse_event("agent_question", question_payload))
 
                     elif event_type == "reply_metadata":
                         captured_reply_metadata.update(

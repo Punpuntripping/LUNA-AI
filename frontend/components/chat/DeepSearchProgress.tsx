@@ -83,6 +83,19 @@ const SOURCE_FORMS: ArabicPlural = {
   many: "مصدرًا",
 };
 
+/** «بحث موسّع» parallel searches in the header («4 بحوث متوازية»). */
+const SEARCH_FORMS: ArabicPlural = {
+  one: "بحث واحد",
+  two: "بحثان متوازيان",
+  few: "بحوث متوازية",
+  many: "بحثًا متوازيًا",
+};
+
+/** «4 بحوث متوازية · اكتمل 1» — Latin digits. */
+export function formatSearchesAr(searches: { total: number; done: number }): string {
+  return `${formatCountAr(searches.total, SEARCH_FORMS)} · اكتمل ${searches.done}`;
+}
+
 /**
  * Cosmetic labels rotated in the header detail so the card never looks frozen.
  * The backend never relays sub-query lines (they expose the search logic —
@@ -289,7 +302,8 @@ interface DeepSearchProgressProps {
  * of the generic TypingIndicator.
  *
  * Layout (Kawkab Mono, `font-code`): one header line — «بحث معمّق › phrase▍ …
- * sources · mm:ss» — then the stages on two rows: planning · search ·
+ * [«بحث موسّع»: N بحوث متوازية · اكتمل M] sources · mm:ss» — then the stages
+ * on two rows: planning · search ·
  * evaluation, then writing · showing. Each stage cell is its own progress bar.
  *
  * Driven exclusively by real pipeline events: a cell only reaches 100% when
@@ -417,6 +431,9 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
             )}
           </span>
           <span className="flex shrink-0 items-center gap-2 tabular-nums">
+            {progress.searches && (
+              <span className="text-foreground">{formatSearchesAr(progress.searches)}</span>
+            )}
             {progress.sources > 0 && (
               <span className="hidden min-[380px]:inline">
                 {formatCountAr(progress.sources, SOURCE_FORMS)}

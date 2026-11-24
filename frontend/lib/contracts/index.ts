@@ -23,6 +23,7 @@ export * from "./announcements";
 export * from "./wi-preview";
 export * from "./files";
 export * from "./angles";
+export * from "./extended-plan";
 
 // Pure helpers (mobile Phase 2 — see README "What lives here").
 export * from "./citations";

@@ -2,6 +2,7 @@
 // re-exports them from `@/types`).
 
 import type { AgentFamily, WorkspaceItemKind } from "./agents";
+import type { ExtendedPlanCard, PlanChoicePayload } from "./extended-plan";
 import type { LibraryLink } from "./library-links";
 import type { QuoteRef } from "./quote-refs";
 
@@ -62,6 +63,19 @@ export interface MessageMetadata {
    * their source. Validate with ``parseQuoteRefs`` (lib/contracts/quote-refs.ts).
    */
   quote_refs?: QuoteRef[];
+  /**
+   * Why an ``agent_question`` row paused: ``"clarify"`` (the planner asked) or
+   * ``"extended_plan"`` (the «بحث موسّع» plan card below). Absent on older rows.
+   */
+  pause_reason?: string;
+  /**
+   * «بحث موسّع» plan card (extended_search.md §4.4) on an ``agent_question``
+   * row with ``pause_reason = "extended_plan"``. Validate with
+   * ``parseExtendedPlan`` (lib/contracts/extended-plan.ts).
+   */
+  extended_plan?: ExtendedPlanCard;
+  /** On a user row that answered a plan card with a button: the option pressed. */
+  plan_choice?: PlanChoicePayload["option"];
   [key: string]: unknown;
 }
 
@@ -165,4 +179,9 @@ export interface MessageListResponse {
 export interface SendMessagePayload {
   content: string;
   attachment_ids?: string[] | null;
+  /**
+   * A «بحث موسّع» plan-card button (extended-plan.ts). ``content`` is then the
+   * button's label. Omit for a typed message.
+   */
+  plan_choice?: PlanChoicePayload | null;
 }

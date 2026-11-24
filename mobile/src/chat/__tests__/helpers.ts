@@ -2,7 +2,7 @@
 // Test doubles for the send engine: a scripted ReadableStream (the server's
 // SSE body) and an in-memory query cache. Node-only — never imported by the app.
 
-import type { Message, MessageListResponse, SSEEventMap, SSEEventName } from "@contracts";
+import type { Message, MessageListResponse, SendMessagePayload, SSEEventMap, SSEEventName } from "@contracts";
 
 import type { ChatCacheAdapter, MessagesData, WorkspaceItemRef } from "../message-cache";
 import { createChatEngine, type ChatEngineDeps, type OpenStream } from "../run-send";
@@ -134,7 +134,7 @@ export interface Harness {
   engine: ReturnType<typeof createChatEngine>;
   /** One scripted stream per POST, in order. */
   streams: ScriptedStream[];
-  posts: { conversationId: string; content: string }[];
+  posts: { conversationId: string; content: string; payload: SendMessagePayload }[];
   clock: { now: number };
 }
 
@@ -147,7 +147,7 @@ export function harness(overrides: Partial<ChatEngineDeps> & { openStream?: Open
   const openStream: OpenStream =
     overrides.openStream ??
     (async (conversationId, payload) => {
-      posts.push({ conversationId, content: payload.content });
+      posts.push({ conversationId, content: payload.content, payload });
       const s = scriptedStream();
       streams.push(s);
       return s.stream;
@@ -161,7 +161,7 @@ export function harness(overrides: Partial<ChatEngineDeps> & { openStream?: Open
     idleTimeoutMs: 5_000,
     ...overrides,
     openStream: async (...args) => {
-      if (overrides.openStream) posts.push({ conversationId: args[0], content: args[1].content });
+      if (overrides.openStream) posts.push({ conversationId: args[0], content: args[1].content, payload: args[1] });
       return openStream(...args);
     },
   });

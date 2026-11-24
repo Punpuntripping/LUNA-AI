@@ -1259,6 +1259,43 @@ def _select_forwarded_blocks(
     ]
 
 
+def _whole_file_caps(deps: Any) -> tuple[int, int] | None:
+    """«بحث موسّع» only: ``(per_doc_cap, total_cap)`` when the caller asked for
+    whole-file delivery, else ``None``.
+
+    Set by ``agents/deep_search_v4/extended/runner.py`` on the ``PlannerDeps`` of
+    each parallel search (a plain instance attribute — no field on the dataclass).
+    Every other caller leaves it unset, so the ordinary path is untouched.
+    """
+    caps = getattr(deps, "_case_doc_caps", None)
+    if (
+        not isinstance(caps, (tuple, list))
+        or len(caps) != 2
+        or not all(isinstance(c, int) and c > 0 for c in caps)
+    ):
+        return None
+    return int(caps[0]), int(caps[1])
+
+
+def _whole_file_documents(items: Any) -> list[Any]:
+    """Every attachment with a ``wi_seq``, once each, in order — no ``doc_type`` filter.
+
+    Whole-file delivery (extended search): the runner put exactly the documents it
+    wants every search to read on ``attached_items``.
+    """
+    docs: list[Any] = []
+    seen: set[str] = set()
+    for item in items or []:
+        if getattr(item, "kind", None) != "attachment" or getattr(item, "wi_seq", None) is None:
+            continue
+        item_id = str(getattr(item, "item_id", "") or "")
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        docs.append(item)
+    return docs
+
+
 def _build_case_document_lists(
     decision: Any,
     deps: PlannerDeps,
@@ -1279,8 +1316,16 @@ def _build_case_document_lists(
     ``deps.attached_items`` as-is — those are the planner's already-encoded
     copies (وضع السرية), so nothing here encodes or decodes. No forwardable
     document → ``({}, {})``.
+
+    Whole-file delivery («بحث موسّع», ``deps._case_doc_caps`` set): every attached
+    document travels (no ``doc_type`` filter), through the plain builder at those
+    caps; segmented section selection is not used.
     """
-    docs = forwardable_documents(getattr(deps, "attached_items", None) or [])
+    caps = _whole_file_caps(deps)
+    if caps is not None:
+        docs = _whole_file_documents(getattr(deps, "attached_items", None) or [])
+    else:
+        docs = forwardable_documents(getattr(deps, "attached_items", None) or [])
     if not docs:
         return {}, {}
     case_ids = parse_wi_aliases(getattr(decision, "case_full_text_wis", None) or [], docs)
@@ -1293,7 +1338,11 @@ def _build_case_document_lists(
     over_total: list[str] = []
     for recipient, ids in (("case", case_ids), ("reg", reg_ids), ("aggregator", agg_ids)):
         stats: dict[str, Any] = {}
-        if sections_by_id is None:
+        if caps is not None:
+            lists[recipient] = build_case_document_blocks(
+                docs, ids, per_doc_cap=caps[0], total_cap=caps[1], stats=stats
+            )
+        elif sections_by_id is None:
             lists[recipient] = build_case_document_blocks(docs, ids, stats=stats)
         else:
             # Segmented delivery (attachment_segmentation.md §4.6): core
@@ -1310,6 +1359,8 @@ def _build_case_document_lists(
         over_total += [f"{recipient}:{a}" for a in stats["over_total"]]
     telemetry["case_docs.truncated"] = truncated
     telemetry["case_docs.over_total"] = over_total
+    if caps is not None:
+        telemetry["case_docs.whole_file_caps"] = list(caps)
     return lists, telemetry
 
 
@@ -1365,9 +1416,11 @@ async def run_retrieval(
     # critical for both expanders and the aggregator, never for the planner —
     # this one wait (up to its 5-minute ceiling) covers all three, which start
     # after it. Off → ``None`` → the old first-12k builder, byte-identical.
+    # «بحث موسّع» (``deps._case_doc_caps``): every document reaches the search
+    # whole, with its code-written section markers — no section selection, no wait.
     case_document_sections: dict[str, Any] | None = None
     case_document_sections_telemetry: dict[str, Any] = {}
-    if delivery_enabled(getattr(deps, "user_id", None)):
+    if _whole_file_caps(deps) is None and delivery_enabled(getattr(deps, "user_id", None)):
         try:
             from agents.helpers import WAIT_STATUS_TEXT
             from agents.utils.attachment_sections import wait_and_load_sections

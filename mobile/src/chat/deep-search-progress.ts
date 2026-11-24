@@ -1,5 +1,7 @@
 import type { DeepSearchStage, SSEAgentProgress } from "@contracts";
 
+import { formatCount, type ArabicPlural } from "@/lib/format";
+
 // Live deep_search tracker state — pure port of the web's chat-store
 // `setDeepSearchProgress` / `appendDeepSearchLog` / `sealDeepSearchSummary`
 // (frontend/stores/chat-store.ts). The UI (M6) reads it; the engine feeds it.
@@ -13,6 +15,10 @@ export interface DeepSearchProgressState {
   queries: number;
   /** «بحث في …» topic lines seen so far (live query counter). */
   topicsSeen: number;
+  /** «بحث موسّع» only (`data.searches`): the run's parallel searches — how
+   *  many in all and how many have finished. `null` on an ordinary deep
+   *  search; kept when a later event omits it. */
+  searches: { total: number; done: number } | null;
   /** Client clock at the first progress event. */
   startedAt: number;
   /** Stage lines + `status` lines, capped. */
@@ -42,6 +48,30 @@ export const DEEP_SEARCH_STAGE_ORDER: Record<DeepSearchStage, number> = {
   done: 5,
 };
 
+/**
+ * «بحث موسّع» `data.searches` → progress state (web chat-store
+ * `mergeSearches`): N parallel searches, M finished. `done` is monotonic and
+ * never above `total`; an event without a valid block keeps the previous value.
+ */
+export function mergeSearches(
+  prev: DeepSearchProgressState["searches"],
+  raw: unknown,
+): DeepSearchProgressState["searches"] {
+  if (typeof raw !== "object" || raw === null) return prev;
+  const { total, done } = raw as { total?: unknown; done?: unknown };
+  if (
+    typeof total !== "number" ||
+    typeof done !== "number" ||
+    !Number.isFinite(total) ||
+    !Number.isFinite(done) ||
+    total < 1
+  ) {
+    return prev;
+  }
+  const t = Math.round(total);
+  return { total: t, done: Math.min(t, Math.max(prev?.done ?? 0, Math.round(done), 0)) };
+}
+
 export function applyProgress(
   prev: DeepSearchProgressState | null,
   event: SSEAgentProgress,
@@ -56,17 +86,33 @@ export function applyProgress(
     sources: 0,
     queries: 0,
     topicsSeen: 0,
+    searches: null,
     startedAt: nowMs,
     log: [],
   };
   const sources = typeof event.data?.sources === "number" ? Math.max(base.sources, event.data.sources) : base.sources;
   const queries = typeof event.data?.queries === "number" ? Math.max(base.queries, event.data.queries) : base.queries;
+  const searches = mergeSearches(base.searches, event.data?.searches);
   const nextStage =
     stage && DEEP_SEARCH_STAGE_ORDER[stage] >= DEEP_SEARCH_STAGE_ORDER[base.stage] ? stage : base.stage;
   const stale = stage === null || nextStage !== stage;
   const text = stale ? base.text : (detail ?? (stage === base.stage ? base.text : null));
   const log = detail && base.log[base.log.length - 1] !== detail ? [...base.log, detail].slice(-MAX_LOG) : base.log;
-  return { ...base, stage: nextStage, text, sources, queries, log };
+  return { ...base, stage: nextStage, text, sources, queries, searches, log };
+}
+
+/** «بحث موسّع» parallel searches in the tracker header (web DeepSearchProgress
+ *  `SEARCH_FORMS`, same Arabic agreement). */
+export const SEARCH_FORMS: ArabicPlural = {
+  one: "بحث واحد",
+  two: "بحثان متوازيان",
+  few: "بحوث متوازية",
+  many: "بحثًا متوازيًا",
+};
+
+/** «4 بحوث متوازية · اكتمل 1» — Latin digits (web `formatSearchesAr`). */
+export function formatSearches(searches: { total: number; done: number }): string {
+  return `${formatCount(searches.total, SEARCH_FORMS)} · اكتمل ${searches.done}`;
 }
 
 /** A `status` line. Returns `prev` unchanged when there is no live run (other
