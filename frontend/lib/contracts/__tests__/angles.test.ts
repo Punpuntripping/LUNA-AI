@@ -12,7 +12,7 @@ import {
   coerceAngleStrength,
   isCrossDocumentAngle,
   parseAngleRef,
-  pickAngleMap,
+  groupAngleMapsByConversation,
   type AngleMap,
   type AngleMapSection,
 } from "../angles";
@@ -148,13 +148,18 @@ test("angleMapSection / anglesOfSection", () => {
   assert.deepEqual(anglesOfSection(map, "D2.S12").map((a) => a.seq), [1, 2]);
 });
 
-test("pickAngleMap prefers the given conversation, else the newest", () => {
-  const older = makeMap({ map_id: "old", conversation_id: "a", created_at: "2026-11-01T00:00:00Z" });
-  const newer = makeMap({ map_id: "new", conversation_id: "b", created_at: "2026-11-21T00:00:00Z" });
-  assert.equal(pickAngleMap([older, newer], "a")?.map_id, "old");
-  assert.equal(pickAngleMap([older, newer], "zzz")?.map_id, "new");
-  assert.equal(pickAngleMap([older, newer], null)?.map_id, "new");
-  assert.equal(pickAngleMap([], "a"), null);
+test("groupAngleMapsByConversation keeps newest-first order", () => {
+  const row = (id: string, conv: string | null) => ({ map_id: id, conversation_id: conv, conversation_title: conv });
+  const groups = groupAngleMapsByConversation([row("m3", "b"), row("m2", "a"), row("m1", "b"), row("m0", null)]);
+  assert.deepEqual(
+    groups.map((g) => [g.conversation_id, g.maps.map((m) => m.map_id)]),
+    [
+      ["b", ["m3", "m1"]],
+      ["a", ["m2"]],
+      [null, ["m0"]],
+    ],
+  );
+  assert.deepEqual(groupAngleMapsByConversation([]), []);
 });
 
 test("angleClientKnown", () => {

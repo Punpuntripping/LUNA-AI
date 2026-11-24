@@ -488,7 +488,7 @@ class FilesStatusResponse(BaseModel):
     angle_maps: bool = False
 
 
-# ── «الأوجه» — GET /api/v1/files/{item_id}/angle-maps (.claude/plans/angle_map_ui.md)
+# ── «الأوجه» — GET /api/v1/files/angle-maps[/{map_id}] (.claude/plans/angle_map_ui.md)
 
 class AngleSectionRefOut(BaseModel):
     ref: str
@@ -574,9 +574,27 @@ class AngleMapOut(BaseModel):
     gaps: list[AngleGapOut] = []
 
 
-class FileAngleMapsResponse(BaseModel):
-    """GET /api/v1/files/{item_id}/angle-maps — every fresh map holding the file, newest first."""
-    maps: list[AngleMapOut] = []
+class AngleKindCountsOut(BaseModel):
+    strengthen: int = 0
+    attack: int = 0
+    answer: int = 0
+
+
+class AngleMapSummaryOut(BaseModel):
+    """One row of GET /api/v1/files/angle-maps — a map without its sections or angles."""
+    map_id: str
+    conversation_id: Optional[str] = None
+    conversation_title: Optional[str] = None
+    message_id: Optional[str] = None
+    created_at: str = ""
+    documents: list[AngleMapDocumentOut] = []
+    angle_count: int = 0
+    kinds: AngleKindCountsOut = AngleKindCountsOut()
+
+
+class AngleMapListResponse(BaseModel):
+    """GET /api/v1/files/angle-maps — the caller's fresh maps, newest first."""
+    maps: list[AngleMapSummaryOut] = []
 
 
 # ── Preferences ──────────────────────────────────────────

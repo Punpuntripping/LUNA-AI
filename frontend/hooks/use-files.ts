@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { ApiClientError, filesApi } from "@/lib/api";
 import { MY_FILES_ENABLED } from "@/lib/features";
@@ -100,24 +100,18 @@ export function useLibraryFiles(options: { enabled?: boolean } = {}) {
 }
 
 /**
- * «الأوجه» of an opened file (.claude/plans/angle_map_ui.md): every fresh angle
- * map holding it, newest first. Asked only when the tab is on for this user
- * (`useFilesStatus().angleMaps`) and `enabled` (the viewer passes false when it
- * already has maps — the dev preview). An error reads as "no maps": the tab
- * simply does not appear.
+ * Turns «الأوجه» off in the cached status when an angle-map call answers
+ * FEATURE_OFF — the «الأوجه» switch alone, never the whole of «الملفات» (which
+ * `useFeatureOffGuard` would do).
  */
-export function useFileAngleMaps(itemId: string | undefined, options: { enabled?: boolean } = {}) {
-  const { angleMaps } = useFilesStatus();
+function useAngleMapsOffGuard() {
   const qc = useQueryClient();
   const userId = useAuthStore((s) => s.user?.user_id ?? null);
-  return useQuery({
-    queryKey: [...fileKeys.detail(itemId ?? ""), "angle-maps"] as const,
-    queryFn: async () => {
+  return useCallback(
+    async <T,>(call: () => Promise<T>): Promise<T> => {
       try {
-        return await filesApi.angleMaps(itemId!);
+        return await call();
       } catch (err) {
-        // Not `useFeatureOffGuard`: here FEATURE_OFF is (usually) the «الأوجه»
-        // switch alone — turn the tab off, never the whole of «الملفات».
         if (err instanceof ApiClientError && err.code === "FEATURE_OFF") {
           qc.setQueryData<FilesStatusResponse>(fileKeys.status(userId), (prev) =>
             prev ? { ...prev, angle_maps: false } : prev,
@@ -126,9 +120,53 @@ export function useFileAngleMaps(itemId: string | undefined, options: { enabled?
         throw err;
       }
     },
-    enabled: angleMaps && !!itemId && (options.enabled ?? true),
+    [qc, userId],
+  );
+}
+
+/**
+ * «الأوجه» (.claude/plans/angle_map_ui.md): the user's angle maps as light rows,
+ * newest first — one conversation's when `conversationId` is given (the chat
+ * pane), all of them otherwise (/files). Asked only while «الأوجه» is on for
+ * this user; off or still loading reads as no maps.
+ */
+export function useAngleMapList(conversationId?: string | null) {
+  const { angleMaps } = useFilesStatus();
+  const guard = useAngleMapsOffGuard();
+  return useQuery({
+    queryKey: [...fileKeys.all, "angle-maps", conversationId ?? "all"] as const,
+    queryFn: () => guard(() => filesApi.angleMapList(conversationId ?? undefined)),
+    enabled: angleMaps,
     staleTime: 60_000,
     retry: 1,
+  });
+}
+
+/** One angle map in full. */
+export function useAngleMap(mapId: string | undefined) {
+  const { angleMaps } = useFilesStatus();
+  const guard = useAngleMapsOffGuard();
+  return useQuery({
+    queryKey: [...fileKeys.all, "angle-map", mapId ?? ""] as const,
+    queryFn: () => guard(() => filesApi.angleMap(mapId!)),
+    enabled: angleMaps && !!mapId,
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
+
+/** Several angle maps in full (the pane stacks a conversation's maps). */
+export function useAngleMaps(mapIds: readonly string[]) {
+  const { angleMaps } = useFilesStatus();
+  const guard = useAngleMapsOffGuard();
+  return useQueries({
+    queries: mapIds.map((mapId) => ({
+      queryKey: [...fileKeys.all, "angle-map", mapId] as const,
+      queryFn: () => guard(() => filesApi.angleMap(mapId)),
+      enabled: angleMaps,
+      staleTime: 60_000,
+      retry: 1,
+    })),
   });
 }
 

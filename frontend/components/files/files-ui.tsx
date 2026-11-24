@@ -16,6 +16,8 @@ export interface FilesUi {
   fileHref: (itemId: string) => string;
   /** «الملفات» itself (`/files`) — where a file page's back link returns. */
   libraryHref: string;
+  /** One angle map's page (`/files/angles/{id}`, angle_map_ui.md rev 3). */
+  angleMapHref: (mapId: string) => string;
   /**
    * Phase 3 («رفع ملف» on /files, «أضف إلى محادثة» on a card, «من الملفات» in
    * the pane's add menu). Not live: `false` hides them; `true` shows them as
@@ -27,6 +29,7 @@ export interface FilesUi {
 export const FILES_UI_DEFAULTS: FilesUi = {
   fileHref: (itemId) => `/files/${encodeURIComponent(itemId)}`,
   libraryHref: "/files",
+  angleMapHref: (mapId) => `/files/angles/${encodeURIComponent(mapId)}`,
   showUpcoming: false,
 };
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, ChevronLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -8,8 +8,6 @@ import {
   ANGLE_GAP_LABELS,
   angleClientKnown,
   angleDocumentLabel,
-  formatFileDate,
-  pickAngleMap,
   type AngleClientConfidence,
   type AngleGapKind,
   type AngleMap,
@@ -20,33 +18,22 @@ import { AngleCard, SectionList } from "./AngleCard";
 import { AngleSectionDialog } from "./AngleSectionDialog";
 import { ANGLES_COPY } from "./copy";
 
-interface FileAnglesProps {
-  /** Every map the file is in (one per conversation it was sent in). */
-  maps: AngleMap[];
-  /** The viewed file — its column is marked «هذا الملف». */
-  itemId: string;
-  /** Shown first when one of the maps comes from it (the pane's conversation / the row's own). */
-  conversationId?: string | null;
+interface AngleMapViewProps {
+  map: AngleMap;
+  /** Shown above the map — the stack's per-message heading, the map page's title. */
+  heading?: ReactNode;
 }
 
 /**
- * The «الأوجه» tab of an opened file (owner, 2026-11-23): which conversation's
- * map (only when there are 2+), the client's side, the drawn map (a row per
- * angle), every angle as a card, then the gaps and the files left out.
+ * One angle map in full (owner, 2026-11-23/24): the client's side, the drawn map
+ * (a row per angle), every angle as a card, then the gaps and the files left out.
+ * Used by «الأوجه» in the chat pane (stacked, newest first) and by the map page
+ * of /files.
  */
-export function FileAngles({ maps, itemId, conversationId }: FileAnglesProps) {
-  const first = useMemo(() => pickAngleMap(maps, conversationId), [maps, conversationId]);
-  const [mapId, setMapId] = useState<string | null>(first?.map_id ?? null);
-  const map = maps.find((m) => m.map_id === mapId) ?? first;
+export function AngleMapView({ map, heading }: AngleMapViewProps) {
   const [selected, setSelected] = useState<number | null>(null);
   const [openRef, setOpenRef] = useState<string | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
-
-  const switchMap = useCallback((id: string) => {
-    setMapId(id);
-    setSelected(null);
-    setOpenRef(null);
-  }, []);
 
   // From a card: highlight its row and bring the map back into view.
   const showOnMap = useCallback((seq: number) => {
@@ -59,20 +46,16 @@ export function FileAngles({ maps, itemId, conversationId }: FileAnglesProps) {
   const showCard = useCallback(
     (seq: number) => {
       setSelected(seq);
-      if (!map) return;
       document.getElementById(`angle-${map.map_id}-${seq}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     },
-    [map],
+    [map.map_id],
   );
 
-  if (!map) return null;
   const multiDocument = map.documents.length > 1;
 
   return (
     <div className="space-y-4">
-      <p className="text-xs leading-6 text-muted-foreground">{ANGLES_COPY.intro}</p>
-
-      {maps.length > 1 && <MapPicker maps={maps} value={map.map_id} onChange={switchMap} />}
+      {heading}
 
       <ClientBox map={map} />
 
@@ -82,7 +65,6 @@ export function FileAngles({ maps, itemId, conversationId }: FileAnglesProps) {
           selected={selected}
           onSelect={showCard}
           onOpenSection={setOpenRef}
-          currentItemId={itemId}
         />
       </div>
 
@@ -123,38 +105,6 @@ export function FileAngles({ maps, itemId, conversationId }: FileAnglesProps) {
         onClose={() => setOpenRef(null)}
         onSelectAngle={showOnMap}
       />
-    </div>
-  );
-}
-
-/** «من محادثة: …» — only when the file is in 2+ maps. */
-function MapPicker({
-  maps,
-  value,
-  onChange,
-}: {
-  maps: AngleMap[];
-  value: string;
-  onChange: (id: string) => void;
-}) {
-  const id = useId();
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-xs">
-      <label htmlFor={id} className="text-muted-foreground">
-        {ANGLES_COPY.fromConversation}:
-      </label>
-      <select
-        id={id}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-8 max-w-full rounded-md border border-border bg-card px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring max-md:h-9"
-      >
-        {maps.map((m) => (
-          <option key={m.map_id} value={m.map_id}>
-            {(m.conversation_title || "محادثة") + " — " + formatFileDate(m.created_at)}
-          </option>
-        ))}
-      </select>
     </div>
   );
 }

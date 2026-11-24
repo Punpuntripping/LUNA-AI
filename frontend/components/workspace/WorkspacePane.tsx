@@ -14,6 +14,7 @@ import { useFilesEnabled, useLibraryFile } from "@/hooks/use-files";
 import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { FileViewer } from "@/components/files/FileViewer";
 import { PaneFileList } from "@/components/files/PaneFileList";
+import { PaneFilesTab } from "@/components/files/angles/PaneFilesTab";
 import { useFilesUi } from "@/components/files/files-ui";
 import { FILES_COPY } from "@/components/files/copy";
 import {
@@ -190,11 +191,14 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
               />
             </TabsContent>
             <TabsContent value="files" className="mt-0 data-[state=inactive]:hidden">
-              <PaneFileList
-                conversationId={conversationId}
-                items={fileItems}
-                isLoading={listLoading}
-              />
+              {/* «الأوجه» first when the conversation has maps (angle_map_ui.md rev 3). */}
+              <PaneFilesTab conversationId={conversationId}>
+                <PaneFileList
+                  conversationId={conversationId}
+                  items={fileItems}
+                  isLoading={listLoading}
+                />
+              </PaneFilesTab>
             </TabsContent>
           </div>
           <WorkspaceAddMenu

@@ -33,7 +33,7 @@ READS_THROUGH_FILES: dict[str, str] = {
     "agents/tool_repository/unfold_workspace_item.py": "S2 _fetch_item",
     "agents/writer_planner/walkers.py": "S2 _fetch_workspace_items_sync",
     "backend/app/services/angle_maps_service.py": "S2 _item_rows (titles / types of a map's documents, "
-                                                  "with_file_id + overlay_files); _pointer_ids lists pointers; "
+                                                  "with_file_id + overlay_files); lengths via content_chars_for_items; "
                                                   "section text through the segmenter's files-aware loader",
     "backend/app/services/attachment_cleanup.py": "S3 retention purge (its scan stays until contract)",
     "backend/app/services/files_service.py": "«الملفات» — the user_files path behind the read switch",

@@ -17,11 +17,6 @@ import {
 import { FileTypePill } from "./FileTypePill";
 import { FileTypeTile, fileFamilyStyle } from "./file-type-style";
 import { FileSections } from "./FileSections";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { AngleMap } from "@/lib/contracts";
-import { useFileAngleMaps } from "@/hooks/use-files";
-import { FileAngles } from "./angles/FileAngles";
-import { ANGLES_COPY } from "./angles/copy";
 import { FILES_COPY } from "./copy";
 import { ReattachAdvice } from "./ReattachAdvice";
 
@@ -35,16 +30,6 @@ interface FileViewerProps {
   variant?: "page" | "pane";
   /** Shown above everything — the pane passes the partial-read banner. */
   notice?: ReactNode;
-  /**
-   * The angle maps this file is in (.claude/plans/angle_map_ui.md). Absent (the
-   * pane, the /files page): the viewer asks `GET /files/{id}/angle-maps` itself —
-   * only when «الأوجه» is on for the user. Given (the dev preview): used as is.
-   * Non-empty either way: the outline becomes two tabs, «الأقسام» | «الأوجه»;
-   * otherwise the viewer is exactly as before.
-   */
-  angleMaps?: AngleMap[] | null;
-  /** The tab open first when `angleMaps` shows the tabs. */
-  initialTab?: "sections" | "angles";
 }
 
 /**
@@ -60,17 +45,8 @@ interface FileViewerProps {
  *   no map, or a stale one) the full extracted text exactly as the attachment
  *   viewer has always shown it.
  */
-export function FileViewer({
-  file,
-  variant = "page",
-  notice,
-  angleMaps,
-  initialTab = "sections",
-}: FileViewerProps) {
+export function FileViewer({ file, variant = "page", notice }: FileViewerProps) {
   const [showOriginal, setShowOriginal] = useState(false);
-  const [tab, setTab] = useState<"sections" | "angles">(initialTab);
-  const fetched = useFileAngleMaps(file.item_id, { enabled: angleMaps === undefined });
-  const maps = angleMaps !== undefined ? angleMaps : (fetched.data?.maps ?? null);
   const text = file.content_md ?? "";
   const pages = formatPageCount(file.page_count);
   const date = formatFileDate(file.created_at);
@@ -144,32 +120,7 @@ export function FileViewer({
 
         {file.summary?.trim() ? <SummaryBlock summary={file.summary} /> : null}
 
-        {maps && maps.length > 0 ? (
-          <Tabs
-            value={tab}
-            onValueChange={(next) => setTab(next === "angles" ? "angles" : "sections")}
-            className="mt-5"
-          >
-            <TabsList className="grid h-9 w-full grid-cols-2">
-              <TabsTrigger value="sections" className="h-7">
-                {file.sections ? ANGLES_COPY.sectionsTab : FILES_COPY.extractedText}
-              </TabsTrigger>
-              <TabsTrigger value="angles" className="h-7 gap-1.5">
-                {ANGLES_COPY.tab}
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="sections" className="mt-0 data-[state=inactive]:hidden">
-              {file.sections ? (
-                <FileSections sections={file.sections} documents={file.documents ?? []} />
-              ) : (
-                <FullText text={text} />
-              )}
-            </TabsContent>
-            <TabsContent value="angles" className="mt-4 data-[state=inactive]:hidden">
-              <FileAngles maps={maps} itemId={file.item_id} conversationId={file.conversation_id} />
-            </TabsContent>
-          </Tabs>
-        ) : file.sections ? (
+        {file.sections ? (
           <FileSections sections={file.sections} documents={file.documents ?? []} />
         ) : (
           <FullText text={text} />

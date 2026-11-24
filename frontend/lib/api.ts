@@ -61,8 +61,9 @@ import type {
   IntroOfferState,
 } from "@/types";
 import type {
+  AngleMap,
+  AngleMapListResponse,
   AnnouncementsResponse,
-  FileAngleMapsResponse,
   FileMatchRequest,
   FileMatchResponse,
   FilesStatusResponse,
@@ -1025,12 +1026,19 @@ export const filesApi = {
     api.post<FileMatchResponse>("/files/match", body),
 
   /**
-   * «الأوجه»: every fresh angle map holding the file — one per conversation it
-   * was sent in — newest first (.claude/plans/angle_map_ui.md). `{maps: []}`
-   * when it is in none; FEATURE_OFF 404 when the tab is off for the user.
+   * «الأوجه» (.claude/plans/angle_map_ui.md): the user's fresh angle maps, newest
+   * first, as light rows — of one conversation when `conversationId` is given.
+   * FEATURE_OFF 404 when «الأوجه» is off for the user.
    */
-  angleMaps: (itemId: string) =>
-    api.get<FileAngleMapsResponse>(`/files/${encodeURIComponent(itemId)}/angle-maps`),
+  angleMapList: (conversationId?: string) =>
+    api.get<AngleMapListResponse>(
+      conversationId
+        ? `/files/angle-maps?conversation_id=${encodeURIComponent(conversationId)}`
+        : "/files/angle-maps",
+    ),
+
+  /** One angle map in full; 404 when it is not the user's or no longer fresh. */
+  angleMap: (mapId: string) => api.get<AngleMap>(`/files/angle-maps/${encodeURIComponent(mapId)}`),
 };
 
 /**

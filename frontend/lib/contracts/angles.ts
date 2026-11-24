@@ -1,16 +1,15 @@
-// Angle map («الأوجه») — what the file viewer shows of a message's angle map
-// (.claude/plans/angle_map_ui.md). Pure TypeScript, shared with the mobile app.
+// Angle map («الأوجه») — the user's angle maps, shown first in «الملفات» (the
+// chat pane's «الملفات» tab and the /files page; .claude/plans/angle_map_ui.md
+// rev 3). Pure TypeScript, shared with the mobile app.
 //
 // A map belongs to the MESSAGE the files were sent in (one map per message
-// group, `attachment_angle_maps`), so one file can sit in several maps — one per
-// conversation it was sent in. The proposed endpoint returns every map the file
-// is in; the viewer shows one at a time.
+// group, `attachment_angle_maps`): a conversation can hold several.
 
 import type { FileDocType } from "./files";
 
 // ---------------------------------------------------------------------------
-// Wire types — proposed `GET /files/{item_id}/angle-maps` (NOT built yet: the
-// internal preview reads the same shape from a local fixture).
+// Wire types — `GET /files/angle-maps[?conversation_id=]` (light rows) and
+// `GET /files/angle-maps/{map_id}` (one map in full).
 // ---------------------------------------------------------------------------
 
 /** يقوّي موقف الموكّل · يطعن في الخصم · نقطة قوة للخصم يجب الرد عليها. */
@@ -118,9 +117,22 @@ export interface AngleMap {
   gaps: AngleMapGap[];
 }
 
-/** Proposed `GET /files/{item_id}/angle-maps` — newest first. */
-export interface FileAngleMapsResponse {
-  maps: AngleMap[];
+/** One row of `GET /files/angle-maps` — a map without its sections or angles. */
+export interface AngleMapSummary {
+  map_id: string;
+  conversation_id: string | null;
+  conversation_title: string | null;
+  message_id: string | null;
+  /** ISO 8601. */
+  created_at: string;
+  documents: AngleMapDocument[];
+  angle_count: number;
+  kinds: Record<AngleKind, number>;
+}
+
+/** `GET /files/angle-maps` — the user's fresh maps, newest first. */
+export interface AngleMapListResponse {
+  maps: AngleMapSummary[];
 }
 
 // ---------------------------------------------------------------------------
@@ -270,17 +282,31 @@ export function anglesOfSection(map: AngleMap, ref: string): AngleMapAngle[] {
 // Which map, and how its client reads
 // ---------------------------------------------------------------------------
 
+export interface AngleMapConversationGroup<T extends Pick<AngleMapSummary, "conversation_id" | "conversation_title">> {
+  conversation_id: string | null;
+  conversation_title: string | null;
+  maps: T[];
+}
+
 /**
- * The map shown first: the one from `conversationId` (the conversation the
- * viewer was opened in, or the file row's own), else the newest.
+ * Maps grouped by conversation for the /files list: groups in the order their
+ * newest map comes (the input is newest first), maps inside a group newest
+ * first. Maps with no conversation form one group of their own.
  */
-export function pickAngleMap(maps: readonly AngleMap[], conversationId: string | null | undefined): AngleMap | null {
-  if (maps.length === 0) return null;
-  if (conversationId) {
-    const own = maps.find((m) => m.conversation_id === conversationId);
-    if (own) return own;
+export function groupAngleMapsByConversation<
+  T extends Pick<AngleMapSummary, "conversation_id" | "conversation_title">,
+>(maps: readonly T[]): AngleMapConversationGroup<T>[] {
+  const groups = new Map<string, AngleMapConversationGroup<T>>();
+  for (const m of maps) {
+    const key = m.conversation_id ?? "";
+    let g = groups.get(key);
+    if (!g) {
+      g = { conversation_id: m.conversation_id, conversation_title: m.conversation_title, maps: [] };
+      groups.set(key, g);
+    }
+    g.maps.push(m);
   }
-  return [...maps].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0))[0];
+  return [...groups.values()];
 }
 
 /** The client's side is known (a party key the labels can use). */

@@ -462,6 +462,19 @@ export function formatFileCount(count: number): string {
   });
 }
 
+/** «خيط واحد» · «خيطان» · «3 خيوط» · «11 خيطًا»… — an angle is a «خيط» to the user
+ * (angle_map_ui.md); "" for 0 or less. */
+export function formatAngleCount(count: number): string {
+  if (!Number.isFinite(count) || count < 1) return "";
+  return arCount(Math.round(count), {
+    one: "خيط واحد",
+    two: "خيطان",
+    few: "خيوط",
+    many: "خيطًا",
+    other: "خيط",
+  });
+}
+
 /** «ص 3–5», «ص 4»; "" when the section has no page numbers. */
 export function formatSectionPages(
   from: number | null | undefined,

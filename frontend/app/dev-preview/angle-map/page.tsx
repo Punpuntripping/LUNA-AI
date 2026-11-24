@@ -11,7 +11,7 @@ import { AngleMapPreview } from "./_harness/AngleMapPreview";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "معاينة خريطة الأوجه (داخلي)",
+  title: "معاينة الخيوط (داخلي)",
   robots: { index: false, follow: false },
 };
 

@@ -34,7 +34,7 @@ import {
   FileMatchDialog,
   type FileMatchDialogItem,
 } from "@/components/files/FileMatchDialog";
-import { FilesUiProvider, type FilesUi } from "@/components/files/files-ui";
+import { FILES_UI_DEFAULTS, FilesUiProvider, type FilesUi } from "@/components/files/files-ui";
 import {
   FILE_DOC_TYPES,
   FILE_MATCH_OPTIONS,
@@ -169,6 +169,7 @@ export function MyFilesPreview() {
     () => ({
       fileHref: (itemId) => href({ screen: "file", id: itemId }),
       libraryHref: href({ screen: "files", id: null }),
+      angleMapHref: FILES_UI_DEFAULTS.angleMapHref,
       showUpcoming: upcoming,
     }),
     [href, upcoming],

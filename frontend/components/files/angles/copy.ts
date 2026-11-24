@@ -4,29 +4,42 @@
  * draft for the owner to approve in the internal preview.
  */
 export const ANGLES_COPY = {
-  tab: "الأوجه",
-  sectionsTab: "الأقسام",
-  /** Under the tab title: what the map is, and that it is analysis. */
-  intro: "تحليل آلي يقترح الحجج التي تستحق البحث في ملفات هذه الرسالة — راجعه قبل الاعتماد عليه.",
-  fromConversation: "من محادثة",
+  /** The switch at the front of «الملفات» (owner 2026-11-24): «الخيوط» first, «الملفات» open by default.
+   *  The user-facing name of an angle is «خيط» (owner 2026-11-24: "change الاوجه للخيوط"). */
+  viewAngles: "الخيوط",
+  viewFiles: "الملفات",
+  viewSwitchLabel: "عرض الخيوط أو الملفات",
+  /** Above the angles: what they are, and that they are analysis. */
+  intro: "تحليل آلي يقترح الحجج التي تستحق البحث في الملفات التي أرسلتها معًا في رسالة واحدة — راجعه قبل الاعتماد عليه.",
+  /** A map's heading: «رسالة أمس · ملفان · 8 خيوط». */
+  message: (date: string) => (date ? `رسالة ${date}` : "رسالة"),
+  noConversation: "محادثة",
+  openMap: "عرض الخيوط",
+  openConversation: "افتح المحادثة",
+  backToFiles: "الملفات",
+  loadError: "تعذّر تحميل الخيوط",
+  retry: "إعادة المحاولة",
+  mapGone: "هذه الخيوط لم تعد محدّثة — ربما تغيّر أحد ملفاتها.",
+  libraryEmptyTitle: "لا توجد خيوط بعد",
+  libraryEmptyHint:
+    "تُستخرج الخيوط من الملفات التي ترسلها معًا في رسالة واحدة في المحادثة، بعد قراءتها وتقسيمها.",
 
   // Client
   client: "الموكّل",
-  clientUnknown: "جانب الموكّل غير واضح من كلامك — الأوجه مقترحة لكل طرف",
+  clientUnknown: "جانب الموكّل غير واضح من كلامك — الخيوط مقترحة لكل طرف",
   clientBasis: "كيف عُرف",
   inOtherDocuments: "صفته في المستندات الأخرى",
 
   // Map
   map: "الخريطة",
-  mapHint: "كل سطر وجه، وخطه يربط أقسامه بين المستندات. اضغط رقم القسم لقراءته، أو الوجه لتفاصيله.",
-  mapHintSingle: "كل سطر وجه وأرقام أقسامه. اضغط رقم القسم لقراءته، أو الوجه لتفاصيله.",
-  thisFile: "هذا الملف",
+  mapHint: "كل سطر خيط يربط أقسامه بين المستندات. اضغط رقم القسم لقراءته، أو الخيط لتفاصيله.",
+  mapHintSingle: "كل سطر خيط وأرقام أقسامه. اضغط رقم القسم لقراءته، أو الخيط لتفاصيله.",
   sectionLabel: (seq: number) => `القسم ${seq}`,
   showOnMap: "على الخريطة",
   scrollHint: "اسحب لرؤية بقية المستندات",
 
   // Cards
-  angles: "الأوجه",
+  angles: "الخيوط",
   crossDocument: "يربط بين المستندات",
   forParty: "لصالح",
   legalQuestion: "سؤال البحث",
@@ -47,7 +60,7 @@ export const ANGLES_COPY = {
   owner: "صاحبه",
   broughtBy: "قدّمه",
   pages: "الصفحات",
-  anglesOfSection: "الأوجه التي تستند إليه",
+  anglesOfSection: "الخيوط التي تستند إليه",
   emptySection: "لا يحتوي هذا القسم على نص",
   close: "إغلاق",
 } as const;

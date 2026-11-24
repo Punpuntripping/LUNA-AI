@@ -22,7 +22,7 @@ import {
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchEmptyState } from "@/components/search/SearchEmptyState";
 import { SEARCH_PRIVATE_COPY } from "@/lib/search/copy";
-import { useHideLibraryFile, useLibraryFiles } from "@/hooks/use-files";
+import { useAngleMapList, useFilesStatus, useHideLibraryFile, useLibraryFiles } from "@/hooks/use-files";
 import {
   arrangeLibraryFiles,
   fileTypeChips,
@@ -35,6 +35,7 @@ import {
 import { FileDocCard } from "./FileDocCard";
 import { useFilesUi } from "./files-ui";
 import { FILES_COPY } from "./copy";
+import { FilesViewSwitch, LibraryAnglesList, type FilesView } from "./angles/AnglesViews";
 
 const GRID = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
 
@@ -55,8 +56,18 @@ const GRID = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3";
  * «الملفات» only (§3.7).
  */
 export function FilesPage() {
-  const { fileHref, showUpcoming } = useFilesUi();
-  const { data, isLoading, isError, refetch, isRefetching } = useLibraryFiles();
+  const { fileHref, angleMapHref, showUpcoming } = useFilesUi();
+  const { data, isLoading: filesLoading, isError, refetch, isRefetching } = useLibraryFiles();
+  // «الخيوط» | «الملفات» (owner, 2026-11-24 — angle_map_ui.md rev 3): the switch
+  // shows once the user has a map, open on «الملفات». Until the maps list is in,
+  // the page waits, so the switch never pops in above the grid.
+  const { angleMaps } = useFilesStatus();
+  const anglesQuery = useAngleMapList();
+  const angleList = useMemo(() => (angleMaps ? anglesQuery.data?.maps ?? [] : []), [angleMaps, anglesQuery.data]);
+  const hasAngles = angleList.length > 0;
+  const [viewChoice, setViewChoice] = useState<FilesView>("files");
+  const view: FilesView = hasAngles ? viewChoice : "files";
+  const isLoading = filesLoading || (angleMaps && anglesQuery.isLoading);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [typeFilter, setTypeFilter] = useState<FileTypeFilter>("all");
@@ -112,88 +123,96 @@ export function FilesPage() {
           {showUpcoming && <UpcomingUploadButton />}
         </header>
 
-        {files.length > 0 && (
-          <div className="mb-4">
-            <SearchBar
-              value={query}
-              onChange={setQuery}
-              placeholder={SEARCH_PRIVATE_COPY.files.placeholder}
-              ariaLabel={SEARCH_PRIVATE_COPY.files.ariaLabel}
-              minLength={1}
-              className="sm:w-full"
-            />
-          </div>
-        )}
+        {hasAngles && <FilesViewSwitch value={view} onChange={setViewChoice} className="mb-5" />}
 
-        {/* Type chips — «الكل» + only the types this user has */}
-        {chips.length > 1 && (
-          <div
-            role="group"
-            aria-label={FILES_COPY.typeChipsLabel}
-            className="-mx-1 mb-6 flex gap-1.5 overflow-x-auto px-1 pb-1"
-          >
-            <TypeChip
-              label={FILES_COPY.allChip}
-              count={files.length}
-              active={activeFilter === "all"}
-              onClick={() => setTypeFilter("all")}
-            />
-            {chips.map((chip) => (
-              <TypeChip
-                key={chip.type}
-                label={chip.label}
-                count={chip.count}
-                active={activeFilter === chip.type}
-                onClick={() => setTypeFilter(chip.type)}
-              />
-            ))}
-          </div>
-        )}
-
-        {isLoading ? (
-          <div className={GRID} aria-hidden="true">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-48 animate-pulse rounded-xl bg-muted/40" />
-            ))}
-          </div>
-        ) : isError ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-            <p className="text-sm text-muted-foreground">{FILES_COPY.loadError}</p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void refetch()}
-              disabled={isRefetching}
-            >
-              {FILES_COPY.retry}
-            </Button>
-          </div>
-        ) : files.length === 0 ? (
-          <div className="flex flex-col items-center justify-center px-4 py-16 text-center">
-            <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
-              <FolderOpen className="h-7 w-7" />
-            </div>
-            <h2 className="mb-2 text-lg font-bold text-foreground">{FILES_COPY.emptyTitle}</h2>
-            <p className="max-w-md text-sm text-muted-foreground">{FILES_COPY.emptyHint}</p>
-          </div>
-        ) : visible.length === 0 ? (
-          <SearchEmptyState />
-        ) : layout.kind === "flat" ? (
-          <div className={GRID}>{layout.files.map(renderCard)}</div>
+        {view === "angles" ? (
+          <LibraryAnglesList maps={angleList} mapHref={angleMapHref} />
         ) : (
-          <div className="space-y-8">
-            {layout.groups.map((group) => (
-              <section key={group.type} aria-label={group.label}>
-                <h2 className="mb-3 flex items-baseline gap-2 text-sm font-semibold text-foreground">
-                  {group.label}
-                  <span className="text-xs font-normal tabular-nums text-muted-foreground">
-                    {group.files.length}
-                  </span>
-                </h2>
-                <div className={GRID}>{group.files.map(renderCard)}</div>
-              </section>
-            ))}
-          </div>
+          <>
+            {files.length > 0 && (
+              <div className="mb-4">
+                <SearchBar
+                  value={query}
+                  onChange={setQuery}
+                  placeholder={SEARCH_PRIVATE_COPY.files.placeholder}
+                  ariaLabel={SEARCH_PRIVATE_COPY.files.ariaLabel}
+                  minLength={1}
+                  className="sm:w-full"
+                />
+              </div>
+            )}
+
+            {/* Type chips — «الكل» + only the types this user has */}
+            {chips.length > 1 && (
+              <div
+                role="group"
+                aria-label={FILES_COPY.typeChipsLabel}
+                className="-mx-1 mb-6 flex gap-1.5 overflow-x-auto px-1 pb-1"
+              >
+                <TypeChip
+                  label={FILES_COPY.allChip}
+                  count={files.length}
+                  active={activeFilter === "all"}
+                  onClick={() => setTypeFilter("all")}
+                />
+                {chips.map((chip) => (
+                  <TypeChip
+                    key={chip.type}
+                    label={chip.label}
+                    count={chip.count}
+                    active={activeFilter === chip.type}
+                    onClick={() => setTypeFilter(chip.type)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {isLoading ? (
+              <div className={GRID} aria-hidden="true">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="h-48 animate-pulse rounded-xl bg-muted/40" />
+                ))}
+              </div>
+            ) : isError ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+                <p className="text-sm text-muted-foreground">{FILES_COPY.loadError}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refetch()}
+                  disabled={isRefetching}
+                >
+                  {FILES_COPY.retry}
+                </Button>
+              </div>
+            ) : files.length === 0 ? (
+              <div className="flex flex-col items-center justify-center px-4 py-16 text-center">
+                <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+                  <FolderOpen className="h-7 w-7" />
+                </div>
+                <h2 className="mb-2 text-lg font-bold text-foreground">{FILES_COPY.emptyTitle}</h2>
+                <p className="max-w-md text-sm text-muted-foreground">{FILES_COPY.emptyHint}</p>
+              </div>
+            ) : visible.length === 0 ? (
+              <SearchEmptyState />
+            ) : layout.kind === "flat" ? (
+              <div className={GRID}>{layout.files.map(renderCard)}</div>
+            ) : (
+              <div className="space-y-8">
+                {layout.groups.map((group) => (
+                  <section key={group.type} aria-label={group.label}>
+                    <h2 className="mb-3 flex items-baseline gap-2 text-sm font-semibold text-foreground">
+                      {group.label}
+                      <span className="text-xs font-normal tabular-nums text-muted-foreground">
+                        {group.files.length}
+                      </span>
+                    </h2>
+                    <div className={GRID}>{group.files.map(renderCard)}</div>
+                  </section>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 

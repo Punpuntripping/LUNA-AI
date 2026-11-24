@@ -1,24 +1,24 @@
-"""«الأوجه» in an opened file — ``GET /files/{item_id}/angle-maps``.
+"""«الأوجه» at the front of «الملفات» — the user's angle maps.
 
-Plan: ``.claude/plans/angle_map_ui.md`` §4. Read-only. The angle map belongs to
-the MESSAGE the files were sent in (``attachment_angle_maps``, one map per
-message group, members by conversation item), so one file can sit in several
-maps — one per conversation it was sent in. This module answers, for one file,
-every map that holds it and is still FRESH, in the shape the web's «الأوجه» tab
-reads (``frontend/lib/contracts/angles.ts``):
+Plan: ``.claude/plans/angle_map_ui.md`` (rev 3, owner 2026-11-24: «الأوجه» first in
+the chat pane's «الملفات» tab and on the /files page, «الملفات» second; no tab
+inside an opened file). Read-only. An angle map belongs to the MESSAGE the files
+were sent in (``attachment_angle_maps``, one per message group, members by
+conversation item):
 
-- the file is resolved to the caller's conversation items of that file (the
-  pointer rows of its ``file_id``; just the item when it links no file);
-- each item's map comes from the mapper's own store with its own freshness check
-  (``load_fresh_angle_map_for_item``): a map whose members changed or were
-  segmented again is not shown — its section numbers may no longer match;
-- sections come from the segmenter's own loader (by file id), the الموكّل / الخصم
-  / محايد labels from the mapper's own ``labels`` (as the preview page computes
-  them); only the sections an angle or a gap rests on are sent, with their text.
+- ``list_angle_maps`` — the caller's maps, newest first, optionally of one
+  conversation: light rows (documents' titles, angle counts) for the /files list
+  and the pane. A map is listed only while it is still fresh at member level —
+  every member live, its segment map the one the map was made from (same length,
+  prompt version, paragraph rule, ``segmented_at``) — and its conversation is not
+  deleted. Batched: a few reads for the whole list.
+- ``get_angle_map`` — one map in full, through the mapper's own freshness check
+  (``load_fresh_angle_map_for_item``); sections from the segmenter's own loader
+  (by file id), الموكّل / الخصم / محايد from the mapper's own ``labels``; only the
+  sections an angle or a gap rests on are sent, with their text.
 
 Behind ``ANGLE_MAP_UI_ENABLED`` / ``ANGLE_MAP_UI_USERS`` (on top of «الملفات»'s
-own switch). A map exists only where the mapper's switch (``ANGLE_MAP_ENABLED``)
-built one. Nothing here writes.
+own switch). A map exists only where the mapper's switch built one.
 """
 from __future__ import annotations
 
@@ -34,18 +34,27 @@ from agents.memory.angle_mapper.labels import (
     resolve_ref,
     section_index,
 )
+from agents.memory.angle_mapper.group import _same_version, _ts, segment_headers, stored_versions
 from agents.memory.angle_mapper.store import load_fresh_angle_map_for_item
 from agents.memory.attachment_segmenter.store import load_segment_maps
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.services import files_service
 from shared.config import get_settings
-from shared.files import flags as files_flags
 from shared.files import store as files_store
 
 logger = logging.getLogger(__name__)
 
 ITEMS_TABLE = "workspace_items"
 CONVERSATIONS_TABLE = "conversations"
+MAPS_TABLE = "attachment_angle_maps"
+MAP_ITEMS_TABLE = "attachment_angle_map_items"
+ANGLES_TABLE = "attachment_angles"
+
+#: Maps listed at most (newest first).
+LIST_CAP = 200
+#: Ids per ``in.(…)`` filter / rows per page.
+_BATCH = 100
+_PAGE = 1_000
 
 _REF = re.compile(r"^D(\d+)\.S(\d+)$")
 _DOC = re.compile(r"(\d+)")
@@ -92,55 +101,65 @@ def _str_or_none(value: Any) -> Optional[str]:
     return text or None
 
 
-def _pointer_ids(supabase: SupabaseClient, user_id: str, item_id: str) -> Optional[list[str]]:
-    """The caller's live conversation items of the file ``item_id`` names, oldest
-    first — ``None`` when it names none of the caller's files. ``item_id`` is a
-    conversation item (the pane, the page) or, with the files read switch on, a
-    file id (a library row whose file has no live item answers with it). Raises
-    on a failed read."""
-    row = files_service._first(
-        supabase.table(ITEMS_TABLE)
-        .select(files_store.with_file_id("item_id", user_id=user_id, supabase=supabase))
-        .eq("item_id", item_id)
-        .eq("user_id", user_id)
-        .eq("kind", "attachment")
-        .is_("deleted_at", "null")
-        .limit(1)
-        .execute()
-    )
-    if row is not None and not row.get("file_id"):
-        return [str(row["item_id"])]
-    if row is None and not files_flags.files_read_enabled(user_id, supabase=supabase):
-        return None
-    file_id = str(row["file_id"]) if row is not None else item_id
-    rows = _data(
-        supabase.table(ITEMS_TABLE)
-        .select("item_id, created_at")
-        .eq("file_id", file_id)
-        .eq("user_id", user_id)
-        .eq("kind", "attachment")
-        .is_("deleted_at", "null")
-        .execute()
-    )
-    ids = [str(r["item_id"]) for r in sorted(rows, key=lambda r: str(r.get("created_at") or ""))]
-    if row is not None and str(row["item_id"]) not in ids:
-        ids.insert(0, str(row["item_id"]))
-    return ids or None
+def _batches(ids: list[str]) -> list[list[str]]:
+    return [ids[i:i + _BATCH] for i in range(0, len(ids), _BATCH)]
+
+
+def _rows_in(supabase: SupabaseClient, table: str, columns: str, col: str, ids: list[str]) -> list[dict]:
+    """Every row of ``table`` whose ``col`` is in ``ids`` — batched ids, paged rows.
+    Raises on a failed read."""
+    out: list[dict] = []
+    for batch in _batches(ids):
+        offset = 0
+        while True:
+            page = _data(
+                supabase.table(table).select(columns).in_(col, batch).range(offset, offset + _PAGE - 1).execute()
+            )
+            out.extend(page)
+            if len(page) < _PAGE:
+                break
+            offset += _PAGE
+    return out
+
+
+def _conversations(supabase: SupabaseClient, user_id: str, ids: list[str]) -> dict[str, dict]:
+    """``{conversation_id: {title, deleted}}`` of the caller's conversations. Fail-soft."""
+    out: dict[str, dict] = {}
+    try:
+        for batch in _batches(ids):
+            for r in _data(
+                supabase.table(CONVERSATIONS_TABLE)
+                .select("conversation_id, title_ar, deleted_at")
+                .in_("conversation_id", batch)
+                .eq("user_id", user_id)
+                .execute()
+            ):
+                out[str(r["conversation_id"])] = {
+                    "title": _str_or_none(r.get("title_ar")),
+                    "deleted": bool(r.get("deleted_at")),
+                }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("angle_maps: conversation read failed (%s)", type(exc).__name__)
+    return out
 
 
 def _item_rows(supabase: SupabaseClient, user_id: str, item_ids: list[str]) -> dict[str, dict]:
-    """``{item_id: {title, wi_seq, doc_type}}`` of the caller's items — the file's
-    title and type through ``shared.files``. Fail-soft: ``{}``."""
+    """``{item_id: {title, wi_seq, doc_type}}`` of the caller's LIVE items — the
+    file's title and type through ``shared.files``. Fail-soft: ``{}``."""
     if not item_ids:
         return {}
     try:
-        rows = _data(
-            supabase.table(ITEMS_TABLE)
-            .select(files_store.with_file_id("item_id, title, wi_seq, metadata", user_id=user_id, supabase=supabase))
-            .in_("item_id", item_ids)
-            .eq("user_id", user_id)
-            .execute()
-        )
+        rows: list[dict] = []
+        cols = files_store.with_file_id("item_id, title, wi_seq, metadata", user_id=user_id, supabase=supabase)
+        for batch in _batches(item_ids):
+            rows.extend(_data(
+                supabase.table(ITEMS_TABLE)
+                .select(cols)
+                .in_("item_id", batch)
+                .eq("user_id", user_id)
+                .is_("deleted_at", "null")
+                .execute()
+            ))
         rows = files_store.overlay_files(supabase, rows, user_id=user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("angle_maps: item read failed (%s)", type(exc).__name__)
@@ -324,40 +343,147 @@ def _map_out(supabase: SupabaseClient, user_id: str, stored: dict) -> dict:
     }
 
 
-def get_file_angle_maps(supabase: SupabaseClient, user_id: str, item_id: str) -> Optional[list[dict]]:
-    """Every fresh angle map holding the caller's file ``item_id``, newest first
-    (``FileAngleMapsResponse.maps``) — ``None`` when ``item_id`` is not one of the
-    caller's files (→ 404). ``[]`` = the file is in no fresh map. A map that
-    fails to build is left out (logged); a failed file read is a 500."""
+def _fresh_members(
+    supabase: SupabaseClient, user_id: str, items: list[dict], live: set[str]
+) -> set[str]:
+    """The member item ids whose segment map is still the one their map was made
+    from (``group.stored_versions`` vs the current segment-map header, the
+    mapper's own comparison). Raises on a failed read."""
+    ids = [str(i["item_id"]) for i in items if str(i["item_id"]) in live]
+    if not ids:
+        return set()
+    headers = segment_headers(supabase, ids, user_id=user_id)
     try:
-        pointers = _pointer_ids(supabase, user_id, item_id)
+        lengths = files_store.content_chars_for_items(supabase, ids, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 — the header's own length stands in
+        logger.warning("angle_maps: length read failed (%s)", type(exc).__name__)
+        lengths = {}
+    stored = stored_versions(items)
+    fresh = set()
+    for item_id in ids:
+        header = headers.get(item_id)
+        if header is None:
+            continue
+        chars = lengths.get(item_id, header.get("content_chars"))
+        try:
+            cur = (
+                int(chars if chars is not None else -1),
+                str(header.get("prompt_version") or ""),
+                str(header.get("paragraph_rule_version") or ""),
+                _ts(header.get("created_at")),
+            )
+        except (TypeError, ValueError):
+            continue
+        if item_id in stored and _same_version(cur, stored[item_id]):
+            fresh.add(item_id)
+    return fresh
+
+
+def list_angle_maps(
+    supabase: SupabaseClient, user_id: str, conversation_id: Optional[str] = None
+) -> list[dict]:
+    """``AngleMapSummary`` rows of the caller's fresh maps, newest first (at most
+    ``LIST_CAP``), optionally of one conversation. A failed read is a 500."""
+    try:
+        q = (
+            supabase.table(MAPS_TABLE)
+            .select("map_id, conversation_id, message_id, created_at")
+            .eq("user_id", user_id)
+        )
+        if conversation_id:
+            q = q.eq("conversation_id", conversation_id)
+        heads = _data(q.order("created_at", desc=True).limit(LIST_CAP).execute())
+        if not heads:
+            return []
+        map_ids = [str(h["map_id"]) for h in heads]
+        items = _rows_in(
+            supabase, MAP_ITEMS_TABLE,
+            "map_id, item_id, doc_index, content_chars, segment_prompt_version, paragraph_rule_version, segmented_at",
+            "map_id", map_ids,
+        )
+        kinds = _rows_in(supabase, ANGLES_TABLE, "map_id, kind", "map_id", map_ids)
+        member_ids = list(dict.fromkeys(str(i["item_id"]) for i in items))
+        rows = _item_rows(supabase, user_id, member_ids)
+        fresh = _fresh_members(supabase, user_id, items, set(rows))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("angle_maps: file read failed for %s (%s)", item_id, type(exc).__name__)
+        logger.exception("angle_maps: list failed (%s)", type(exc).__name__)
         raise LunaHTTPException(
             status_code=500,
             code=ErrorCode.INTERNAL_ERROR,
-            detail="حدث خطأ أثناء جلب أوجه الملف",
+            detail="حدث خطأ أثناء جلب الخيوط",
         )
-    if pointers is None:
+    convs = _conversations(
+        supabase, user_id, list(dict.fromkeys(str(h["conversation_id"]) for h in heads if h.get("conversation_id")))
+    )
+
+    members: dict[str, list[dict]] = {}
+    for i in items:
+        members.setdefault(str(i["map_id"]), []).append(i)
+    counts: dict[str, dict[str, int]] = {}
+    for a in kinds:
+        k = a.get("kind") if a.get("kind") in _KINDS else "strengthen"
+        c = counts.setdefault(str(a["map_id"]), {"strengthen": 0, "attack": 0, "answer": 0})
+        c[k] += 1
+
+    out = []
+    for h in heads:
+        mid = str(h["map_id"])
+        mine = sorted(members.get(mid) or [], key=lambda i: _int_or_none(i.get("doc_index")) or 0)
+        if not mine or any(str(i["item_id"]) not in fresh for i in mine):
+            continue   # a member gone, changed or segmented again: stale
+        conv = convs.get(str(h.get("conversation_id") or ""))
+        if h.get("conversation_id") and (conv is None or conv["deleted"]):
+            continue
+        c = counts.get(mid) or {"strengthen": 0, "attack": 0, "answer": 0}
+        out.append({
+            "map_id": mid,
+            "conversation_id": str(h["conversation_id"]) if h.get("conversation_id") else None,
+            "conversation_title": conv["title"] if conv else None,
+            "message_id": str(h["message_id"]) if h.get("message_id") else None,
+            "created_at": str(h.get("created_at") or ""),
+            "documents": [
+                {
+                    "index": _int_or_none(i.get("doc_index")) or n + 1,
+                    "item_id": str(i["item_id"]),
+                    "title": rows[str(i["item_id"])]["title"],
+                    "doc_type": rows[str(i["item_id"])]["doc_type"],
+                    "wi_seq": rows[str(i["item_id"])]["wi_seq"],
+                }
+                for n, i in enumerate(mine)
+            ],
+            "angle_count": sum(c.values()),
+            "kinds": c,
+        })
+    return out
+
+
+def get_angle_map(supabase: SupabaseClient, user_id: str, map_id: str) -> Optional[dict]:
+    """One of the caller's maps in full (``AngleMap``) — ``None`` when it is not
+    theirs, does not exist, or is no longer fresh (→ 404). A map that fails to
+    build is a 500."""
+    try:
+        link = _data(
+            supabase.table(MAP_ITEMS_TABLE)
+            .select("item_id, doc_index")
+            .eq("map_id", map_id)
+            .order("doc_index")
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("angle_maps: map read failed for %s (%s)", map_id, type(exc).__name__)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب الخيوط")
+    if not link:
         return None
-
-    maps: list[dict] = []
-    seen: set[str] = set()
-    for pointer in pointers:
-        stored = load_fresh_angle_map_for_item(supabase, pointer)
-        if not stored:
-            continue
-        head = stored.get("map") or {}
-        map_id = str(head.get("map_id") or "")
-        if not map_id or map_id in seen or str(head.get("user_id") or "") != str(user_id):
-            continue
-        seen.add(map_id)
-        try:
-            maps.append(_map_out(supabase, user_id, stored))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("angle_maps: map %s left out (%s)", map_id, type(exc).__name__)
-    maps.sort(key=lambda m: m["created_at"], reverse=True)
-    return maps
+    stored = load_fresh_angle_map_for_item(supabase, str(link[0]["item_id"]))
+    head = (stored or {}).get("map") or {}
+    if str(head.get("map_id") or "") != map_id or str(head.get("user_id") or "") != str(user_id):
+        return None
+    try:
+        return _map_out(supabase, user_id, stored)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("angle_maps: map %s failed to build (%s)", map_id, type(exc).__name__)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب الخيوط")
 
 
-__all__ = ["angle_maps_ui_enabled", "get_file_angle_maps"]
+__all__ = ["angle_maps_ui_enabled", "get_angle_map", "list_angle_maps"]

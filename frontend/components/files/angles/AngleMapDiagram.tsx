@@ -21,8 +21,6 @@ interface AngleMapDiagramProps {
   onSelect: (seq: number) => void;
   /** A section number was tapped. */
   onOpenSection: (ref: string) => void;
-  /** The file being viewed — its column is marked «هذا الملف». */
-  currentItemId?: string;
 }
 
 const MIN_COLUMN = 84; // px; below this the documents scroll sideways
@@ -38,7 +36,7 @@ const CELL_MAX = 6;
  * one line across them. Tap a number for the section's text, a row's title for
  * its card.
  */
-export function AngleMapDiagram({ map, selected, onSelect, onOpenSection, currentItemId }: AngleMapDiagramProps) {
+export function AngleMapDiagram({ map, selected, onSelect, onOpenSection }: AngleMapDiagramProps) {
   const rows = useMemo(() => angleMapRows(map), [map]);
   const docs = useMemo(() => [...map.documents].sort((a, b) => a.index - b.index), [map.documents]);
   const single = docs.length <= 1;
@@ -70,25 +68,16 @@ export function AngleMapDiagram({ map, selected, onSelect, onOpenSection, curren
           {!single && (
             <div className="flex items-end border-b border-border bg-muted/30">
               <div style={{ width: labelWidth }} className="shrink-0" />
-              {docs.map((d) => {
-                const current = d.item_id === currentItemId;
-                return (
-                  <div key={d.index} style={{ width: columnWidth }} className="shrink-0 px-1.5 py-2 text-center">
-                    <span
-                      className={cn(
-                        "mx-auto mb-1 flex h-5 w-5 items-center justify-center rounded text-xs font-semibold tabular-nums",
-                        current ? "bg-primary text-primary-foreground" : "bg-muted text-foreground",
-                      )}
-                    >
-                      {d.index}
-                    </span>
-                    <span className="line-clamp-2 text-xs leading-5 text-foreground" title={d.title}>
-                      {d.title}
-                    </span>
-                    {current && <span className="text-xs leading-5 text-primary">{ANGLES_COPY.thisFile}</span>}
-                  </div>
-                );
-              })}
+              {docs.map((d) => (
+                <div key={d.index} style={{ width: columnWidth }} className="shrink-0 px-1.5 py-2 text-center">
+                  <span className="mx-auto mb-1 flex h-5 w-5 items-center justify-center rounded bg-muted text-xs font-semibold tabular-nums text-foreground">
+                    {d.index}
+                  </span>
+                  <span className="line-clamp-2 text-xs leading-5 text-foreground" title={d.title}>
+                    {d.title}
+                  </span>
+                </div>
+              ))}
             </div>
           )}
 

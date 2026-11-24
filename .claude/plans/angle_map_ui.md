@@ -1,9 +1,9 @@
 # Angle map UI — «الأوجه» inside «الملفات»
 
-**Status:** rev 2 (rows map) APPROVED 2026-11-23; route + hook + wiring BUILT and real-data tested
-2026-11-24 (§4) — all UNCOMMITTED in the worktree. Next: commit / deploy / switch on for the test
-account, on the owner's go (§4.5). Nothing deployed. Worktree `C:\Programming\LUNA_AI_angle_ui`,
-branch `feat/angle-map-ui`, on origin/master `39b20b4` (fast-forwarded 11-24).
+**Status:** rev 2 (tab inside an opened file) DEPLOYED and ON FOR EVERYONE 2026-11-24 (ed6cb2a, b9767f6).
+Rev 3 («الأوجه» at the front of «الملفات», §4b) BUILT 2026-11-24 in the worktree, UNCOMMITTED —
+awaiting the owner's review in the preview before it replaces rev 2. Worktree `C:\Programming\LUNA_AI_angle_ui`,
+branch `feat/angle-map-ui` (rev 2 pushed as b9767f6; rev 3 on top, uncommitted).
 
 **Related:** `relationship_map.md` (the map itself — angles-v5, migration 228 applied on prod; deployed
 11-23 with the mapper switch ON for the test account only — first real map stored 13:33 UTC, 2 docs,
@@ -22,6 +22,10 @@ branch `feat/angle-map-ui`, on origin/master `39b20b4` (fast-forwarded 11-24).
 | U6 | "Build it internally first, I will check it then agree or add modifications" — a local preview on real map data before any route, flag or deploy. |
 | U7 | Rev 1 map "not clear" → "the other option, simplify it": the mock-up's rows-across-documents layout (§2). |
 | U8 | Rev 2 approved as it is: rows map, then cards, gaps, client line, «من محادثة» picker. |
+| U9 | 11-24 (after rev 2 went live for everyone): «الأوجه» moves to the FRONT of «الملفات» — first option in the chat pane's «الملفات» tab AND on /files, «الملفات» (the files) second. |
+| U10 | Several maps in a conversation: stacked, newest first, each under its message's heading. |
+| U11 | The «الأوجه» tab inside an opened file is REMOVED (the file viewer is back to sections only). |
+| U12 | 11-24 after the rev-3 preview: "change الاوجه للخيوط and make the default option الملفات" — every user-facing «الأوجه/وجه» is now «الخيوط/خيط» (code names unchanged); the switch opens on «الملفات» in the pane and on /files («الخيوط» stays the first option); the pane loads full maps only once «الخيوط» is chosen. |
 
 ## 2. What was built (internal)
 
@@ -93,6 +97,27 @@ files page / phone), «محادثة ثانية» (a made-up second map to see th
    check in the real app, then widen. NOTE: the mapper is live for every paying user and the
    Pro/Max backfill is done (≈138 maps on 11-24) — widening the UI switch shows the tab to all of them.
 6. Mobile — the app must match the web (owner rule); not started.
+
+## 4b. Rev 3 — «الأوجه» at the front of «الملفات» (BUILT 11-24, uncommitted, preview only)
+
+- Backend: `GET /files/{item_id}/angle-maps` REMOVED. New: `GET /files/angle-maps[?conversation_id=]`
+  → `AngleMapListResponse` (light rows: documents, angle count, kind counts; newest first; ≤200),
+  batched (maps, members, angle kinds paged, items via the files layer, segment headers, lengths,
+  conversations); a map is listed only while every member is live and its segment map is the one the
+  map was made from (`group.stored_versions` vs current headers, the mapper's own comparison) and its
+  conversation is not deleted. `GET /files/angle-maps/{map_id}` → `AngleMapOut` through the mapper's
+  full `load_fresh_angle_map_for_item` (404 «الأوجه غير موجودة أو لم تعد محدّثة»). Both behind
+  `ANGLE_MAP_UI_*`; the literal path is declared before `/files/{item_id}`. Tests rewritten (13).
+- Web: `FileViewer` restored to its pre-feature version. Pane: `PaneFilesTab` wraps the file list —
+  conversation has maps → switch «الأوجه» | «الملفات», «الأوجه» = `AnglesStack` (every map in
+  full, newest first); a chat chip highlighting a file brings «الملفات» forward. /files: switch under
+  the header once the user has a map (the page waits for the maps list rather than flash the grid);
+  «الأوجه» = `LibraryAnglesList` grouped by conversation → `/files/angles/[mapId]` (`AngleMapPage`:
+  back to /files, conversation title, «افتح المحادثة» → /chat/<id>, the map). Users with no map: no
+  switch, /files and the pane exactly as before. `formatAngleCount`, `groupAngleMapsByConversation`.
+- Real-data check (files router only, read-only): test account 1 map; heaviest user 43 maps / 28
+  conversations, list 2.7 s and one map ~5 s from the dev machine; 0 list→open mismatches.
+- Preview: `/dev-preview/angle-map` now shows the pane (stack + «الملفات») and /files (list → map page).
 
 ## 5. Open for the owner
 
