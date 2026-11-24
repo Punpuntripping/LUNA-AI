@@ -484,6 +484,99 @@ class FileMatchResponse(BaseModel):
 class FilesStatusResponse(BaseModel):
     """GET /api/v1/files/status — whether «الملفات» is on for the caller."""
     enabled: bool
+    #: «الأوجه» in an opened file (ANGLE_MAP_UI_*) — only ever true with ``enabled``.
+    angle_maps: bool = False
+
+
+# ── «الأوجه» — GET /api/v1/files/{item_id}/angle-maps (.claude/plans/angle_map_ui.md)
+
+class AngleSectionRefOut(BaseModel):
+    ref: str
+    side: Optional[Literal["own", "opp", "neutral"]] = None
+
+
+class AngleOut(BaseModel):
+    seq: int
+    kind: Literal["strengthen", "attack", "answer"]
+    strength: Literal["strong", "medium", "weak"]
+    for_side: str = ""
+    for_party: str = ""
+    title: str = ""
+    argument: str = ""
+    legal_question: str = ""
+    weakness: str = ""
+    ocr_suspect: bool = False
+    sections: list[AngleSectionRefOut] = []
+
+
+class AngleGapOut(BaseModel):
+    kind: Literal["missing", "contradiction", "unanswered"]
+    issue: str = ""
+    ocr_suspect: bool = False
+    sections: list[AngleSectionRefOut] = []
+
+
+class AngleMapSectionOut(BaseModel):
+    ref: str
+    document: int
+    seq: int
+    what: str = ""
+    value: str = ""
+    owner_class: Optional[str] = None
+    owner: Optional[str] = None
+    brought_by: Optional[str] = None
+    page_from: Optional[int] = None
+    page_to: Optional[int] = None
+    side: Optional[Literal["own", "opp", "neutral"]] = None
+    content_md: str = ""
+
+
+class AngleMapDocumentOut(BaseModel):
+    index: int
+    item_id: str
+    title: str = ""
+    doc_type: Optional[str] = None
+    wi_seq: Optional[int] = None
+
+
+class AngleMapByDocumentOut(BaseModel):
+    document: int
+    side: str = ""
+    party: str = ""
+
+
+class AngleMapClientOut(BaseModel):
+    side: str = ""
+    party: str = ""
+    basis: str = ""
+    confidence: Literal["clear", "likely", "unclear"] = "unclear"
+    by_document: list[AngleMapByDocumentOut] = []
+
+
+class AngleMapLeftOutOut(BaseModel):
+    item_id: str
+    title: str = ""
+    reason: str = ""
+
+
+class AngleMapOut(BaseModel):
+    map_id: str
+    conversation_id: Optional[str] = None
+    conversation_title: Optional[str] = None
+    message_id: Optional[str] = None
+    created_at: str = ""
+    prompt_version: str = ""
+    client: AngleMapClientOut
+    documents: list[AngleMapDocumentOut] = []
+    left_out: list[AngleMapLeftOutOut] = []
+    sections: list[AngleMapSectionOut] = []
+    angles: list[AngleOut] = []
+    gaps: list[AngleGapOut] = []
+
+
+class FileAngleMapsResponse(BaseModel):
+    """GET /api/v1/files/{item_id}/angle-maps — every fresh map holding the file, newest first."""
+    maps: list[AngleMapOut] = []
 
 
 # ── Preferences ──────────────────────────────────────────

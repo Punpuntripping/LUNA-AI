@@ -403,6 +403,9 @@ agents/simple_search/tests/*
 # «الملفات» (.claude/plans/my_files.md): the library list / detail / match rules are durable —
 # ownership, the never-return-text rule of the list, hidden and folded files.
 !backend/tests/test_files_service.py
+# «الأوجه» in an opened file (.claude/plans/angle_map_ui.md): the angle-maps route — which maps a
+# file shows, labels, ownership, the switch.
+!backend/tests/test_file_angle_maps.py
 # files-in-their-own-table (.claude/plans/my_files_phase2.md): the loader / writer and the
 # both-switch reader tests are durable; backend/tests/test_files_service.py imports their fake.
 !shared/files/tests/

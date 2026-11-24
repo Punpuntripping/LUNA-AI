@@ -5,6 +5,7 @@ import { MY_FILES_ENABLED } from "@/lib/features";
 import { useAuthStore } from "@/stores/auth-store";
 import type {
   FileMatchRequest,
+  FilesStatusResponse,
   LibraryFileListResponse,
 } from "@/lib/contracts";
 
@@ -36,7 +37,7 @@ export const fileKeys = {
  * - `settled` tells a page "the answer is in" (to choose between the page and
  *   not-found without flashing either).
  */
-export function useFilesStatus(): { enabled: boolean; settled: boolean } {
+export function useFilesStatus(): { enabled: boolean; settled: boolean; angleMaps: boolean } {
   const userId = useAuthStore((s) => s.user?.user_id ?? null);
   const query = useQuery({
     queryKey: fileKeys.status(userId),
@@ -49,10 +50,13 @@ export function useFilesStatus(): { enabled: boolean; settled: boolean } {
     refetchOnMount: false,
     retry: 1,
   });
-  if (!MY_FILES_ENABLED) return { enabled: false, settled: true };
+  if (!MY_FILES_ENABLED) return { enabled: false, settled: true, angleMaps: false };
+  const enabled = query.data?.enabled === true;
   return {
-    enabled: query.data?.enabled === true,
+    enabled,
     settled: query.isSuccess || query.isError,
+    // «الأوجه» (angle_map_ui.md): an explicit true only, and never without «الملفات».
+    angleMaps: enabled && query.data?.angle_maps === true,
   };
 }
 
@@ -92,6 +96,39 @@ export function useLibraryFiles(options: { enabled?: boolean } = {}) {
     queryKey: fileKeys.list(),
     queryFn: () => guard(() => filesApi.list()),
     enabled: options.enabled ?? true,
+  });
+}
+
+/**
+ * «الأوجه» of an opened file (.claude/plans/angle_map_ui.md): every fresh angle
+ * map holding it, newest first. Asked only when the tab is on for this user
+ * (`useFilesStatus().angleMaps`) and `enabled` (the viewer passes false when it
+ * already has maps — the dev preview). An error reads as "no maps": the tab
+ * simply does not appear.
+ */
+export function useFileAngleMaps(itemId: string | undefined, options: { enabled?: boolean } = {}) {
+  const { angleMaps } = useFilesStatus();
+  const qc = useQueryClient();
+  const userId = useAuthStore((s) => s.user?.user_id ?? null);
+  return useQuery({
+    queryKey: [...fileKeys.detail(itemId ?? ""), "angle-maps"] as const,
+    queryFn: async () => {
+      try {
+        return await filesApi.angleMaps(itemId!);
+      } catch (err) {
+        // Not `useFeatureOffGuard`: here FEATURE_OFF is (usually) the «الأوجه»
+        // switch alone — turn the tab off, never the whole of «الملفات».
+        if (err instanceof ApiClientError && err.code === "FEATURE_OFF") {
+          qc.setQueryData<FilesStatusResponse>(fileKeys.status(userId), (prev) =>
+            prev ? { ...prev, angle_maps: false } : prev,
+          );
+        }
+        throw err;
+      }
+    },
+    enabled: angleMaps && !!itemId && (options.enabled ?? true),
+    staleTime: 60_000,
+    retry: 1,
   });
 }
 

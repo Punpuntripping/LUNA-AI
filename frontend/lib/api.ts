@@ -62,6 +62,7 @@ import type {
 } from "@/types";
 import type {
   AnnouncementsResponse,
+  FileAngleMapsResponse,
   FileMatchRequest,
   FileMatchResponse,
   FilesStatusResponse,
@@ -1022,6 +1023,14 @@ export const filesApi = {
   /** Phase 1b: does this user already have this file (name + size + type)? */
   match: (body: FileMatchRequest) =>
     api.post<FileMatchResponse>("/files/match", body),
+
+  /**
+   * «الأوجه»: every fresh angle map holding the file — one per conversation it
+   * was sent in — newest first (.claude/plans/angle_map_ui.md). `{maps: []}`
+   * when it is in none; FEATURE_OFF 404 when the tab is off for the user.
+   */
+  angleMaps: (itemId: string) =>
+    api.get<FileAngleMapsResponse>(`/files/${encodeURIComponent(itemId)}/angle-maps`),
 };
 
 /**

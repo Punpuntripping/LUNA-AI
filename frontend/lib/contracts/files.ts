@@ -830,6 +830,12 @@ export function fileMatchQuestionText(
  */
 export interface FilesStatusResponse {
   enabled: boolean;
+  /**
+   * «الأوجه» in an opened file (.claude/plans/angle_map_ui.md) — on for this
+   * user (`ANGLE_MAP_UI_*`). Only ever true with `enabled`. Absent on an older
+   * backend: off.
+   */
+  angle_maps?: boolean;
 }
 
 // ------------------------------------------

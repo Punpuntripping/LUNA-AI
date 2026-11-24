@@ -760,7 +760,8 @@ def test_status_route_is_always_200_and_reads_no_file(client_for):
     ):
         res = client_for(sb, **kwargs).get("/api/v1/files/status")
         assert res.status_code == 200, res.text
-        assert res.json() == {"enabled": want}
+        # `angle_maps` (angle_map_ui.md): off here — ANGLE_MAP_UI_* is not set.
+        assert res.json() == {"enabled": want, "angle_maps": False}
         assert res.headers["Cache-Control"] == "private, no-store"
     assert sb.selects == [] and sb.updates == []
 

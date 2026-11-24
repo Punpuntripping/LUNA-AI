@@ -5,6 +5,8 @@ Endpoints (Phase 1 + 1b):
     GET    /files/status           is the feature on for the caller? (always 200)
     GET    /files                  the user's library (light rows)
     GET    /files/{item_id}        one file: text, full summary, sections
+    GET    /files/{item_id}/angle-maps   «الأوجه»: the file's fresh angle maps
+                                   (also behind ANGLE_MAP_UI_*; angle_map_ui.md)
     DELETE /files/{item_id}        «حذف من ملفاتي» — a stamp, never a delete (204)
     POST   /files/match            the same file, already uploaded? (Phase 1b)
 
@@ -25,13 +27,14 @@ from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.models.requests import FileMatchRequest
 from backend.app.models.responses import (
+    FileAngleMapsResponse,
     FileMatch,
     FileMatchResponse,
     FilesStatusResponse,
     LibraryFileDetail,
     LibraryFileListResponse,
 )
-from backend.app.services import files_service
+from backend.app.services import angle_maps_service, files_service
 from backend.app.services.case_service import get_user_id
 from shared.auth.jwt import AuthUser
 from shared.db.run import run_db
@@ -88,7 +91,11 @@ async def files_status(
     so the literal path wins."""
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     response.headers["Cache-Control"] = _NO_STORE
-    return FilesStatusResponse(enabled=files_service.my_files_enabled(user_id))
+    enabled = files_service.my_files_enabled(user_id)
+    return FilesStatusResponse(
+        enabled=enabled,
+        angle_maps=enabled and angle_maps_service.angle_maps_ui_enabled(user_id),
+    )
 
 
 @router.get("/files", response_model=LibraryFileListResponse)
@@ -144,6 +151,27 @@ async def get_file(
         raise _not_found()
     response.headers["Cache-Control"] = _NO_STORE
     return LibraryFileDetail.model_validate(data)
+
+
+@router.get("/files/{item_id}/angle-maps", response_model=FileAngleMapsResponse)
+async def get_file_angle_maps(
+    item_id: str,
+    response: Response,
+    user_id: str = Depends(files_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """«الأوجه» of an opened file (.claude/plans/angle_map_ui.md): every fresh
+    angle map holding it — one per conversation it was sent in — newest first.
+    ``ANGLE_MAP_UI_*`` off for the caller → the same FEATURE_OFF 404 as
+    «الملفات» off; not the caller's file → 404; no map → ``{"maps": []}``."""
+    if not angle_maps_service.angle_maps_ui_enabled(user_id):
+        raise LunaHTTPException(status_code=404, code=ErrorCode.FEATURE_OFF, detail=MSG_FEATURE_OFF)
+    validate_uuid(item_id, "معرف الملف")
+    maps = await run_db(angle_maps_service.get_file_angle_maps, supabase, user_id, item_id)
+    if maps is None:
+        raise _not_found()
+    response.headers["Cache-Control"] = _NO_STORE
+    return FileAngleMapsResponse.model_validate({"maps": maps})
 
 
 @router.delete("/files/{item_id}", status_code=204, response_class=Response)

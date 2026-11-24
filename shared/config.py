@@ -539,6 +539,12 @@ class Settings(BaseSettings):
     # Env var name == field name (no validation_alias).
     ANGLE_MAP_ENABLED: bool = False
     ANGLE_MAP_USERS: Optional[str] = None
+    # «الأوجه» tab in an opened file (.claude/plans/angle_map_ui.md): who SEES the
+    # maps (GET /files/{id}/angle-maps + `angle_maps` in /files/status). Separate
+    # from the switch that BUILDS them, so maps can be built for users who do not
+    # see them yet. Also needs MY_FILES on. Env var name == field name.
+    ANGLE_MAP_UI_ENABLED: bool = False
+    ANGLE_MAP_UI_USERS: Optional[str] = None
 
     # ── Completion Search — .claude/plans/completion_search.md §4.10 ────────
     # COMPLETION_SEARCH: the two planners get `complete_search` / `keep_results`
