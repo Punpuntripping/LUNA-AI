@@ -91,6 +91,8 @@ export function WorkspaceItemScreen({ itemId }: { itemId: string }) {
         break;
       case "convo_context":
       case "references":
+      // «النصوص المثبّتة»: agent-written, read-only — markdown and copy, like the two above.
+      case "pinned_texts":
         body = <TextItemViewer item={item} {...common} />;
         break;
       default:

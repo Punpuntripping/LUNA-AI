@@ -14,12 +14,14 @@ const KIND_LABELS: Record<WorkspaceItemKind, string> = {
   agent_writing: "المسودات",
   convo_context: "ملخص المحادثة",
   references: "المراجع",
+  pinned_texts: "النصوص المثبّتة",
 };
 
 /** Order in which kind groups appear */
 const KIND_ORDER: WorkspaceItemKind[] = [
   "agent_writing",
   "agent_search",
+  "pinned_texts",
   "note",
   "attachment",
   "references",

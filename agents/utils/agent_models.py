@@ -404,6 +404,14 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # judgement ("did they mean the نظام or its لائحة?") is real inference, so
     # reasoning=medium rather than the provider default.
     "simple_search_searcher":     _FLASH_MEDIUM,
+    # ── completion_search — the lookup helper (.claude/plans/completion_search.md §4.2)
+    # Layer-3 Task when a planner calls it, a Layer-4 helper-frame step for
+    # attachments. Splits a plain-words request into searches, picks the lookup
+    # tool for each, rewords a name that did not match (≤3 attempts) and selects
+    # handles; code opens the text and computes the confidence. Same policy as the
+    # searcher it is built from: tool orchestration with one real judgement
+    # ("which law does this name mean").
+    "completion_search":          _FLASH_MEDIUM,
     # Layer-3 Task. Opens ONE already-unfolded object and answers from it: it
     # validates the object is the one meant, writes the Arabic answer, and
     # decides whether a workspace card is warranted. Up to 3 run per turn (the

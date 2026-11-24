@@ -31,7 +31,10 @@ export type WorkspaceItemKind =
   | 'agent_search'
   | 'agent_writing'
   | 'convo_context'
-  | 'references';
+  | 'references'
+  // «النصوص المثبّتة»: one read-only card per conversation holding the official
+  // texts an agent or an attachment brought in (.claude/plans/completion_search.md §4.5).
+  | 'pinned_texts';
 
 export type WorkspaceCreator = 'user' | 'agent';
 

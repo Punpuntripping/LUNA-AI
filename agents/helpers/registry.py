@@ -371,7 +371,98 @@ ANGLE_MAP = HelperSpec(
     fallback="the planner plans without angles",
 )
 
-_SPECS: tuple[HelperSpec, ...] = (OCR, SUMMARY, PRE_ROUTER_MEMORY, MEMORY, SEGMENTER, ANGLE_MAP)
+# --------------------------------------------------------------------------- #
+# Attachment citation pins — .claude/plans/completion_search.md §4.6 (C14–C20)
+# --------------------------------------------------------------------------- #
+
+#: The scan and the code decisions take seconds. The agent step (only for what code
+#: could not prove) is bounded at 200 s inside the run; a consumer waits this long.
+CITATION_PINS_CEILING_S = 300.0
+
+
+def _citation_pins_enabled(user_id: str) -> bool:
+    from agents.utils.citation_pin_flags import citation_pins_enabled
+
+    return citation_pins_enabled(user_id)
+
+
+async def citation_pins_applies_to(ctx: HelperContext) -> bool:
+    """An attachment with text that is not a contract (owner decision C16). The type
+    comes from the summary, which is why this helper depends on it. A failed read =
+    not applicable (the sections are then delivered without pinned text)."""
+    import asyncio
+
+    from agents.memory.citation_pins.runner import citation_pins_applies_to_item
+
+    try:
+        return bool(
+            await asyncio.to_thread(citation_pins_applies_to_item, ctx.supabase, str(ctx.item_id))
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("citation_pins applies_to: read failed: %s", type(exc).__name__)
+        return False
+
+
+class CitationPinsFailed(RuntimeError):
+    """A citation run that ended without stored rows (failed_store / error)."""
+
+
+async def run_citation_pins(ctx: HelperContext) -> Any:
+    """Scan one attachment for the articles it cites and store them. Code decides what
+    it can prove; the Completion Search agent fetches the rest."""
+    from agents.memory.citation_pins.runner import run_citation_pins as run
+
+    result = await run(ctx.supabase, str(ctx.item_id))
+    if result.failed:
+        raise CitationPinsFailed(f"{result.outcome}:{result.error}")
+    return result
+
+
+def load_citation_pins(supabase: Any, item_id: str) -> Any:
+    from agents.memory.citation_pins.runner import load_citation_scan
+
+    return load_citation_scan(supabase, item_id)
+
+
+def _citation_pins_version() -> str:
+    """``<scan rule version>+<agent step version>``. Like the segmenter's: a broken
+    package must not break the turn, so any import error gives a placeholder."""
+    try:
+        from agents.memory.citation_pins.agent_step import AGENT_STEP_VERSION
+        from agents.tool_repository.citation_scan import SCAN_RULE_VERSION
+
+        return f"{SCAN_RULE_VERSION}+{AGENT_STEP_VERSION}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("citation pins version unavailable: %s", type(exc).__name__)
+        return "unavailable"
+
+
+CITATION_PINS = HelperSpec(
+    name="citation_pins",
+    scope="item",
+    # doc_type comes from the summary — contracts are never scanned.
+    depends_on=("ocr", "summary"),
+    # The same readers as the segmenter: the pinned articles arrive inside its sections.
+    critical_for=frozenset({"case_expander", "reg_expander", "aggregator", "writer"}),
+    ceiling_s=CITATION_PINS_CEILING_S,
+    run=run_citation_pins,
+    load=load_citation_pins,
+    applies_to=citation_pins_applies_to,
+    enabled=_citation_pins_enabled,
+    stored=True,
+    # Renewed while the run is alive; the agent step alone may take 200 s.
+    lease_s=300.0,
+    max_attempts=2,
+    version=_citation_pins_version(),
+    concurrency=SEGMENTER_CONCURRENCY,
+    # own_ledger_scope stays on (the default): the agent's model use lands on the
+    # user's ledger like every background agent's.
+    fallback="the sections without pinned official text",
+)
+
+_SPECS: tuple[HelperSpec, ...] = (
+    OCR, SUMMARY, PRE_ROUTER_MEMORY, MEMORY, SEGMENTER, ANGLE_MAP, CITATION_PINS,
+)
 
 REGISTRY: dict[str, HelperSpec] = {spec.name: spec for spec in _SPECS}
 

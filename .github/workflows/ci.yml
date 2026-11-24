@@ -104,6 +104,10 @@ jobs:
             agents/tests/test_prior_check_flow.py \
             agents/tests/test_wafer_provider.py \
             agents/tests/test_helper_frame_orchestrator.py \
+            agents/tool_repository/tests/test_citation_scan.py \
+            agents/completion_search/tests/ \
+            agents/memory/citation_pins/tests/ \
+            shared/workspace/tests/ \
             agents/helpers/tests/ \
             agents/memory/attachment_segmenter/tests/ \
             agents/memory/angle_mapper/tests/ \

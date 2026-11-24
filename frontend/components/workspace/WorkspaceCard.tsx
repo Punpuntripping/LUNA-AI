@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { FileText, Paperclip, NotebookPen, BookOpen, MessageSquare } from "lucide-react";
+import { FileText, Paperclip, NotebookPen, BookOpen, MessageSquare, Pin } from "lucide-react";
 import { cn, getRelativeTimeAr } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { trackWiOpened } from "@/components/analytics/run-tracker";
@@ -16,6 +16,7 @@ const KIND_ICON: Record<WorkspaceItemKind, typeof FileText> = {
   agent_writing: FileText,
   convo_context: MessageSquare,
   references: BookOpen,
+  pinned_texts: Pin,
 };
 
 const KIND_LABEL: Record<WorkspaceItemKind, string> = {
@@ -25,6 +26,7 @@ const KIND_LABEL: Record<WorkspaceItemKind, string> = {
   agent_writing: "مسودة",
   convo_context: "ملخص المحادثة",
   references: "مراجع",
+  pinned_texts: "نصوص مثبّتة",
 };
 
 const SUBTYPE_LABEL: Record<string, string> = {
@@ -47,6 +49,7 @@ const KIND_COLORS: Record<WorkspaceItemKind, string> = {
   agent_writing: "bg-info text-info-fg",
   convo_context: "bg-success text-success-fg",
   references: "bg-brand-soft text-brand-soft-fg",
+  pinned_texts: "bg-accent-soft text-accent-brand",
 };
 
 interface WorkspaceCardProps {

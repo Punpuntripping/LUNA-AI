@@ -329,6 +329,68 @@ async def _fetch_chosen_template(
     )
 
 
+#: First lines of the pinned-texts source: what it is and how a document uses it.
+#: The writer's own rules already allow citing what sits in <sources>; this says how.
+PINNED_SOURCE_NOTE_AR = (
+    "هذه نصوص رسمية من مكتبة ريحان ثُبّتت لهذه الصياغة بنصها الكامل. "
+    "عند الاستشهاد بها يُذكر النص باسمه (مثل: المادة 77 من نظام العمل) ويُنقل حرفيًا عند الاقتباس. "
+    "ليست مرفقًا من مرفقات المستخدم ولا مرجعًا مرقّمًا."
+)
+
+
+def _pinned_card_events(deps: WriterPlannerDeps) -> list[dict]:
+    """The «النصوص المثبّتة» card events of this leg, so the chat shows the card."""
+    if not getattr(deps, "completion_search", False):
+        return []
+    try:
+        from agents.tool_repository.completion_search_tool import card_events
+
+        return card_events(deps)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def _add_pinned_texts(package: WriterPackage, deps: WriterPlannerDeps, result: Any) -> None:
+    """Append the run's pinned official texts to ``package`` as one ``source`` item.
+
+    The item is the conversation's «النصوص المثبّتة» card (so it has a ``WI-N``
+    handle), but its body is only what THIS run pinned, in full. Never raises: a
+    draft without the extra source is better than no draft.
+    """
+    if not getattr(deps, "completion_search", False):
+        return
+    try:
+        from agents.tool_repository.completion_search_tool import collect_turn_pins, render_pins_block
+        from shared.workspace.pinned_texts import KIND, TITLE_AR
+
+        pins = await collect_turn_pins(deps, result.all_messages())
+        body = render_pins_block(pins)
+        if not body:
+            return
+        marker, _, sections = body.partition("\n\n")
+        body = f"{marker}\n{PINNED_SOURCE_NOTE_AR}\n\n{sections}"
+        rows = (
+            deps.supabase.table("workspace_items").select("item_id,wi_seq")
+            .eq("conversation_id", deps.conversation_id).eq("user_id", deps.user_id).eq("kind", KIND)
+            .is_("deleted_at", "null").limit(1).execute().data or []
+        )
+        card = rows[0] if rows else {}
+        words = len(body.split())
+        package.analyzed_items.append(AnalyzedItem(
+            item_id=str(card.get("item_id") or "pinned-texts"),
+            wi_seq=card.get("wi_seq"),
+            title=TITLE_AR,
+            kind=KIND,
+            role="source",
+            need="full",
+            body_md=body,
+            word_count_before=words,
+            word_count_after=words,
+        ))
+    except Exception:  # noqa: BLE001
+        logger.warning("writer_planner: could not add the pinned texts to the package", exc_info=True)
+
+
 async def _build_package_from_decision(
     decision: PlannerDecision,
     deps: WriterPlannerDeps,
@@ -441,7 +503,13 @@ async def handle_writer_planner_turn(
         )
 
         # --- 2. Run agent (fresh or resume) -------------------------------
-        agent = create_writer_planner_decider()
+        # The argument is passed only when Completion Search is on for this
+        # user, so with the flag off this is today's call, unchanged.
+        agent = (
+            create_writer_planner_decider(completion_search=True)
+            if getattr(deps, "completion_search", False)
+            else create_writer_planner_decider()
+        )
         run_kwargs: dict[str, Any] = {
             "deps": deps,
             "usage_limits": WRITER_PLANNER_LIMITS,
@@ -653,6 +721,12 @@ async def handle_writer_planner_turn(
             templates=[chosen_template_ref] if chosen_template_ref else None,
         )
 
+        # --- 6b. The official texts pinned in this run (completion_search.md §4.4)
+        # travel to the writer as ONE extra source. Rebuilt from the run's whole
+        # message history, so a text pinned before the plan-approval pause is
+        # still there after it. No-op when the flag is off or nothing was pinned.
+        await _add_pinned_texts(package, deps, result)
+
         # --- 7. Run the writing executor on the package ------------------
         from agents.responder.wiring import responder_unified
 
@@ -762,7 +836,7 @@ async def handle_writer_planner_turn(
         # «القوالب المستخدمة في الكتابة» — the templates the draft was built on,
         # as recorded on the WI (metadata.templates_used). Always emitted on a
         # fresh draft so the chat can say «لم يُستخدم قالب» when the list is empty.
-        sse_events = list(writer_output.sse_events or [])
+        sse_events = _pinned_card_events(deps) + list(writer_output.sse_events or [])
         if decision.edit_mode == "fresh":
             sse_events.append({
                 "type": "templates_used",

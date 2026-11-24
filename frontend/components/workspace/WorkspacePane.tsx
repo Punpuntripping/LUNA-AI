@@ -367,6 +367,11 @@ function KindRouter({
       return <ConvoContextViewer item={item} />;
     case "references":
       return <ReferencesRenderer item={item} />;
+    case "pinned_texts":
+      // «النصوص المثبّتة» — written by the agents only. The same read-only
+      // markdown + copy surface as the conversation summary: no editor, so
+      // the official wording can never be changed by hand.
+      return <ConvoContextViewer item={item} />;
     default:
       return (
         <div className="flex flex-1 items-center justify-center p-8 text-center">

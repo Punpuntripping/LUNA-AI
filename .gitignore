@@ -381,6 +381,22 @@ supabase/.temp/
 !agents/tool_repository/tests/
 agents/tool_repository/tests/*
 !agents/tool_repository/tests/test_regulation_versions.py
+# completion search (.claude/plans/completion_search.md): the model-free citation scan
+# decides which official article is pinned under an attachment's segment. A wrong article
+# number, a law tied to the wrong mention or a heading taken for a citation all read like a
+# right answer, so its rules stay guarded.
+!agents/tool_repository/tests/test_citation_scan.py
+# … and the helper itself: the three-attempt limit, confidence decided by code, no search
+# fee, no similarity call, no legal text typed by the model, a ruling opened with no unlock.
+!agents/completion_search/tests/
+# … and the attachment side: which citation is pinned (only a checkable link), that a
+# contract is never scanned, and that the official article lands under the segment that
+# cites it without moving the 100k / 300k caps.
+!agents/memory/citation_pins/tests/
+# … and the «النصوص المثبّتة» card: one per conversation under two writers at once, its
+# summary re-set after every merge (a card with none would go to the LLM summariser), and
+# rulings shown as a lead only.
+!shared/workspace/tests/
 !agents/simple_search/tests/
 agents/simple_search/tests/*
 !agents/simple_search/tests/test_searcher_versions.py

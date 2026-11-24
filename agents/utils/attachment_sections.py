@@ -17,13 +17,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from typing import Any
 
-from agents.utils.attachment_delivery import Section, sections_from_rows
+from agents.utils.attachment_delivery import Section, attach_pins, sections_from_rows
 
 logger = logging.getLogger(__name__)
 
 SEGMENTER_HELPER = "segmenter"
+#: completion_search.md §4.6.2 — what an attachment cites, resolved to official articles.
+CITATION_PINS_HELPER = "citation_pins"
 
 
 def _encode_sections(sections: list[Section]) -> list[Section]:
@@ -36,19 +39,28 @@ def _encode_sections(sections: list[Section]) -> list[Section]:
         return sections
     if active_codec() is None:
         return sections
+    # ``replace`` so every other field travels as it is — above all ``pins``: the
+    # official text of a law is public, and encoding it would swap digits inside it.
     return [
-        Section(
-            seq=s.seq,
-            value=s.value,
+        replace(
+            s,
             what=encode_active(s.what),
             text=encode_active(s.text),
-            label=s.label,
             # free text that can carry a name — encoded like ``what``
             owner=encode_active(s.owner) if s.owner else "",
             brought_by=encode_active(s.brought_by) if s.brought_by else "",
         )
         for s in sections
     ]
+
+
+def _pins_on(user_id: str) -> bool:
+    try:
+        from agents.utils.citation_pin_flags import pin_delivery_enabled
+
+        return pin_delivery_enabled(user_id)
+    except Exception:  # noqa: BLE001 — off is today's behaviour
+        return False
 
 
 async def wait_and_load_sections(
@@ -71,21 +83,34 @@ async def wait_and_load_sections(
     if not ids:
         return {}, telemetry
 
+    pins_on = _pins_on(user_id)
     try:
         from agents.helpers import ensure_ready
 
-        readiness = await ensure_ready(
-            SEGMENTER_HELPER,
-            ids,
-            consumer=consumer,  # type: ignore[arg-type]
-            supabase=supabase,
-            user_id=user_id,
-            on_wait=on_wait,
-        )
+        def wait(helper: str):
+            return ensure_ready(
+                helper,
+                ids,
+                consumer=consumer,  # type: ignore[arg-type]
+                supabase=supabase,
+                user_id=user_id,
+                on_wait=on_wait,
+            )
+
+        # ONE combined wait: the two helpers start together and neither needs the other.
+        waits = [wait(SEGMENTER_HELPER)] + ([wait(CITATION_PINS_HELPER)] if pins_on else [])
+        results = await asyncio.gather(*waits, return_exceptions=True)
+        readiness = results[0]
+        if isinstance(readiness, BaseException):
+            raise readiness
         # Flat strings, not a dict — this lands on Logfire span attributes.
         telemetry["segments.readiness"] = sorted(
             f"{str(iid)[:8]}:{getattr(r, 'status', r)}" for iid, r in (readiness or {}).items()
         )
+        if pins_on and not isinstance(results[1], BaseException):
+            telemetry["pins.readiness"] = sorted(
+                f"{str(iid)[:8]}:{getattr(r, 'status', r)}" for iid, r in (results[1] or {}).items()
+            )
     except Exception:  # noqa: BLE001 — a failed wait still lets us read what exists
         logger.warning("wait_and_load_sections: ensure_ready failed", exc_info=True)
 
@@ -103,7 +128,23 @@ async def wait_and_load_sections(
         if sections:
             out[str(item_id)] = _encode_sections(sections) if encode else sections
     telemetry["segments.loaded"] = sorted(out)
+
+    if pins_on:
+        # After encoding, on purpose: the pinned text is attached as it is. A document
+        # with no sections gets a carrier section so its articles follow its text.
+        try:
+            from agents.memory.citation_pins.store import load_pins
+
+            pins = await asyncio.to_thread(load_pins, supabase, ids, user_id=user_id)
+            for item_id, item_pins in (pins or {}).items():
+                attached = attach_pins(out.get(item_id) or [], item_pins)
+                if attached:
+                    out[item_id] = attached
+            telemetry["pins.items"] = len(pins or {})
+            telemetry["pins.articles"] = sum(len({p.article_id for p in v}) for v in (pins or {}).values())
+        except Exception:  # noqa: BLE001 — sections without pinned text is the fallback
+            logger.warning("wait_and_load_sections: pin load failed", exc_info=True)
     return out, telemetry
 
 
-__all__ = ["SEGMENTER_HELPER", "wait_and_load_sections"]
+__all__ = ["CITATION_PINS_HELPER", "SEGMENTER_HELPER", "wait_and_load_sections"]

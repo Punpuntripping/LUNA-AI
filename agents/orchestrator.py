@@ -1593,7 +1593,13 @@ async def _resume_major_agent_inner(
                 analyzer_checked=_resume_checked,
             )
 
-            planner_decider = create_planner_decider()
+            # Same tool set as the fresh leg. The argument is passed only when
+            # Completion Search is on for this user: off = today's call, unchanged.
+            planner_decider = (
+                create_planner_decider(completion_search=True)
+                if getattr(_resume_deps, "completion_search", False)
+                else create_planner_decider()
+            )
             planner_result = await planner_decider.run(
                 "",  # user_prompt unused on resume — history provides full context
                 message_history=history,
@@ -1772,11 +1778,24 @@ async def _resume_major_agent_inner(
         # decision is supplied → phase 1 is skipped → cannot pause again.
         # Same live-progress queue bridge as _dispatch: run it as a task, drain
         # the queue while it works, yield each translated event immediately.
+        # Completion Search (completion_search.md §4.4): the texts pinned in this
+        # run — before the pause (rebuilt from the history's tags and the card) and
+        # during the resumed decider leg (still on _resume_deps) — go with the
+        # search. Phases 2–3 run on fresh deps, and without this hand-over the
+        # `statute_articles` block would be empty after every clarifying question.
+        _carried_pins, _carried_events = await _completion_pins_after_resume(
+            _resume_deps, planner_result,
+        )
+        _carried = (
+            {"carried_pins": _carried_pins, "carried_events": _carried_events}
+            if (_carried_pins or _carried_events) else {}
+        )
         ds_task = asyncio.create_task(
             _run_deep_search(
                 major_input, supabase, decision=planner_output,
                 assistant_message_id=assistant_message_id,
                 emit_sse=progress_q.put_nowait,
+                **_carried,
             )
         )
         try:
@@ -4532,6 +4551,24 @@ class _DeepSearchOutcome:
     handback_note: str = ""
 
 
+async def _completion_pins_after_resume(resume_deps: Any, planner_result: Any) -> tuple[list[dict], list[dict]]:
+    """``(pins, card events)`` to hand from a resumed decider leg to phases 2–3.
+
+    Empty and free when Completion Search is off for this user. Never raises: a
+    pin that cannot be rebuilt is left out and the search runs without it.
+    """
+    if not getattr(resume_deps, "completion_search", False):
+        return [], []
+    try:
+        from agents.tool_repository.completion_search_tool import card_events, collect_turn_pins
+
+        pins = await collect_turn_pins(resume_deps, planner_result.all_messages())
+        return pins, card_events(resume_deps)
+    except Exception:  # noqa: BLE001
+        logger.warning("_resume_major_agent: could not carry the pinned texts", exc_info=True)
+        return [], []
+
+
 async def _run_deep_search(
     input: MajorAgentInput,
     supabase: SupabaseClient,
@@ -4540,6 +4577,8 @@ async def _run_deep_search(
     assistant_message_id: str | None = None,
     emit_sse: Callable[[dict], None] | None = None,
     pinned_plan: "PinnedPlan | None" = None,
+    carried_pins: list[dict] | None = None,
+    carried_events: list[dict] | None = None,
 ) -> _DeepSearchOutcome:
     """Run the planner-driven deep_search_v4 loop.
 
@@ -4689,6 +4728,13 @@ async def _run_deep_search(
             analyzer_handoff=input.analyzer_handoff,
             analyzer_checked=input.analyzer_checked,
         )
+        # Resume only: the official texts this run pinned around its pause, and
+        # the card events of the resumed decider leg (completion_search.md §4.4).
+        for _pin in carried_pins or []:
+            if _pin.get("key"):
+                deps._turn_pins.setdefault(_pin["key"], _pin)
+        deps._events.extend(carried_events or [])
+
         # A request handed back once and explored with the user is not handed
         # back again: the user has answered, so this run searches.
         deps.after_handback = _last_reply_was_handback(input.recent_messages)

@@ -127,6 +127,16 @@ class WriterPlannerDeps:
     emit_sse: Callable[[dict], None] | None = None
     _events: list[dict] = field(default_factory=list)
 
+    # --- Completion Search (.claude/plans/completion_search.md §4.4) ------
+    # ``completion_search``: this user's planner has ``complete_search`` /
+    # ``keep_results`` (COMPLETION_SEARCH_ENABLED). ``_turn_pins``: the texts
+    # pinned this turn, full text, keyed by identity — they reach the writer
+    # as one extra source. ``_pending_pins``: medium results awaiting
+    # ``keep_results``.
+    completion_search: bool = False
+    _turn_pins: dict = field(default_factory=dict)
+    _pending_pins: dict = field(default_factory=dict)
+
     # -- alias resolver ----------------------------------------------------
     def resolve_wi_alias(self, alias: str) -> str | None:
         """Resolve a ``"WI-{n}"`` alias → workspace_items.item_id UUID.
@@ -287,7 +297,10 @@ def build_writer_planner_deps(
     attached_list = list(attached_items or [])
     prior_list = list(prior_artifacts or [])
     template_list = list(user_templates or [])
+    from agents.utils.citation_pin_flags import completion_search_enabled
+
     return WriterPlannerDeps(
+        completion_search=completion_search_enabled(user_id),
         supabase=supabase,
         http_client=http_client,
         user_id=user_id,

@@ -837,7 +837,14 @@ async def list_workspace_items(ctx: RunContext[RouterDeps]) -> list[dict]:
                 # Expose the alias to the LLM; never the raw UUID.
                 "wi": f"WI-{wi_seq}" if wi_seq is not None else None,
                 "title": row.get("title", ""),
-                "kind_hint": "agent_writing" if kind in ("note", "agent_writing") else "agent_search",
+                # «النصوص المثبّتة» (kind pinned_texts) is neither a draft nor a
+                # search report: it keeps its own name so it is never offered
+                # as "the previous analysis".
+                "kind_hint": (
+                    "agent_writing" if kind in ("note", "agent_writing")
+                    else "pinned_texts" if kind == "pinned_texts"
+                    else "agent_search"
+                ),
                 "artifact_type": subtype,
                 "created_at": row.get("created_at"),
             })

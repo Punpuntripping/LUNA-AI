@@ -1141,6 +1141,20 @@ def _build_candidate_context_blocks(
             body=build_statute_package_md(fetched),
             persistence="turn",
         )
+    # Completion Search (completion_search.md §4.4): the same block, built from the
+    # texts pinned this turn — including the ones pinned around an `ask_user` pause,
+    # which the old accumulator lost. An article keeps the `## نص المادة …` heading
+    # the executors' prompts name; a ruling, a circular, a principle or a service
+    # comes under its own title.
+    turn_pins = list((getattr(deps, "_turn_pins", None) or {}).values())
+    if turn_pins:
+        from agents.tool_repository.completion_search_tool import render_pins_block
+
+        body = render_pins_block(turn_pins)
+        if body:
+            candidates["statute_articles"] = ContextBlock(
+                label="statute_articles", body=body, persistence="turn",
+            )
 
     # prior_search_lessons — persistence="conversation".
     # Rendered per §4.2: list of {title, describe_query, confidence, summary}.

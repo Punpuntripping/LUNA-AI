@@ -28,7 +28,11 @@ from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .deps import WriterPlannerDeps
 from .models import PlannerDecision
-from .prompts import WRITER_PLANNER_SYSTEM_PROMPT, build_writer_planner_instructions
+from .prompts import (
+    WRITER_PLANNER_SYSTEM_PROMPT,
+    build_writer_planner_instructions,
+    writer_planner_system_prompt,
+)
 from .tools import register_tools
 
 logger = logging.getLogger(__name__)
@@ -52,6 +56,8 @@ WRITER_PLANNER_LIMITS = UsageLimits(
 
 def create_writer_planner_decider(
     model_override: ModelPolicy | str | None = None,
+    *,
+    completion_search: bool = False,
 ) -> "Agent[WriterPlannerDeps, list[PlannerDecision | DeferredToolRequests]]":
     """Build the writer_planner decider agent.
 
@@ -71,12 +77,22 @@ def create_writer_planner_decider(
     """
     model = get_agent_model("writer_planner_decider", model_override)
 
+    # Completion Search (completion_search.md §4.4): the passage and the tools come
+    # TOGETHER. If the passage cannot be placed, this planner runs without the tools.
+    system_prompt = WRITER_PLANNER_SYSTEM_PROMPT
+    if completion_search:
+        try:
+            system_prompt = writer_planner_system_prompt(True)
+        except Exception:  # noqa: BLE001
+            logger.error("writer_planner: complete_search passage could not be placed — tool left out", exc_info=True)
+            completion_search = False
+
     agent: Agent[WriterPlannerDeps, list[PlannerDecision | DeferredToolRequests]] = Agent(
         model,
         name="writer_planner_decider",
         deps_type=WriterPlannerDeps,
         output_type=[PlannerDecision, DeferredToolRequests],
-        instructions=WRITER_PLANNER_SYSTEM_PROMPT,
+        instructions=system_prompt,
         retries=2,
         output_retries=4,
     )
@@ -104,6 +120,15 @@ def create_writer_planner_decider(
     # and you need its exact content + citations. WriterPlannerDeps exposes
     # .supabase / .user_id / .wi_alias_map (satisfies HasWorkspaceContext).
     register_unfold_workspace_item(agent)
+
+    # The lookup helper for a NAMED legal text the document must quote
+    # (`complete_search` / `keep_results`). Off unless COMPLETION_SEARCH_ENABLED
+    # covers this user. WriterPlannerDeps exposes .supabase / .user_id /
+    # .conversation_id / ._events.
+    if completion_search:
+        from agents.tool_repository.completion_search_tool import register_completion_search
+
+        register_completion_search(agent, "writer_planner")
 
     return agent
 

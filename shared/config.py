@@ -540,6 +540,27 @@ class Settings(BaseSettings):
     ANGLE_MAP_ENABLED: bool = False
     ANGLE_MAP_USERS: Optional[str] = None
 
+    # ── Completion Search — .claude/plans/completion_search.md §4.10 ────────
+    # COMPLETION_SEARCH: the two planners get `complete_search` / `keep_results`
+    # (the search planner in place of `fetch_article`). Off: the search planner
+    # keeps `fetch_article` and the writer planner has no lookup tool.
+    # CITATION_PINS: the citation scan runs on every non-contract attachment and
+    # stores what it cites (migration 231 must be applied first). Nobody reads
+    # the rows while PIN_DELIVERY is off (shadow mode).
+    # CITATION_AGENT (on by default, no user list): what code cannot prove goes
+    # to the Completion Search agent, which fetches the article. Off = code only:
+    # the agent is not called and what it pinned before is not delivered.
+    # PIN_DELIVERY: the official article is printed under the attachment segment
+    # that cites it. Off: sections are delivered exactly as today.
+    # *_USERS: comma-separated users.user_id; empty = everyone.
+    COMPLETION_SEARCH_ENABLED: bool = False
+    COMPLETION_SEARCH_USERS: Optional[str] = None
+    ATTACHMENT_CITATION_PINS_ENABLED: bool = False
+    ATTACHMENT_CITATION_PINS_USERS: Optional[str] = None
+    ATTACHMENT_CITATION_AGENT_ENABLED: bool = True
+    ATTACHMENT_PIN_DELIVERY_ENABLED: bool = False
+    ATTACHMENT_PIN_DELIVERY_USERS: Optional[str] = None
+
     # ── «ملفاتي» — .claude/plans/my_files.md §7 ─────────────────────────────
     # Off: every /api/v1/files route answers 404. *_USERS: comma-separated
     # users.user_id; empty = everyone. Env var name == field name.

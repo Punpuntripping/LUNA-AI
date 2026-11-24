@@ -22,7 +22,7 @@ or late) is delivered as its full text, treated as ONE section for the caps.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from shared.config import get_settings
@@ -41,6 +41,31 @@ WRITER_VALUES: frozenset[str] = frozenset({"metadata", "core", "supporting"})
 SILENT_VALUES: frozenset[str] = frozenset({"boilerplate", "repeat"})
 
 TRIM_NOTE = "[…] اختُصر هذا المقطع لضيق المساحة"
+
+# ── Pinned official articles — .claude/plans/completion_search.md §4.7 ─────────
+#: One pinned article is cut at this many characters (owner decision C23).
+PIN_ARTICLE_CAP = 10_000
+#: Safety net: pinned text per document. Past it every pinned article in that
+#: document keeps the same share. Pinned text never counts toward the caps above.
+PIN_DOC_NET = 30_000
+#: The line over a pinned article. It says where the text comes from, because the
+#: reader must not take it for the document's own words.
+PIN_TAG = "من المكتبة النظامية، لا من المستند — {title}"
+PIN_CUT_NOTE = "[…] اختُصر نص هذه المادة"
+#: Over the articles of a document that has no sections to hang them under.
+LOOSE_PINS_HEADING = "〔نصوص نظامية من المكتبة أشار إليها هذا المستند — ليست جزءًا منه〕"
+#: ``Section.value`` of the carrier that brings such a document's articles through
+#: the same plumbing as real sections. No recipient keeps it and it names nothing.
+PINS_ONLY_VALUE = "pins_only"
+
+
+@dataclass(frozen=True)
+class SectionPin:
+    """One official article, as it is printed under a section. Public text — never encoded."""
+
+    article_id: str
+    title: str          # «المادة 77 من نظام العمل»
+    text: str           # already cut to the limits
 LEFT_OUT_PREFIX = "[…] لم يُعرض هنا: "
 LEFT_OUT_MORE = "وغيرها"
 #: How many section descriptions one left-out marker names before «وغيرها».
@@ -61,6 +86,13 @@ class Section:
     #: older maps.
     owner: str = ""
     brought_by: str = ""
+    #: Where the section sits in the attachment's text — the link to a citation's
+    #: position. ``-1`` when the row carries none.
+    char_start: int = -1
+    char_end: int = -1
+    #: Official articles the section cites (completion_search.md §4.7). Empty unless
+    #: ``ATTACHMENT_PIN_DELIVERY_ENABLED`` — the rendered text is then byte-identical.
+    pins: tuple[SectionPin, ...] = ()
 
     def tag(self) -> str:
         """``what — owner، قدّمه brought_by`` (each part only when present)."""
@@ -205,6 +237,8 @@ def render_sections(
                 body = f"{body}\n{TRIM_NOTE}" if body else TRIM_NOTE
             tag = section.tag()
             parts.append(f"〔{tag}〕\n{body}" if tag else body)
+            # The official articles this section cites, right under it (C19, C22).
+            parts.extend(_render_pin(pin) for pin in section.pins)
         elif section.value not in SILENT_VALUES and what and what not in left_out:
             left_out.append(what)
     # A trailing run names what follows the last kept section too.
@@ -213,6 +247,99 @@ def render_sections(
 
 
 FALLBACK_CUT_NOTE = "[انتهى المعروض: {shown} حرف من أصل {total} — بقية الوثيقة لم تُعرض]"
+
+
+# ---------------------------------------------------------------------------
+# Pinned official articles
+# ---------------------------------------------------------------------------
+
+
+def _render_pin(pin: SectionPin) -> str:
+    return f"〔{PIN_TAG.format(title=pin.title)}〕\n{pin.text}"
+
+
+def _cut_pin(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = trim_text(text, limit / len(text))
+    return f"{cut}\n{PIN_CUT_NOTE}" if cut else PIN_CUT_NOTE
+
+
+def attach_pins(
+    sections: Sequence[Section],
+    pins: Iterable[Any],
+    *,
+    article_cap: int = PIN_ARTICLE_CAP,
+    doc_net: int = PIN_DOC_NET,
+) -> list[Section]:
+    """Hang each pinned article under the section that cites it.
+
+    ``pins`` — objects with ``char_start``, ``article_id``, ``title``, ``text`` (the
+    pinned citations of ONE document, any order). A citation belongs to the section
+    whose ``char_start <= position < char_end``. An article cited several times in one
+    section is printed once there; cited in several sections, it is printed in full
+    under each (owner decision C22 — a section may travel alone).
+
+    A document with no sections gets ONE carrier section (``PINS_ONLY_VALUE``) holding
+    each article once; ``render_loose_pins`` prints it after the document's text.
+
+    Size (C23): each article is cut at ``article_cap``; if the document's pinned text
+    still passes ``doc_net``, every article keeps the same share. The sections' own
+    text is untouched, so the 100k / 300k caps are computed exactly as before.
+    """
+    pins = sorted(pins, key=lambda p: int(getattr(p, "char_start", 0) or 0))
+    ordered = sorted(sections, key=lambda s: s.seq)
+    if not pins:
+        return list(ordered)
+
+    placed: dict[int, list[tuple[str, str, str]]] = {}        # index in ``ordered`` → (id, title, text)
+    if not ordered:
+        seen: set[str] = set()
+        for p in pins:
+            if p.article_id not in seen:
+                seen.add(p.article_id)
+                placed.setdefault(-1, []).append((p.article_id, p.title, _cut_pin(p.text, article_cap)))
+    else:
+        for p in pins:
+            pos = int(p.char_start)
+            for i, s in enumerate(ordered):
+                if s.char_start <= pos < s.char_end:
+                    bucket = placed.setdefault(i, [])
+                    if all(a != p.article_id for a, _t, _x in bucket):
+                        bucket.append((p.article_id, p.title, _cut_pin(p.text, article_cap)))
+                    break
+    if not placed:
+        return list(ordered)
+
+    total = sum(len(text) for bucket in placed.values() for _a, _t, text in bucket)
+    if total > doc_net > 0:
+        ratio = doc_net / total
+        for bucket in placed.values():
+            for k, (article_id, title, text) in enumerate(bucket):
+                cut = trim_text(text.removesuffix(f"\n{PIN_CUT_NOTE}"), ratio)
+                bucket[k] = (article_id, title, f"{cut}\n{PIN_CUT_NOTE}" if cut else PIN_CUT_NOTE)
+
+    def as_pins(bucket: list[tuple[str, str, str]]) -> tuple[SectionPin, ...]:
+        return tuple(SectionPin(a, t, x) for a, t, x in bucket)
+
+    if not ordered:
+        return [Section(seq=0, value=PINS_ONLY_VALUE, what="", text="", pins=as_pins(placed[-1]))]
+    return [replace(s, pins=as_pins(placed[i])) if i in placed else s for i, s in enumerate(ordered)]
+
+
+def render_loose_pins(sections: Iterable[Section]) -> str:
+    """The articles of a document that has no sections, as one block; ``""`` when none."""
+    pins = [pin for s in sections if s.value == PINS_ONLY_VALUE for pin in s.pins]
+    if not pins:
+        return ""
+    return "\n\n".join([LOOSE_PINS_HEADING, *(_render_pin(pin) for pin in pins)])
+
+
+def with_loose_pins(text: str, sections: Iterable[Section] | None) -> str:
+    """``text`` followed by the document's loose articles (unchanged when there are none)."""
+    block = render_loose_pins(sections or ())
+    return f"{text}\n\n{block}" if block else text
 
 
 def writer_bodies(
@@ -245,7 +372,7 @@ def writer_bodies(
             bodies[item_id], _ = render_sections(sections, WRITER_VALUES)
             segmented.append(item_id)
         elif len(content.strip()) <= SEGMENT_MIN_CHARS:
-            bodies[item_id] = content
+            bodies[item_id] = with_loose_pins(content, sections)
         else:
             fallback_chars[item_id] = len(content)
 
@@ -259,7 +386,7 @@ def writer_bodies(
         if len(text) < len(content):
             trimmed.append(item_id)
             text = f"{text}\n{FALLBACK_CUT_NOTE.format(shown=len(text), total=total)}"
-        bodies[item_id] = text
+        bodies[item_id] = with_loose_pins(text, sections_by_id.get(item_id))
     stats = {
         "segmented": segmented,
         "fallback": list(fallback_chars),
@@ -287,28 +414,47 @@ def sections_from_rows(rows: Iterable[Mapping[str, Any] | Any]) -> list[Section]
                 label=str(get("label", "") or ""),
                 owner=str(get("owner", "") or ""),
                 brought_by=str(get("brought_by", "") or ""),
+                char_start=_position(get("char_start", None)),
+                char_end=_position(get("char_end", None)),
             )
         )
     return sorted(out, key=lambda s: s.seq)
 
 
+def _position(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
 __all__ = [
     "DEEP_SEARCH_VALUES",
     "LEFT_OUT_PREFIX",
+    "LOOSE_PINS_HEADING",
     "PER_DOC_CAP",
+    "PINS_ONLY_VALUE",
+    "PIN_ARTICLE_CAP",
+    "PIN_CUT_NOTE",
+    "PIN_DOC_NET",
+    "PIN_TAG",
     "SEGMENT_MIN_CHARS",
     "SILENT_VALUES",
     "TOTAL_CAP",
     "TRIM_NOTE",
     "WRITER_VALUES",
     "Section",
+    "SectionPin",
+    "attach_pins",
     "delivery_enabled",
     "has_kept",
     "keep_ratio",
     "kept_chars",
     "proportional_ratios",
+    "render_loose_pins",
     "render_sections",
     "sections_from_rows",
     "trim_text",
+    "with_loose_pins",
     "writer_bodies",
 ]

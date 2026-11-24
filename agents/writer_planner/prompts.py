@@ -358,6 +358,44 @@ aggressively. The executor is expensive; only feed it what actually helps.
 
 WRITER_PLANNER_SYSTEM_PROMPT = f"{WRITER_PLANNER_SYSTEM_PROMPT.rstrip()}\n\n{NO_INTERNALS_RULE}"
 
+
+# ---------------------------------------------------------------------------
+# Completion Search — .claude/plans/completion_search.md §4.4
+# (COMPLETION_SEARCH_ENABLED). With the flag off nothing below is used and the
+# prompt above is what the planner reads, byte for byte.
+# ---------------------------------------------------------------------------
+
+_AFTER_TOOLS_HEADING = "# After a pause — reading the reply before you plan"
+
+COMPLETE_SEARCH_PASSAGE = """\
+## `complete_search` and `keep_results` — the official wording of a named text
+
+| Tool | When to use |
+|---|---|
+| `complete_search(request)` | Fetch the official wording of a NAMED legal text the document must quote or rest on: an article by number in a named law, the place a named law defines a term, a ruling by its case number, a judicial principle, a circular, a government service. Write the request in plain words with every name and number exactly as written; one request may hold several («المادة 77 من نظام العمل والمادة 80»). |
+| `keep_results(["K-…"])` | Pin a medium-confidence text that `complete_search` returned, after you checked that its title is the text meant. |
+
+Call `complete_search` when the document will quote or rest on a specific named text and that text is not already inside an item you are selecting — a text named in the user's request, or cited in a document you are passing on. It is not a research tool: you are not answering a legal question, you are making sure the writer holds the exact wording.
+
+- **Read the status line of each result.** «ثقة عالية», header tagged `[P-…]`: the text is pinned. «ثقة متوسطة», header tagged `[K-…]`: it is not pinned until you call `keep_results` — do that only when the title in its header is clearly the law, ruling or document meant, and otherwise leave it. «أكثر من احتمال»: several possible titles and no text; call again with one title copied exactly as printed if the user's words settle it, otherwise leave it. «غير موجود في المكتبة» or «لم يُعثر عليه»: the text is not available — never substitute another law.
+- **An article number with no law named**, and no law clear from the request or the documents, is a missing detail: it becomes a placeholder in the plan, not a guess and not a lookup.
+- **Every pinned text reaches the writer in full on its own**, as one extra source titled «النصوص المثبّتة». You do not list it in `selected_wis`, and you never copy it into `intent_ar` or `plan_md`.
+- **What the tool shows you may be shortened.** It is there so you can check the title; it does not change the core invariant above.
+"""
+
+
+def writer_planner_system_prompt(completion_search: bool = False) -> str:
+    """The planner's static prompt. ``completion_search=True`` adds the lookup-tool
+    passage right after the tools table. Raises ``ValueError`` when the base prompt
+    no longer holds the heading the passage goes before — the caller then keeps the
+    planner without the tool."""
+    if not completion_search:
+        return WRITER_PLANNER_SYSTEM_PROMPT
+    base = WRITER_PLANNER_SYSTEM_PROMPT
+    if base.count(_AFTER_TOOLS_HEADING) != 1:
+        raise ValueError("writer planner prompt: the heading after the tools table was not found")
+    return base.replace(_AFTER_TOOLS_HEADING, f"{COMPLETE_SEARCH_PASSAGE}\n{_AFTER_TOOLS_HEADING}")
+
 #: Printed under the <conversation_memory> block, never without it: the static
 #: prompt above stays unchanged when a conversation has no memory.
 #:

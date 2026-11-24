@@ -801,6 +801,7 @@ const DEFINITE_KIND: Record<WorkspaceItemKind, string> = {
   agent_writing: "المسودة",
   convo_context: "ملخص المحادثة",
   references: "المراجع",
+  pinned_texts: "النصوص المثبّتة",
 };
 
 /** «المصدر» is the honest fallback while the workspace list is still loading. */

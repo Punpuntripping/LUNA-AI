@@ -163,7 +163,7 @@ class PlannerDecision(BaseModel):
             "Empty is the EXPECTED default — non-empty only when the "
             "planner has genuinely new context to inject. "
             "Two channels carry text downstream on their own, so never retell "
-            "them here: articles fetched with fetch_article (forwarded "
+            "them here: official texts fetched with your lookup tool (forwarded "
             "verbatim), and the forwarded case documents — attached items "
             "marked forwarded=\"true\" (summary to the executors, full text to "
             "the aggregator). For a forwarded document, the brief adds only "

@@ -56,12 +56,14 @@ export const KIND_GROUP_LABEL: Record<WorkspaceItemKind, string> = {
   agent_writing: "المسودات",
   convo_context: "ملخص المحادثة",
   references: "المراجع",
+  pinned_texts: "النصوص المثبّتة",
 };
 
 /** Group order — web WorkspaceList `KIND_ORDER`. */
 export const KIND_ORDER: readonly WorkspaceItemKind[] = [
   "agent_writing",
   "agent_search",
+  "pinned_texts",
   "note",
   "attachment",
   "references",
@@ -76,6 +78,7 @@ export const KIND_LABEL: Record<WorkspaceItemKind, string> = {
   agent_writing: "مسودة",
   convo_context: "ملخص المحادثة",
   references: "مراجع",
+  pinned_texts: "نصوص مثبّتة",
 };
 
 /** `metadata.subtype` wins over the kind — web WorkspaceCard `SUBTYPE_LABEL`,
@@ -135,6 +138,7 @@ const DEFINITE_KIND: Record<WorkspaceItemKind, string> = {
   agent_writing: "المسودة",
   convo_context: "ملخص المحادثة",
   references: "المراجع",
+  pinned_texts: "النصوص المثبّتة",
 };
 
 /** The output's name with the article; «المصدر» while unknown — never a raw key. */

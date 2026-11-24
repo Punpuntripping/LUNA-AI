@@ -21,6 +21,7 @@ const KIND_ICON: Record<WorkspaceItemKind, IconName> = {
   agent_writing: "template",
   convo_context: "chat",
   references: "open",
+  pinned_texts: "open",
 };
 
 // Web `KIND_COLORS`, on the same tokens (light + dark come from globals.css).
@@ -31,6 +32,7 @@ const KIND_COLOURS: Record<WorkspaceItemKind, { bg: ColourName; fg: ColourName }
   agent_writing: { bg: "infoBg", fg: "infoFg" },
   convo_context: { bg: "successBg", fg: "successFg" },
   references: { bg: "brandSoftBg", fg: "brandSoftFg" },
+  pinned_texts: { bg: "accentSoft", fg: "accent" },
 };
 
 export interface WorkspaceCardProps {

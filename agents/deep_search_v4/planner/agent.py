@@ -28,6 +28,7 @@ from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, ModelRetry, R
 from pydantic_ai.usage import UsageLimits
 
 from agents.models import next_step_errors, salvage_next_steps
+from agents.tool_repository.completion_search_tool import register_completion_search
 from agents.tool_repository.fetch_article import register_fetch_article
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import ModelPolicy, get_agent_model
@@ -42,6 +43,7 @@ from .prompts import (
     PLANNER_DECIDER_SYSTEM_PROMPT,
     PLANNER_RESPONDER_SYSTEM_PROMPT,
     build_decider_instructions,
+    decider_system_prompt,
     build_responder_instructions,
     locate_request_quotes,
 )
@@ -107,6 +109,8 @@ _QUOTE_RETRIES = 2
 
 def create_planner_decider(
     model_override: ModelPolicy | str | None = None,
+    *,
+    completion_search: bool = False,
 ) -> Agent[PlannerDeps, PlannerDecision | DeferredToolRequests]:
     """Build the phase-1 decider agent.
 
@@ -126,12 +130,23 @@ def create_planner_decider(
     """
     model = get_agent_model("planner_decider", model_override)
 
+    # Completion Search (completion_search.md §4.4): the prompt and the tool change
+    # TOGETHER. If the prompt cannot be built, this decider keeps `fetch_article`
+    # with the prompt that describes it — never one without the other.
+    system_prompt = PLANNER_DECIDER_SYSTEM_PROMPT
+    if completion_search:
+        try:
+            system_prompt = decider_system_prompt(True)
+        except Exception:  # noqa: BLE001
+            logger.error("planner: complete_search prompt could not be built — keeping fetch_article", exc_info=True)
+            completion_search = False
+
     agent: Agent[PlannerDeps, PlannerDecision | DeferredToolRequests] = Agent(
         model,
         name="planner_decider",
         deps_type=PlannerDeps,
         output_type=[PlannerDecision, DeferredToolRequests],
-        instructions=PLANNER_DECIDER_SYSTEM_PROMPT,
+        instructions=system_prompt,
         retries=2,
         output_retries=4,
     )
@@ -276,7 +291,13 @@ def create_planner_decider(
     # TEXT (never a citation), while the normal search still supplies the
     # answer's corpus sources. Ambiguous regulation titles come back as an
     # "AMBIGUOUS:" string → resolve via ask_user.
-    register_fetch_article(agent)
+    # With Completion Search on, the helper replaces it: plain-words requests, five
+    # kinds of text, a confidence level on each result (`complete_search` /
+    # `keep_results`, agents/tool_repository/completion_search_tool.py).
+    if completion_search:
+        register_completion_search(agent, "deep_planner")
+    else:
+        register_fetch_article(agent)
 
     return agent
 

@@ -179,6 +179,16 @@ class PlannerDeps:
     # what the planner reads). Rebuilt empty every turn.
     _flushed_articles: list[dict] = field(default_factory=list)
 
+    # --- Completion Search (.claude/plans/completion_search.md §4.4) --------
+    # ``completion_search``: this user's decider has ``complete_search`` /
+    # ``keep_results`` instead of ``fetch_article`` (COMPLETION_SEARCH_ENABLED).
+    # ``_turn_pins``: the texts pinned this turn, keyed by their identity — full
+    # text, read by the ``statute_articles`` block. ``_pending_pins``: medium-
+    # confidence results the decider may accept with ``keep_results``.
+    completion_search: bool = False
+    _turn_pins: dict = field(default_factory=dict)
+    _pending_pins: dict = field(default_factory=dict)
+
     # --- read-back slots (populated by run_retrieval from FullLoopDeps) ----
     _per_executor_stats: dict[str, dict] = field(default_factory=dict)
     _ura: "UnifiedRetrievalArtifact | None" = None
@@ -239,7 +249,10 @@ def build_planner_deps(
     turn. They default to empty so legacy callers (tests, scripts) construct
     without changes.
     """
+    from agents.utils.citation_pin_flags import completion_search_enabled
+
     return PlannerDeps(
+        completion_search=completion_search_enabled(user_id),
         supabase=supabase,
         embedding_fn=embedding_fn,
         http_client=http_client,

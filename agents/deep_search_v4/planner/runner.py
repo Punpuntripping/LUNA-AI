@@ -463,7 +463,14 @@ async def _run_planner_turn(
             and (pinned is None or not pinned.headless)
         )
         try:
-            decider = create_planner_decider(model_override=deps.model_override)
+            # The extra argument is passed only when Completion Search is on for
+            # this user, so with the flag off this is today's call, unchanged.
+            if getattr(deps, "completion_search", False):
+                decider = create_planner_decider(
+                    model_override=deps.model_override, completion_search=True,
+                )
+            else:
+                decider = create_planner_decider(model_override=deps.model_override)
             # Phase C: decider's deps_type flipped from None → PlannerDeps.
             # Pass deps so the dynamic instructions render comprehension blocks
             # AND unfold_workspace_item has supabase/user_id/conversation_id.

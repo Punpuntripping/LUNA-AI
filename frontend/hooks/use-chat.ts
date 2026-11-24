@@ -850,7 +850,10 @@ export function useSendMessage(): UseSendMessageReturn {
               // off the answer they are reading — with no back button to undo
               // it. Discovery is covered either way: the assistant bubble
               // renders its «افتح التحليل …» chip the moment the run seals.
-              if (!isMobileViewport()) {
+              // «النصوص المثبّتة» is supporting material, written while the
+              // search is still running: opening it would take the pane the
+              // report is about to open in. It shows in the list and as a chip.
+              if (!isMobileViewport() && payload.kind !== "pinned_texts") {
                 useChatStore
                   .getState()
                   .openWorkspaceItem(conversationId, payload.item_id);

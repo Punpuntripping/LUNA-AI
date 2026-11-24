@@ -49,6 +49,7 @@ from agents.utils.attachment_delivery import (
     proportional_ratios,
     render_sections,
     trim_text,
+    with_loose_pins,
 )
 from agents.utils.attachment_delivery import PER_DOC_CAP as SEGMENTED_PER_DOC_CAP
 from agents.utils.attachment_delivery import TOTAL_CAP as SEGMENTED_TOTAL_CAP
@@ -384,6 +385,9 @@ def build_case_document_blocks_segmented(
             body = _render_body(
                 doc, full_text=text, original_chars=len(content), over_total=False
             )
+            # A document with no sections: the official articles it cites follow its
+            # text once (completion_search.md §4.7). Unchanged when there are none.
+            body = with_loose_pins(body, sections_by_id.get(iid))
             used += len(text)
             shown_full.append(alias)
             if mode == "fallback":

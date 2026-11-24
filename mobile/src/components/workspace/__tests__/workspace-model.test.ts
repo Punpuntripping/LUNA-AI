@@ -69,11 +69,13 @@ describe("grouping (web WorkspaceList)", () => {
     );
   });
 
-  test("full order: المسودات، نتائج البحث، الملاحظات، المرفقات، المراجع، ملخص المحادثة", () => {
-    const kinds: WorkspaceItemKind[] = ["convo_context", "references", "attachment", "note", "agent_search", "agent_writing"];
+  test("full order: المسودات، نتائج البحث، النصوص المثبّتة، الملاحظات، المرفقات، المراجع، ملخص المحادثة", () => {
+    const kinds: WorkspaceItemKind[] = [
+      "convo_context", "references", "attachment", "note", "pinned_texts", "agent_search", "agent_writing",
+    ];
     assert.deepEqual(
       groupItems(kinds.map((k) => item(k))).map((g) => g.label),
-      ["المسودات", "نتائج البحث", "الملاحظات", "المرفقات", "المراجع", "ملخص المحادثة"],
+      ["المسودات", "نتائج البحث", "النصوص المثبّتة", "الملاحظات", "المرفقات", "المراجع", "ملخص المحادثة"],
     );
   });
 
@@ -163,7 +165,7 @@ describe("hidden items", () => {
 describe("manage (إخفاء / حذف)", () => {
   test("off for every kind (not on the web; owner has not approved it)", () => {
     assert.deepEqual(manageSpec("note", true), { hide: false, remove: false });
-    for (const k of ["note", "attachment", "agent_search", "agent_writing", "references", "convo_context"] as const) {
+    for (const k of ["note", "attachment", "agent_search", "agent_writing", "references", "convo_context", "pinned_texts"] as const) {
       assert.deepEqual(manageSpec(k, false), { hide: false, remove: false });
     }
   });

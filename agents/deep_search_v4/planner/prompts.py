@@ -434,6 +434,102 @@ PLANNER_DECIDER_SYSTEM_PROMPT = (
     f"{PLANNER_DECIDER_SYSTEM_PROMPT.rstrip()}\n\n{ALREADY_COVERED_RULE}\n\n{NO_INTERNALS_RULE}"
 )
 
+
+# ---------------------------------------------------------------------------
+# Completion Search — .claude/plans/completion_search.md §4.4
+# (COMPLETION_SEARCH_ENABLED). With the flag off nothing below is used and the
+# prompt above is what the decider reads, byte for byte.
+# ---------------------------------------------------------------------------
+
+_FETCH_ARTICLE_HEADING = "## The `fetch_article` tool — pull the verbatim text of a cited article"
+_PLANNER_BRIEF_HEADING = "## `planner_brief` — the facts channel for downstream"
+
+COMPLETE_SEARCH_SECTION = """\
+## The `complete_search` tool — pull the official wording of a named text
+
+Whenever **a specific, named legal text** is in play this turn, call `complete_search(request)` to retrieve its exact wording. That covers:
+
+- an article by number inside a named law or regulation («المادة الحادية والثمانون من نظام العمل»، «المادة 81 من نظام العمل»، «م/1-1 من اللائحة التنفيذية لنظام …»);
+- the place where a named law defines a term or uses a phrase («تعريف صاحب العمل في نظام العمل»);
+- a court ruling **by its case number** («الحكم في القضية رقم 4455 من المحكمة التجارية»);
+- a judicial principle by its number, a named circular, a named government service.
+
+Write `request` in **plain words, with every name and number exactly as it appears in front of you**. One request may ask for several things at once: «نظام المعاملات المدنية المادة 56 والمادة 234».
+
+- **Name the texts and nothing else.** No topic, no question, no explanation of why you want them: «نظام العمل المادة 77 والمادة 80», not «نظام العمل المادة 77 والمادة 80 بخصوص إنهاء العقد». This tool does not search a subject — the normal search does. A request for a subject («الأحكام التي يجوز الاعتراض عليها») returns guesses, not the text you need.
+- **Copy the law's name as it was written — do not complete it.** If the user wrote «نظام المرافعات», send «نظام المرافعات», even when you are sure they mean «نظام المرافعات الشرعية». The tool knows which names fit one law and which fit several; a name you completed yourself comes back as a medium-confidence guess, never as a pinned text.
+- **Copy the numbers as they were written — digits stay digits, words stay words.** Do not turn «234» into words or «الحادية والثمانون» into digits; the tool reads Arabic ordinals and Arabic-Indic digits («٨١») itself.
+
+**The citation does not have to be the user's.** It counts wherever you find it:
+
+- **The user cited it** — the obvious case.
+- **An attached item cites it** (`<attached_items>`). A ruling, a memo, a contract, an official letter — when it reasons from a numbered article, that article is the load-bearing text of the turn. Fetch it. This is the most important case and the easiest to miss, because the user's own message may be a single short line («هل تقدر تعترض على الحكم») while the whole legal substance sits in the attachment.
+- **A prior search cites it** (`<prior_searches>`) and the user is now asking about it.
+
+The test is not "who typed the number" but "does the answer depend on what that text actually says". If the user is asking whether a ruling's reasoning is sound, whether a clause is enforceable, or what a cited provision requires, then you cannot plan — and the search cannot answer — without the real text. **Fetch every text the turn genuinely turns on: in one request when they belong together, in parallel requests when they do not.**
+
+- **رقم مادة بلا نظام؟ اسأل، لا تخمّن ولا تبحث.** If the user cites an article **by number but does not name the law**, and the نظام is not unambiguous from context (e.g. «نُفّذت عليّ المادة 46» — could be نظام التنفيذ، أو نظام التنفيذ أمام ديوان المظالم، أو لائحة مقدمي خدمات التنفيذ…), do **not** fall through to a generic search and do **not** guess the نظام. First use `ask_user` to ask «المادة (رقمها) من أي نظام؟», then call `complete_search` with the regulation the user names.
+- **Read the status line of each result.** It tells you what you hold:
+  - **«ثقة عالية»**, header tagged `[P-…]` — the text is pinned. Nothing more to do.
+  - **«ثقة متوسطة»**, header tagged `[K-…]` — the tool found one best match but could not prove it is the text meant: the name was a short form, or one of several. It is **not pinned**. Read the title in its header against what the user (or the attachment) actually named. If it is that law, ruling or document, pin it with `keep_results(["K-…"])`. If you cannot tell, leave it. Do not keep a text to have kept something; a wrong article reads exactly like a right one. Reserve `ask_user` for when the user alone can settle which law they meant.
+  - **«أكثر من احتمال»** — several possible titles and no text: the name fits more than one law. If the user's words or the attachment settle which one, call `complete_search` again with that title **copied exactly as printed**. If nothing settles it, choose nothing and let the normal search cover it.
+  - **«غير موجود في المكتبة»** or **«لم يُعثر عليه»** — the text is not available. Do not retry with a different law; the normal search covers the question.
+- **Check the title in the returned header.** It names the text that was actually resolved, which may be spelled differently from what you asked for — the corpus writes «نظام الايجار التمويلي» where a ruling writes «الإيجار». A different spelling of the same law is correct and expected; a different **law** is not.
+- A ruling is found **by its case number only**. A ruling the user describes by its subject or its parties is a matter for the normal search, not for this tool.
+- A pinned text **reaches the executors and the aggregator on its own** — every text you pin is forwarded downstream verbatim and in full, and is saved on one reference card for later turns. You do **not** need to copy it into `planner_brief`, and you should not: what you receive may be shortened for planning, while what they receive is complete. Say in the brief *which* texts you pinned and what the attachment does with them; leave the quoting to the channel that carries the whole text.
+- A pinned text moves as **TEXT ONLY** — it never becomes a citation, and it never substitutes for retrieval.
+- **Still run the normal search.** `complete_search` supplies the exact wording; the search supplies the answer's supporting sources and citations from the corpus."""
+
+#: Other lines of the decider's prompt that name the old tool or leave the block out.
+_COMPLETION_SWAPS: tuple[tuple[str, str], ...] = (
+    (
+        "Four kinds of block flow to the executors and the aggregator: `case_brief`, `planner_brief` (which you write), "
+        "`prior_search_lessons` (a summary of `<prior_searches>`), and `case_document` — the user's own case papers.",
+        "Five kinds of block flow to the executors and the aggregator: `case_brief`, `planner_brief` (which you write), "
+        "`prior_search_lessons` (a summary of `<prior_searches>`), `case_document` — the user's own case papers — and "
+        "`statute_articles`, the official texts you pinned with `complete_search`.",
+    ),
+    (
+        "the articles you fetched with `fetch_article` (forwarded verbatim)",
+        "the texts you pinned with `complete_search` (forwarded verbatim)",
+    ),
+)
+_BRIEF_RULES_SWAP = ("fetch it with `fetch_article`", "fetch it with `complete_search`")
+
+
+def decider_system_prompt(completion_search: bool = False) -> str:
+    """The decider's static prompt. ``completion_search=True`` swaps the
+    ``fetch_article`` section for the ``complete_search`` one and updates the two
+    other lines that name the old tool.
+
+    Raises ``ValueError`` when the base prompt no longer holds the text to swap —
+    the caller then keeps the old tool with the old prompt, so the model never
+    reads about a tool it does not have.
+    """
+    if not completion_search:
+        return PLANNER_DECIDER_SYSTEM_PROMPT
+    base = PLANNER_DECIDER_SYSTEM_PROMPT
+    try:
+        start = base.index(_FETCH_ARTICLE_HEADING)
+        end = base.index(_PLANNER_BRIEF_HEADING, start)
+    except ValueError as exc:
+        raise ValueError("planner prompt: the fetch_article section was not found") from exc
+    out = f"{base[:start]}{COMPLETE_SEARCH_SECTION}\n\n{base[end:]}"
+    for old, new in _COMPLETION_SWAPS:
+        if old not in out:
+            raise ValueError(f"planner prompt: expected text not found: {old[:50]}…")
+        out = out.replace(old, new)
+    if "fetch_article" in out:
+        raise ValueError("planner prompt: fetch_article is still named after the swap")
+    return out
+
+
+def planner_brief_detail_rules(completion_search: bool = False) -> str:
+    """The brief-editing rules, naming the lookup tool the decider actually has."""
+    if not completion_search:
+        return _PLANNER_BRIEF_DETAIL_RULES
+    return _PLANNER_BRIEF_DETAIL_RULES.replace(*_BRIEF_RULES_SWAP)
+
 LONG_MESSAGE_REVIEW_RULE = """\
 ## Required this turn — review your understanding with `ask_user`
 
@@ -771,6 +867,11 @@ def _render_attached_items(attached_items) -> str | None:
         kind = _esc(getattr(item, "kind", ""))
         title = _esc(getattr(item, "title", ""))
         content_md = _esc(getattr(item, "content_md", "") or "")
+        if getattr(item, "kind", "") == "pinned_texts":
+            # «النصوص المثبّتة»: the planner reads WHICH official texts are pinned
+            # (the card's summary lists their titles), not their full wording —
+            # `unfold_workspace_item` opens the card when the wording is needed.
+            content_md = _esc(getattr(item, "summary", "") or "") or content_md
         # An uploaded document's type (judgment, contract, …), when it has one.
         doc_type = (getattr(item, "metadata", None) or {}).get("doc_type")
         doc_attr = f' doc_type="{_esc(doc_type)}"' if doc_type else ""
@@ -859,7 +960,8 @@ def build_decider_instructions(deps) -> str:
         getattr(deps, "attached_items", None) or getattr(deps, "prior_searches", None)
     )
     if has_brief_sources:
-        rendered = f"{rendered}\n\n{_PLANNER_BRIEF_DETAIL_RULES}"
+        rules = planner_brief_detail_rules(bool(getattr(deps, "completion_search", False)))
+        rendered = f"{rendered}\n\n{rules}"
     # Conditional full-text rules — only when at least one attached item
     # travels downstream as a case document (i.e. carries forwarded="true").
     if forwardable_documents(getattr(deps, "attached_items", None) or []):
