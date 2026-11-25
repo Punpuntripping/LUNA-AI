@@ -38,6 +38,7 @@ class ErrorCode(str, Enum):
     # A feature that is off for this user (e.g. «الملفات» behind MY_FILES_USERS):
     # the client must hide it, not show "not found".
     FEATURE_OFF = "FEATURE_OFF"
+    PAID_PLAN_REQUIRED = "PAID_PLAN_REQUIRED"  # 403 — a paid-only feature on a free / marketing plan
     DOC_TOO_LARGE = "DOC_TOO_LARGE"
     DOC_INVALID_TYPE = "DOC_INVALID_TYPE"
     DOC_EMPTY = "DOC_EMPTY"

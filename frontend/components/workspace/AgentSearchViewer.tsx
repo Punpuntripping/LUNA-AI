@@ -12,6 +12,7 @@ import { useSetWorkspaceItemFeedback } from "@/hooks/use-workspace";
 import {
   useWorkspaceItemReferences,
   useWorkspaceItemReferencesHiddenCount,
+  useWorkspaceItemReferencesPaidLockedCount,
 } from "@/hooks/use-workspace-item-references";
 import { DEMO_DISABLED_HINT } from "@/hooks/use-demo-conversation";
 import {
@@ -81,6 +82,10 @@ export function AgentSearchViewer({
   const { data: references = [], isLoading: isLoadingReferences } =
     useWorkspaceItemReferences(item.item_id, referenceOpts);
   const hiddenReferenceCount = useWorkspaceItemReferencesHiddenCount(
+    item.item_id,
+    referenceOpts,
+  );
+  const paidLockedReferenceCount = useWorkspaceItemReferencesPaidLockedCount(
     item.item_id,
     referenceOpts,
   );
@@ -156,6 +161,7 @@ export function AgentSearchViewer({
               onFlashDone={handleFlashDone}
               isLoading={isLoadingReferences}
               hiddenCount={previewLocked ? hiddenReferenceCount : undefined}
+              paidLockedCount={paidLockedReferenceCount}
             />
             <AgentOutputDisclaimer />
           </>

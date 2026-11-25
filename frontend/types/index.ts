@@ -328,6 +328,7 @@ export type {
   SSEQuotaExceeded,
   SSEParallelLimit,
   SSEDeepSearchGated,
+  SSEPaidFeatureGated,
 } from "@/lib/contracts";
 
 /** One progress bar in the Settings → حدود الاستخدام dialog.

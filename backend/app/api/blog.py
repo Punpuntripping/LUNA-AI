@@ -554,6 +554,13 @@ async def share_artifact(
     references_json = await fetch_item_references_payload(
         supabase, item_id, used_only=True
     )
+    # Paid-only sources (owner 2026-11-25): a share from a free / marketing_*
+    # account carries no sources, or the public page would hand them back.
+    if references_json:
+        from backend.app.services.paid_features import access_for_auth_id
+
+        if not (await access_for_auth_id(supabase, current_user.auth_id)).allowed:
+            references_json = []
 
     token = await run_db(
         blog_service.insert_post,

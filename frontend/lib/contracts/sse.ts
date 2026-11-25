@@ -132,6 +132,23 @@ export interface SSEDeepSearchGated {
   message_ar: string;
 }
 
+/**
+ * SSE `paid_feature_gated` — a paid-only feature was refused this turn (owner
+ * 2026-11-25): `writer` = the planner's plan was shown but the document was
+ * not written (or an AI edit was refused). The turn IS saved — the Arabic
+ * reply streams as ordinary tokens. Free and marketing_* plans only. Older app
+ * builds drop the unknown name and still show the reply.
+ */
+export interface SSEPaidFeatureGated {
+  feature: "writer" | "export" | "sources";
+  /** EFFECTIVE plan. */
+  plan_id: string | null;
+  /** The priced plans, cheapest first. */
+  upgrade_options: string[];
+  /** Arabic banner line, shown verbatim. */
+  message_ar: string;
+}
+
 export interface SSEDone {
   message_id: string;
   usage: {
@@ -358,6 +375,7 @@ export interface SSEEventMap {
   quota_exceeded: SSEQuotaExceeded;
   parallel_limit: SSEParallelLimit;
   deep_search_gated: SSEDeepSearchGated;
+  paid_feature_gated: SSEPaidFeatureGated;
   done: SSEDone;
   error: SSEError;
   heartbeat: SSEHeartbeat;
@@ -380,7 +398,7 @@ export interface SSEEventMap {
 
 export type SSEEventName = keyof SSEEventMap;
 
-/** Runtime list of {@link SSEEventName} (24 names) — for name guards. */
+/** Runtime list of {@link SSEEventName} (25 names) — for name guards. */
 export const SSE_EVENT_NAMES = [
   "message_start",
   "token",
@@ -388,6 +406,7 @@ export const SSE_EVENT_NAMES = [
   "quota_exceeded",
   "parallel_limit",
   "deep_search_gated",
+  "paid_feature_gated",
   "done",
   "error",
   "heartbeat",

@@ -11,6 +11,7 @@ import type {
   PendingTemplate,
   SSEAgentProgress,
   SSEDeepSearchGated,
+  SSEPaidFeatureGated,
   SSEParallelLimit,
   SSEQuotaExceeded,
   TemplateUsed,
@@ -310,7 +311,8 @@ export interface StreamState {
 export type ChatNotice =
   | { kind: "quota"; info: SSEQuotaExceeded }
   | { kind: "parallel_limit"; info: SSEParallelLimit }
-  | { kind: "deep_search_gated"; info: SSEDeepSearchGated };
+  | { kind: "deep_search_gated"; info: SSEDeepSearchGated }
+  | { kind: "paid_feature_gated"; info: SSEPaidFeatureGated };
 
 interface ChatState {
   /**

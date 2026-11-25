@@ -83,6 +83,11 @@ class UserProfileResponse(BaseModel):
     # Absent on LoginResponse.user by design: /login does not read the
     # subscription at all, and /me lands moments later with the real answer.
     paid_activated_at: Optional[datetime] = None
+    # Paid-only features (owner 2026-11-25): the writer, sources and PDF / Word
+    # export. False for free and every marketing_* trial (EFFECTIVE plan); None
+    # = not resolved (the /login shape) — clients treat None as allowed, the
+    # server enforces regardless.
+    paid_features: Optional[bool] = None
     created_at: Optional[datetime] = None
     # Account-deletion grace window (migration 090).
     deletion_pending: bool = False

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
 import { formatReset } from "@/lib/quota-reset";
+import { PAID_FEATURE_COPY } from "@/lib/paid-features";
 import type { SSEDeepSearchGated, SSEQuotaExceeded } from "@/types";
 
 /** The two refusals that carry a countdown and an upgrade ladder. */
@@ -89,6 +90,9 @@ export function QuotaBanner({
       ? notice.info
       : null;
   const gateInfo = notice?.kind === "deep_search_gated" ? notice.info : null;
+  // A paid-only feature refused this turn (owner 2026-11-25). No countdown —
+  // nothing was spent; the plans are the only way to the feature.
+  const paidInfo = notice?.kind === "paid_feature_gated" ? notice.info : null;
   // The shapes with a countdown and an upgrade ladder.
   const offerInfo: OfferInfo | null = quotaInfo ?? gateInfo;
   const [now, setNow] = useState<number>(() => Date.now());
@@ -117,6 +121,13 @@ export function QuotaBanner({
     shownFor.current = offerInfo;
     setDialogOpen(true);
   }, [offerInfo]);
+  // Same identity rule for the paid-only wall: open once per NEW refusal.
+  const paidShownFor = useRef<typeof paidInfo>(null);
+  useEffect(() => {
+    if (!paidInfo || paidShownFor.current === paidInfo) return;
+    paidShownFor.current = paidInfo;
+    setDialogOpen(true);
+  }, [paidInfo]);
 
   const resetText = useMemo(
     () => (offerInfo?.resets_at ? formatReset(offerInfo.resets_at, now) : ""),
@@ -140,7 +151,7 @@ export function QuotaBanner({
   const message =
     notice.kind === "parallel_limit"
       ? notice.info.detail
-      : notice.kind === "deep_search_gated"
+      : notice.kind === "deep_search_gated" || notice.kind === "paid_feature_gated"
         ? notice.info.message_ar
         : quotaInfo
           ? quotaInfo.message_ar
@@ -183,6 +194,17 @@ export function QuotaBanner({
               عرض باقة «القصوى»
             </Link>
           )}
+          {paidInfo && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-warning-fg/30 bg-transparent text-xs text-warning-fg hover:bg-warning-fg/10 hover:text-warning-fg"
+              onClick={handleReopen}
+              data-testid="paid-feature-open"
+            >
+              عرض الباقات
+            </Button>
+          )}
           {offersUpgrade && offerInfo && (
             <Button
               variant="outline"
@@ -212,6 +234,13 @@ export function QuotaBanner({
           onOpenChange={setDialogOpen}
           info={quotaInfo}
           onFreeTrialClaimed={handleFreeTrialClaimed}
+        />
+      )}
+      {paidInfo && (
+        <QuotaUpgradeDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          paidFeature={PAID_FEATURE_COPY[paidInfo.feature] ?? PAID_FEATURE_COPY.writer}
         />
       )}
       {offersUpgrade && gateInfo && (

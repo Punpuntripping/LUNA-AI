@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { workspaceApi } from "@/lib/api";
+import { usePaidFeatures } from "@/lib/paid-features";
 import type { WorkspaceItemReferencesResponse } from "@/lib/contracts/wi-preview";
 import type { Reference } from "@/types";
 
@@ -65,14 +66,20 @@ export interface WorkspaceItemReferencesOptions {
 function referencesQueryOptions(
   itemId: string | undefined,
   opts?: WorkspaceItemReferencesOptions,
+  paid = true,
 ) {
   const usedOnly = opts?.usedOnly ?? false;
   return {
-    queryKey: workspaceItemReferenceKeys.byItem(
-      itemId ?? "",
-      usedOnly,
-      opts?.locked ?? false,
-    ),
+    // The plan's paid-features flag keys the cache too: an upgrade must
+    // refetch the full list instead of reusing the locked (empty) one.
+    queryKey: [
+      ...workspaceItemReferenceKeys.byItem(
+        itemId ?? "",
+        usedOnly,
+        opts?.locked ?? false,
+      ),
+      paid,
+    ] as const,
     queryFn: () => workspaceApi.listReferences(itemId!, { usedOnly }),
     enabled: (opts?.enabled ?? true) && !!itemId,
     staleTime: Infinity,
@@ -85,10 +92,29 @@ export function useWorkspaceItemReferences(
   itemId: string | undefined,
   opts?: WorkspaceItemReferencesOptions,
 ) {
+  const paid = usePaidFeatures();
   return useQuery<WorkspaceItemReferencesResponse, Error, Reference[]>({
-    ...referencesQueryOptions(itemId, opts),
+    ...referencesQueryOptions(itemId, opts, paid),
     select: (data) => data.references,
   });
+}
+
+/**
+ * Paid-only sources (owner 2026-11-25): how many sources back the item when
+ * the server withheld them for a free / marketing_* plan; ``0`` otherwise.
+ * Shares the query with ``useWorkspaceItemReferences`` — same ``itemId`` +
+ * options.
+ */
+export function useWorkspaceItemReferencesPaidLockedCount(
+  itemId: string | undefined,
+  opts?: WorkspaceItemReferencesOptions,
+): number {
+  const paid = usePaidFeatures();
+  const { data } = useQuery<WorkspaceItemReferencesResponse, Error, number>({
+    ...referencesQueryOptions(itemId, opts, paid),
+    select: (response) => response.paid_locked_count ?? 0,
+  });
+  return data ?? 0;
 }
 
 /**
@@ -101,8 +127,9 @@ export function useWorkspaceItemReferencesHiddenCount(
   itemId: string | undefined,
   opts?: WorkspaceItemReferencesOptions,
 ): number {
+  const paid = usePaidFeatures();
   const { data } = useQuery<WorkspaceItemReferencesResponse, Error, number>({
-    ...referencesQueryOptions(itemId, opts),
+    ...referencesQueryOptions(itemId, opts, paid),
     select: (response) => response.hidden_count ?? 0,
   });
   return data ?? 0;

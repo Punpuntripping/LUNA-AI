@@ -453,6 +453,31 @@ def _aborted_result(decision: PlannerDecision) -> SpecialistResult:
     )
 
 
+WRITER_PAID_ONLY_REPLY_AR = (
+    "كتابة المستند متاحة في الباقات المدفوعة. هذه خطة المستند كما أعددتها "
+    "لك، وعند الاشتراك في إحدى الباقات المدفوعة أطلب الكتابة مرة أخرى "
+    "لأكتبه لك كاملاً."
+)
+
+
+def _paid_only_result(decision: PlannerDecision, access: Any) -> SpecialistResult:
+    """The reply for a draft the paid-only gate refused: the planner's plan
+    (the part these plans keep) under the upgrade line, plus the
+    ``paid_feature_gated`` event for the client's upgrade offer."""
+    plan_md = (decision.plan_md or "").strip()
+    summary = WRITER_PAID_ONLY_REPLY_AR + (f"\n\n{plan_md}" if plan_md else "")
+    return SpecialistResult(
+        output_item_id=None,
+        chat_summary=summary,
+        key_findings=[],
+        sse_events=[{"type": "paid_feature_gated", **access.event_payload("writer")}],
+        model_used="writer_paid_only",
+        tokens_in=0,
+        tokens_out=0,
+        per_phase_stats={"paid_only": True},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entrypoint
 # ---------------------------------------------------------------------------
@@ -656,6 +681,23 @@ async def handle_writer_planner_turn(
             return WriterPlannerTurnResult(
                 kind="completed",
                 result=_aborted_result(decision),
+            )
+
+        # --- 4b. Paid-only gate (owner 2026-11-25) -----------------------
+        # Writing the document belongs to the paid plans. A free or marketing_*
+        # user still gets the planner's plan; the executor (the costly step)
+        # never runs for them. Fails open inside paid_feature_access.
+        from shared.quota import paid_feature_access
+
+        access = await paid_feature_access(supabase, major_input.user_id)
+        if not access.allowed:
+            logger.info(
+                "writer_planner: paid-only gate refused the draft (plan=%s)",
+                access.plan_id,
+            )
+            return WriterPlannerTurnResult(
+                kind="completed",
+                result=_paid_only_result(decision, access),
             )
 
         # --- 5. Resolve WI-{seq} aliases → UUIDs (alias protocol) --------

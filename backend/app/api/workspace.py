@@ -53,6 +53,7 @@ from backend.app.services import (
     workspace_service,
 )
 from backend.app.services.case_service import get_user_id
+from backend.app.services.paid_features import access_for_auth_id, require_paid_feature
 from backend.app.services.demo_service import is_demo_item
 from backend.app.services.reference_resolver import ResolvedRef, resolve_ref
 from backend.app.services.references_service import (
@@ -326,6 +327,10 @@ async def list_workspace_item_references(
     references = await fetch_item_references_payload(
         supabase, item_id, used_only=bool(used) if used is not None else False,
     )
+    # Paid-only sources (owner 2026-11-25): a free / marketing_* user sees how
+    # many sources back the item, never the sources themselves.
+    if references and not (await access_for_auth_id(supabase, current_user.auth_id)).allowed:
+        return {"references": [], "paid_locked_count": len(references)}
     preview = await wi_preview_service.preview_for(supabase, item)
     if preview is None:
         return {"references": references}
@@ -503,6 +508,7 @@ async def get_reference_source(
     ``Cache-Control: private, no-store`` on every path. Rate-limited to 20/min
     per verified caller, sharing ONE budget with ``/library/full/*`` (D13.2).
     """
+    await require_paid_feature(supabase, current_user.auth_id, "sources")
     validate_uuid(item_id, "معرف العنصر")
 
     # 1. OWNERSHIP — before anything else. 404 (Arabic) for someone else's item.

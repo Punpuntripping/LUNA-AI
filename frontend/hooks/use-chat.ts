@@ -39,6 +39,7 @@ import type {
   SSEQuotaExceeded,
   SSEParallelLimit,
   SSEDeepSearchGated,
+  SSEPaidFeatureGated,
   SSEAgentProgress,
   SSEStatus,
   SSEOcrProgress,
@@ -682,6 +683,17 @@ export function useSendMessage(): UseSendMessageReturn {
               const payload = data as SSEDeepSearchGated;
               useChatStore.getState().setNotice(conversationId, {
                 kind: "deep_search_gated",
+                info: payload,
+              });
+              break;
+            }
+            case "paid_feature_gated": {
+              // A paid-only feature was refused (owner 2026-11-25). Like
+              // `deep_search_gated` the turn is saved and the reply streams in
+              // as tokens; this only carries the upgrade offer to QuotaBanner.
+              const payload = data as SSEPaidFeatureGated;
+              useChatStore.getState().setNotice(conversationId, {
+                kind: "paid_feature_gated",
                 info: payload,
               });
               break;

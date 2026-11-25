@@ -97,6 +97,13 @@ interface QuotaUpgradeDialogProps {
    * Nothing has been refused, so there is no `info` or `deepSearchGate`.
    */
   documentPages?: number;
+  /**
+   * A paid-only feature opened this (owner 2026-11-25: the writer, sources,
+   * PDF / Word). Nothing was spent — the feature is simply not on the user's
+   * plan — so the dialog shows every paid plan with the feature's own copy,
+   * and never the free week (a trial does not carry these features).
+   */
+  paidFeature?: { title: string; message: string };
 }
 
 /**
@@ -132,6 +139,7 @@ export function QuotaUpgradeDialog({
   currentPlanId,
   onFreeTrialClaimed,
   documentPages,
+  paidFeature,
 }: QuotaUpgradeDialogProps) {
   const [now, setNow] = useState<number>(() => Date.now());
 
@@ -190,6 +198,7 @@ export function QuotaUpgradeDialog({
     // data that can change with no deploy, so they never rank the ladder — see
     // `pricingPlansAbove`. `"free"` (the WiPreviewWall path) → the whole
     // catalog — see `deliberateUpgradePlans`.
+    if (paidFeature) return deliberateUpgradePlans("free");
     if (!blocked) return deliberateUpgradePlans(currentPlanId);
     // Deploy skew: a backend from before the ladder shipped sends no field at
     // all. Fall back to the whole catalog — i.e. exactly the pre-ladder free
@@ -204,7 +213,7 @@ export function QuotaUpgradeDialog({
       if (plan) resolved.push(plan);
     }
     return resolved;
-  }, [blocked, ladder, currentPlanId]);
+  }, [blocked, ladder, currentPlanId, paidFeature]);
 
   // A zero limit is not an exhausted window — it is a feature the free plan
   // never included (OCR is `ocr_pages_monthly = 0` on `free`). Saying «انتهى
@@ -236,7 +245,9 @@ export function QuotaUpgradeDialog({
     (!ladder || ladder.includes(FREE_TRIAL_PLAN_ID)) &&
     ocrPagesNeeded <= freeTrialOcrPages(trialDays);
 
-  const title = showFreeTrial
+  const title = paidFeature
+    ? paidFeature.title
+    : showFreeTrial
     ? freeTrialLength(trialDays).title
     : gate
       ? DEEP_SEARCH_GATE_COPY.title[gate.reason]
@@ -260,7 +271,9 @@ export function QuotaUpgradeDialog({
   // different, far larger window. Both branches promise «فوراً»; only the paid
   // one promises a reset. DEPENDS ON migration 131 — do not ship this copy
   // ahead of it.
-  const unblockLine = showFreeTrial
+  const unblockLine = paidFeature
+    ? "الاشتراك يفعّل هذه الميزة فوراً."
+    : showFreeTrial
     ? pdfOffer
       ? FREE_TRIAL_COPY.unblockPdf
       : FREE_TRIAL_COPY.unblock
@@ -406,7 +419,9 @@ export function QuotaUpgradeDialog({
         <DialogHeader className="text-right sm:text-right">
           <DialogTitle className="text-xl">{title}</DialogTitle>
           <DialogDescription className="text-right leading-relaxed">
-            {documentPages !== undefined
+            {paidFeature
+              ? paidFeature.message
+              : documentPages !== undefined
               ? FREE_TRIAL_COPY.pdfLead(documentPages)
               : info
                 ? info.message_ar

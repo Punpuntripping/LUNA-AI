@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Download, FileText, FileType2, Loader2 } from "lucide-react";
+import { Download, FileText, FileType2, Loader2, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,7 +9,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
 import { ApiClientError, exportDocument, type ExportFormat } from "@/lib/api";
+import { PAID_FEATURE_COPY, usePaidFeatures } from "@/lib/paid-features";
 import { cn } from "@/lib/utils";
 
 interface ExportMenuProps {
@@ -76,6 +78,11 @@ function triggerDownload(blob: Blob, filename: string): void {
  *
  * No toast system exists in the app, so a failure shows a short inline Arabic
  * message next to the trigger (server ``detail`` when present).
+ *
+ * Paid plans only (owner 2026-11-25): on free / marketing_* the menu stays
+ * visible with a lock, and choosing a format opens the plans instead — copy
+ * («نسخ») is the way out on those plans. The server refuses with a 403 too, and
+ * a 403 here (a stale plan flag) opens the same dialog.
  */
 export function ExportMenu({
   text,
@@ -85,6 +92,8 @@ export function ExportMenu({
 }: ExportMenuProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const paid = usePaidFeatures();
+  const [plansOpen, setPlansOpen] = useState(false);
   const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
 
@@ -106,6 +115,10 @@ export function ExportMenu({
 
   const runExport = async (format: ExportFormat) => {
     if (busy) return;
+    if (!paid) {
+      setPlansOpen(true);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -114,6 +127,10 @@ export function ExportMenu({
       triggerDownload(blob, sanitizeExportFilename(title) + EXTENSION[format]);
     } catch (err) {
       if (!mounted.current) return;
+      if (err instanceof ApiClientError && err.status === 403) {
+        setPlansOpen(true);
+        return;
+      }
       // ApiClientError carries the server's Arabic detail (or the Arabic
       // fallback); anything else (network failure) gets the generic message.
       const message =
@@ -144,6 +161,8 @@ export function ExportMenu({
           >
             {busy ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : !paid ? (
+              <Lock className="h-3.5 w-3.5" />
             ) : (
               <Download className="h-3.5 w-3.5" />
             )}
@@ -154,7 +173,7 @@ export function ExportMenu({
         <DropdownMenuContent align="start" className="w-64">
           <ExportMenuItem
             title="PDF"
-            hint="ملف جاهز للطباعة والإرسال"
+            hint={paid ? "ملف جاهز للطباعة والإرسال" : "متاح في الباقات المدفوعة"}
             icon={
               <FileText className="h-4 w-4 text-red-600 dark:text-red-400" />
             }
@@ -162,7 +181,7 @@ export function ExportMenu({
           />
           <ExportMenuItem
             title="Word"
-            hint="مستند قابل للتعديل"
+            hint={paid ? "مستند قابل للتعديل" : "متاح في الباقات المدفوعة"}
             icon={
               <FileType2 className="h-4 w-4 text-blue-600 dark:text-blue-400" />
             }
@@ -178,6 +197,11 @@ export function ExportMenu({
           {error}
         </span>
       )}
+      <QuotaUpgradeDialog
+        open={plansOpen}
+        onOpenChange={setPlansOpen}
+        paidFeature={PAID_FEATURE_COPY.export}
+      />
     </>
   );
 }

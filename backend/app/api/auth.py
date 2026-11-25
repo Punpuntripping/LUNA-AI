@@ -1985,6 +1985,9 @@ async def me(
         sub = sub[0] if sub else None
     plan_id = (sub or {}).get("plan_id")
     paid_activated_at = resolve_paid_activated_at(sub)
+    from shared.quota import paid_feature_access
+
+    paid_features = (await paid_feature_access(supabase, profile["user_id"])).allowed
     deletion_requested_at = profile.get("deletion_requested_at")
     return UserProfileResponse(
         user_id=profile["user_id"],
@@ -1997,6 +2000,7 @@ async def me(
         subscription_tier=None,  # legacy column retired — plan_id is the truth
         plan_id=plan_id,
         paid_activated_at=paid_activated_at,
+        paid_features=paid_features,
         created_at=profile.get("created_at"),
         deletion_pending=bool(deletion_requested_at),
         deletion_requested_at=deletion_requested_at,

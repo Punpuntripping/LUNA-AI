@@ -154,6 +154,20 @@ def _is_preview_locked(supabase, item_id: str, user_id: str, policy) -> bool:
     return is_locked(row, policy)
 
 
+# ── paid-only documents (owner 2026-11-25) ──────────────────────────────────
+# The writer and its editor belong to the paid plans. A free / marketing_*
+# user's existing documents stay as they are (readable, copyable) — only the
+# AI edit is refused. Same note shape as the lock above.
+
+_PAID_ONLY_EDIT = (
+    "〔[نظام] PLAN LOCK — DELIBERATE, NOT AN ERROR. Editing documents is on the "
+    "paid plans only and this user is not on one, so {wi} was not changed. Tell "
+    "the user plainly, e.g. «تعديل المستندات وكتابتها متاح في الباقات المدفوعة "
+    "— يمكنك نسخ النص وتعديله بنفسك، أو الاشتراك في إحدى الباقات المدفوعة». "
+    "Never apologise for a technical problem.〕"
+)
+
+
 # ── Pydantic AI tool ──────────────────────────────────────────────────────────
 
 
@@ -215,6 +229,20 @@ def register_edit_artifact(agent: Agent) -> None:
         ):
             logger.info("edit_artifact: %s is preview-locked — edit refused", target_wi)
             return _LOCKED_EDIT.format(wi=target_wi)
+
+        from shared.quota import paid_feature_access
+
+        access = await paid_feature_access(
+            ctx.deps.supabase, str(getattr(ctx.deps, "user_id", "") or "")
+        )
+        if not access.allowed:
+            logger.info("edit_artifact: paid-only gate refused %s", target_wi)
+            sink = getattr(ctx.deps, "pending_sse_events", None)
+            if isinstance(sink, list) and not any(
+                e.get("type") == "paid_feature_gated" for e in sink
+            ):
+                sink.append({"type": "paid_feature_gated", **access.event_payload("writer")})
+            return _PAID_ONLY_EDIT.format(wi=target_wi)
 
         # Lazy import: keeps this module import-light (the editor package pulls
         # the model registry + tracking) and lets tests monkeypatch

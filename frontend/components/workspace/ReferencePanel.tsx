@@ -28,6 +28,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
+import { PAID_FEATURE_COPY } from "@/lib/paid-features";
 import { ChunkFigure } from "@/components/library/blocks/ChunkFigure";
 import { ChunkTable } from "@/components/library/blocks/ChunkTable";
 import {
@@ -143,6 +145,13 @@ interface ReferencePanelProps {
    * nothing changes (every open item, the public blog).
    */
   hiddenCount?: number;
+  /**
+   * Paid-only sources (owner 2026-11-25): the server withheld the list for a
+   * free / marketing_* plan and counts the sources here (the references
+   * endpoint's ``paid_locked_count``). Rendered as one locked box with the
+   * plans button instead of the list. Absent / 0 ⇒ nothing changes.
+   */
+  paidLockedCount?: number;
 }
 
 /**
@@ -246,6 +255,7 @@ export function ReferencePanel({
   onOpenSourceWi,
   canOpenSourceWi,
   hiddenCount,
+  paidLockedCount,
 }: ReferencePanelProps) {
   // The open reference is tracked by ``n``, not by the object: the dialog now
   // owns a fetch keyed on (itemId, n), and holding a stale Reference across a
@@ -325,6 +335,10 @@ export function ReferencePanel({
         </ul>
       </div>
     );
+  }
+
+  if ((paidLockedCount ?? 0) > 0 && (!references || references.length === 0)) {
+    return <PaidLockedReferences count={paidLockedCount!} />;
   }
 
   // «وN مصادر أخرى في الجزء المقفل» — "" for 0 / absent, so an open item
@@ -410,6 +424,43 @@ export function ReferencePanel({
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** «N مصادر» — Arabic number agreement for the locked box's count. */
+function sourcesCountLabel(n: number): string {
+  if (n === 1) return "مصدر واحد";
+  if (n === 2) return "مصدران";
+  if (n <= 10) return `${n} مصادر`;
+  return `${n} مصدراً`;
+}
+
+/** Paid-only sources: the count, the lock, and the way to the plans. */
+function PaidLockedReferences({ count }: { count: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div dir="rtl" className="mt-6 border-t pt-4" data-testid="paid-locked-refs">
+      <h3 className="mb-3 text-sm font-semibold text-foreground">
+        المراجع <span className="text-muted-foreground">({count})</span>
+      </h3>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed bg-muted/40 px-3 py-3">
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Lock aria-hidden="true" className="h-4 w-4 shrink-0" />
+          <span>
+            يستند هذا المستند إلى {sourcesCountLabel(count)}.{" "}
+            {PAID_FEATURE_COPY.sources.title}.
+          </span>
+        </p>
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+          عرض الباقات
+        </Button>
+      </div>
+      <QuotaUpgradeDialog
+        open={open}
+        onOpenChange={setOpen}
+        paidFeature={PAID_FEATURE_COPY.sources}
+      />
     </div>
   );
 }

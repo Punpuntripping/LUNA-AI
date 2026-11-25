@@ -41,6 +41,9 @@ export const WI_PREVIEW_COPY = {
 export interface WorkspaceItemReferencesResponse {
   references: Reference[];
   hidden_count?: number;
+  /** Paid-only sources (owner 2026-11-25): on a free / marketing_* plan the
+   *  list is empty and this counts the sources behind the item. */
+  paid_locked_count?: number;
 }
 
 type PreviewCarrier = Pick<WorkspaceItem, "content_md"> & {

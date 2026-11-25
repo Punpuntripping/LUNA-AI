@@ -16,6 +16,7 @@ import { WiPreviewWall } from "@/components/workspace/WiPreviewWall";
 import {
   useWorkspaceItemReferences,
   useWorkspaceItemReferencesHiddenCount,
+  useWorkspaceItemReferencesPaidLockedCount,
 } from "@/hooks/use-workspace-item-references";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import {
@@ -64,6 +65,10 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   const { data: references = [], isLoading: isLoadingReferences } =
     useWorkspaceItemReferences(itemId, referenceOpts);
   const hiddenReferenceCount = useWorkspaceItemReferencesHiddenCount(
+    itemId,
+    referenceOpts,
+  );
+  const paidLockedReferenceCount = useWorkspaceItemReferencesPaidLockedCount(
     itemId,
     referenceOpts,
   );
@@ -264,6 +269,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
                     itemId={item.item_id}
                     isLoading={isLoadingReferences}
                     hiddenCount={previewLocked ? hiddenReferenceCount : undefined}
+                    paidLockedCount={paidLockedReferenceCount}
                   />
                 )}
               </>

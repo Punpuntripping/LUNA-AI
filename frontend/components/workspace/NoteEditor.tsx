@@ -16,6 +16,7 @@ import {
 import {
   useWorkspaceItemReferences,
   useWorkspaceItemReferencesHiddenCount,
+  useWorkspaceItemReferencesPaidLockedCount,
 } from "@/hooks/use-workspace-item-references";
 import { ApiClientError } from "@/lib/api";
 import {
@@ -178,6 +179,10 @@ export function NoteEditor({ item }: NoteEditorProps) {
     item.item_id,
     referenceOpts,
   );
+  const paidLockedReferenceCount = useWorkspaceItemReferencesPaidLockedCount(
+    item.item_id,
+    referenceOpts,
+  );
   const metadataRefsView = useMemo(
     () => readWriterMetadataRefsView(item),
     [item],
@@ -320,6 +325,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
         onOpenSourceWi={handleOpenSourceWi}
         canOpenSourceWi={canOpenSourceWi}
         hiddenCount={previewLocked ? hiddenReferenceCount : undefined}
+        paidLockedCount={paidLockedReferenceCount}
       />
       <AgentOutputDisclaimer />
     </>

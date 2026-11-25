@@ -35,10 +35,11 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from backend.app.deps import get_current_user
+from backend.app.deps import get_current_user, get_supabase
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.middleware.route_limits import RouteRateLimiter
 from backend.app.services import export_service
+from backend.app.services.paid_features import require_paid_feature
 from shared.auth.jwt import AuthUser
 
 logger = logging.getLogger(__name__)
@@ -162,9 +163,14 @@ async def _read_request(request: Request) -> ExportRequest:
 async def export_document(
     request: Request,
     current_user: AuthUser = Depends(get_current_user),
+    supabase=Depends(get_supabase),
     _rl=Depends(export_rate_limit),
 ) -> Response:
-    """Render the caller's markdown to a PDF or Word file and return it."""
+    """Render the caller's markdown to a PDF or Word file and return it.
+
+    Paid plans only (owner 2026-11-25): free and marketing_* users get a 403 —
+    they can still copy the text."""
+    await require_paid_feature(supabase, current_user.auth_id, "export")
     req = await _read_request(request)
 
     async with _render_slots:

@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.api import export as export_api
-from backend.app.deps import get_current_user
+from backend.app.deps import get_current_user, get_supabase
 from backend.app.errors import LunaHTTPException, luna_exception_handler
 from backend.app.services import export_service
 from shared.auth.jwt import AuthUser
@@ -89,6 +89,15 @@ def _fake_user() -> AuthUser:
 
 
 @pytest.fixture(autouse=True)
+def _paid_by_default(monkeypatch):
+    """The paid-only gate passes unless a test says otherwise."""
+    async def _allow(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(export_api, "require_paid_feature", _allow)
+
+
+@pytest.fixture(autouse=True)
 def _reset_limiter():
     export_api.export_rate_limit._fallback.reset()
     yield
@@ -101,6 +110,7 @@ def _app(authed: bool = True) -> FastAPI:
     app.include_router(export_api.router, prefix="/api/v1")
     if authed:
         app.dependency_overrides[get_current_user] = _fake_user
+    app.dependency_overrides[get_supabase] = lambda: object()
     return app
 
 
@@ -380,3 +390,30 @@ def test_title_h1_skipped_when_body_starts_with_h1():
     assert "عنوان" not in out
     out = export_service.markdown_to_html("## فرعي\n\nنص", "عنوان")
     assert out.startswith("<h1>عنوان</h1>")
+
+
+# ---------------------------------------------------------------------------
+# Paid plans only (owner 2026-11-25)
+# ---------------------------------------------------------------------------
+
+
+def test_export_refused_for_unpaid_plan(monkeypatch):
+    """A free / marketing_* caller gets the Arabic 403, and nothing renders."""
+    from backend.app.services import paid_features
+    from shared.quota import PaidFeatureAccess
+
+    async def _unpaid(_sb, _auth_id):
+        return PaidFeatureAccess(allowed=False, plan_id="marketing_lawyer_3")
+
+    monkeypatch.setattr(paid_features, "access_for_auth_id", _unpaid)
+    monkeypatch.setattr(export_api, "require_paid_feature", paid_features.require_paid_feature)
+
+    def _no_render(*_a, **_k):
+        raise AssertionError("render must not run for an unpaid caller")
+
+    monkeypatch.setattr(export_service, "render", _no_render)
+    res = _post(TestClient(_app()))
+    assert res.status_code == 403
+    body = res.json()
+    assert body["error"]["code"] == "PAID_PLAN_REQUIRED"
+    assert "الباقات المدفوعة" in body["detail"]

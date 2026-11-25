@@ -17,6 +17,7 @@ from backend.app.models.responses import MessageListResponse
 from shared.auth.jwt import AuthUser
 from backend.app.services import message_service
 from backend.app.services.case_service import get_user_id
+from backend.app.services.paid_features import access_for_auth_id
 from shared.db.run import run_db
 
 router = APIRouter()
@@ -45,7 +46,34 @@ async def list_messages(
         limit=limit,
         before=before,
     )
+    _strip_paid_sources(result.get("messages") or [], await _sources_allowed(supabase, user.auth_id, result))
     return {**result, "run_active": run_active}
+
+
+# Paid-only sources (owner 2026-11-25): the quotes behind a reply's [n] and the
+# «اقرأ الحكم كاملًا» links are sources — a free / marketing_* user gets the
+# reply text only. Old replies included: the gate is at read time.
+_SOURCE_METADATA_KEYS = ("quote_refs", "library_links")
+
+
+async def _sources_allowed(supabase: SupabaseClient, auth_id: str, result: dict) -> bool:
+    """Ask the plan only when a message on this page carries sources."""
+    if not any(
+        isinstance(m.get("metadata"), dict)
+        and any(m["metadata"].get(k) for k in _SOURCE_METADATA_KEYS)
+        for m in result.get("messages") or []
+    ):
+        return True
+    return (await access_for_auth_id(supabase, auth_id)).allowed
+
+
+def _strip_paid_sources(messages: list[dict], allowed: bool) -> None:
+    if allowed:
+        return
+    for m in messages:
+        md = m.get("metadata")
+        if isinstance(md, dict) and any(k in md for k in _SOURCE_METADATA_KEYS):
+            m["metadata"] = {k: v for k, v in md.items() if k not in _SOURCE_METADATA_KEYS}
 
 
 @router.post("/conversations/{conversation_id}/messages")

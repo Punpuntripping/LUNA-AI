@@ -29,6 +29,11 @@ export interface User {
    *  payload, which does not read the subscription at all. Gates the
    *  post-purchase «اتعرف على ريحان» tour. */
   paid_activated_at?: string | null;
+  /** Paid-only features (owner 2026-11-25): the writer, the sources behind an
+   *  answer, and PDF / Word export. `false` = free or a marketing_* trial
+   *  (EFFECTIVE plan). Absent / null = unknown (the /login payload, an older
+   *  backend) — treat as allowed; the server enforces regardless. */
+  paid_features?: boolean | null;
   created_at?: string | null;
   /** Account deletion grace period (30 days). True → app is gated behind
    *  AccountDeletionPendingScreen until restored. */

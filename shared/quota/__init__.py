@@ -84,7 +84,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
@@ -579,6 +579,8 @@ class _PlanRules:
     max_parallel_runs: Optional[int] = None
     deep_search_min_points: Optional[float] = None
     deep_search_per_window: Optional[int] = None
+    # plans.price_sar — None = not purchasable (free / marketing_* / dev).
+    price_sar: Optional[float] = None
 
 
 _plan_rules_cache: dict[str, _PlanRules] | None = None
@@ -617,6 +619,7 @@ def _load_plan_rules(supabase: SupabaseClient) -> dict[str, _PlanRules]:
             max_parallel_runs=_opt_int(row.get("max_parallel_runs"), floor=1),
             deep_search_min_points=_opt_float(row.get("deep_search_min_points")),
             deep_search_per_window=_opt_int(row.get("deep_search_per_window"), floor=1),
+            price_sar=_price(row.get("price_sar")),
         )
     return rules
 
@@ -687,6 +690,84 @@ async def parallel_cap(supabase: SupabaseClient, user_id: str) -> tuple[int, str
         logger.warning("plans.max_parallel_runs read failed (fail closed): %s", e)
         raise QuotaUnavailable("ord", "weekly")
     return caps.get(str(plan), DEFAULT_MAX_PARALLEL_RUNS), plan
+
+
+# ── paid-only features (owner 2026-11-25) ───────────────────────────────────
+#
+# Three features belong to the PAID plans only — the ones with a price:
+# the writer (a drafted document; its plan may still be shown), the sources
+# behind an answer, and saving a document as PDF / Word (copy stays open).
+# Every plan without a price is refused: free AND every marketing_* trial,
+# including trials already running. ``dev`` (the internal test grant) keeps
+# them. The plan is the EFFECTIVE one (an expired pro is free here).
+#
+# Fails OPEN (logged) on an unreadable state or catalog: refusing a paying
+# customer the feature they bought is worse than a trial user getting one
+# document through during an outage.
+
+PAID_FEATURE_GRANTS: frozenset[str] = frozenset({"dev"})
+
+PaidFeature = Literal["writer", "export", "sources"]
+
+PAID_FEATURE_MESSAGE_AR: dict[str, str] = {
+    "writer": "كتابة المستندات متاحة في الباقات المدفوعة.",
+    "export": "حفظ المستندات بصيغة PDF أو Word متاح في الباقات المدفوعة. يمكنك نسخ النص.",
+    "sources": "عرض المصادر متاح في الباقات المدفوعة.",
+}
+
+
+@dataclass(frozen=True)
+class PaidFeatureAccess:
+    """Whether the user's EFFECTIVE plan carries the paid-only features.
+
+    ``upgrade_options`` — the priced plans, cheapest first (empty when
+    ``allowed``). Same contract as ``QuotaExceeded.upgrade_options``.
+    """
+
+    allowed: bool
+    plan_id: Optional[str]
+    upgrade_options: tuple[str, ...] = ()
+
+    def event_payload(self, feature: PaidFeature) -> dict:
+        """The ``paid_feature_gated`` SSE payload / 403 body extras."""
+        return {
+            "feature": feature,
+            "plan_id": self.plan_id,
+            "upgrade_options": list(self.upgrade_options),
+            "message_ar": PAID_FEATURE_MESSAGE_AR[feature],
+        }
+
+
+def _paid_access_from(
+    plan: Optional[str], rules: dict[str, _PlanRules]
+) -> PaidFeatureAccess:
+    """Pure: the access verdict for ``plan`` against the catalog."""
+    r = rules.get(str(plan)) if plan else None
+    allowed = bool(plan) and (
+        str(plan) in PAID_FEATURE_GRANTS or (r is not None and r.price_sar is not None)
+    )
+    if allowed:
+        return PaidFeatureAccess(allowed=True, plan_id=plan)
+    ladder = sorted(
+        (r2.price_sar, pid) for pid, r2 in rules.items() if r2.price_sar is not None
+    )
+    return PaidFeatureAccess(
+        allowed=False, plan_id=plan, upgrade_options=tuple(pid for _, pid in ladder),
+    )
+
+
+async def paid_feature_access(
+    supabase: SupabaseClient, user_id: str
+) -> PaidFeatureAccess:
+    """The user's access to the paid-only features. Never raises (fails open)."""
+    try:
+        st = await _quota_state(supabase, user_id)
+        rules = await _plan_rules(supabase)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("paid-feature check failed — open for this request: %s", exc)
+        return PaidFeatureAccess(allowed=True, plan_id=None)
+    plan = None if (st is None or st.get("locked")) else _row_plan(st)
+    return _paid_access_from(plan, rules)
 
 
 # ── the deep-search plan gate (migration 197) ───────────────────────────────
