@@ -456,3 +456,58 @@ def test_one_map_route(client_for, one_map):
     res = c.get(f"/api/v1/files/angle-maps/{MAP_A}")
     assert res.status_code == 404 and res.json()["detail"] == "الخيوط غير موجودة أو لم تعد محدّثة"
     assert c.get("/api/v1/files/angle-maps/not-a-uuid").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# «الإحالات» in the section popup (FILE_PINNED_TEXTS_UI_*)
+# ---------------------------------------------------------------------------
+
+ART_1 = "a1111111-0000-0000-0000-000000000001"
+ART_2 = "a2222222-0000-0000-0000-000000000002"
+
+
+def _ranged(seq: int, owner_class: str, what: str, text: str, start: int, end: int) -> dict:
+    return {**_seg(seq, owner_class, what, text), "char_start": start, "char_end": end}
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_get_one_map_sections_carry_their_pinned_texts(one_map, monkeypatch, on):
+    from agents.memory.citation_pins import store as pins_store
+
+    segments = {
+        ITEM_A1: {"segments": [_ranged(1, "claimant", "طلبات المدعي", "نص الطلبات", 0, 100),
+                               _ranged(2, "court", "منطوق الحكم", "نص المنطوق", 100, 200)]},
+        ITEM_A2: {"segments": [_ranged(1, "respondent", "دفع بعدم القبول", "نص الدفع", 0, 50)]},
+    }
+    monkeypatch.setattr(ams, "load_segment_maps",
+                        lambda _sb, ids, user_id=None: {i: segments[i] for i in ids if i in segments})
+
+    def pin(article_id, at, n):
+        return SimpleNamespace(article_id=article_id, char_start=at, title=f"المادة {n} من نظام الإثبات",
+                               text=f"نص المادة {n}")
+
+    calls = []
+
+    def fake_load_pins(_sb, item_ids, *, user_id=None):
+        calls.append((sorted(item_ids), user_id))
+        return {ITEM_A1: [pin(ART_2, 150, "2"), pin(ART_1, 10, "1"), pin(ART_1, 60, "1")],
+                ITEM_A2: [pin(ART_2, 70, "2")]}          # past its only section's range
+
+    monkeypatch.setattr(pins_store, "load_pins", fake_load_pins)
+    monkeypatch.setattr(fs, "get_settings", lambda: SimpleNamespace(
+        FILE_PINNED_TEXTS_UI_ENABLED=on, FILE_PINNED_TEXTS_UI_USERS=USER))
+
+    m = ams.get_angle_map(_world(), USER, MAP_A)
+    by_ref = {s["ref"]: s for s in m["sections"]}
+    if not on:
+        assert calls == [] and all("pinned_texts" not in s for s in m["sections"])
+        return
+    assert calls == [(sorted([ITEM_A1, ITEM_A2]), USER)]           # one read for the map
+    assert [p["article_id"] for p in by_ref["D1.S1"]["pinned_texts"]] == [ART_1]   # once
+    assert [p["title"] for p in by_ref["D1.S2"]["pinned_texts"]] == ["المادة 2 من نظام الإثبات"]
+    assert "pinned_texts" not in by_ref["D2.S1"]
+
+    from backend.app.models.responses import AngleMapOut
+
+    body = AngleMapOut.model_validate(m).model_dump(mode="json")
+    assert {s["ref"]: len(s["pinned_texts"]) for s in body["sections"]} == {"D1.S1": 1, "D2.S1": 0, "D1.S2": 1}

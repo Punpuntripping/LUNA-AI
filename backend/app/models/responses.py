@@ -550,6 +550,8 @@ class AngleMapSectionOut(BaseModel):
     page_to: Optional[int] = None
     side: Optional[Literal["own", "opp", "neutral"]] = None
     content_md: str = ""
+    # The official articles this section cites. Empty with FILE_PINNED_TEXTS_UI off.
+    pinned_texts: list[FilePinnedText] = []
 
 
 class AngleMapDocumentOut(BaseModel):

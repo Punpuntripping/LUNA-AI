@@ -1046,6 +1046,33 @@ def _pinned_text(pin: Any) -> dict:
     }
 
 
+def load_item_pins(supabase: SupabaseClient, user_id: str, item_ids: list[str]) -> dict[str, list]:
+    """``{item_id: pinned articles}`` for conversation items (each resolved to its
+    file by ``load_pins``). Never raises: ``{}``."""
+    if not item_ids:
+        return {}
+    try:
+        from agents.memory.citation_pins.store import load_pins
+
+        return dict(load_pins(supabase, item_ids, user_id=user_id) or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("files: pinned texts unavailable (%s)", type(exc).__name__)
+        return {}
+
+
+def pinned_texts_in_range(pins: list, start: Optional[int], end: Optional[int]) -> list[dict]:
+    """The articles cited between ``start`` (inclusive) and ``end`` — one section's
+    range in the file's original text — each once, in document order. ``[]`` when the
+    section has no stored position."""
+    if start is None or end is None:
+        return []
+    out: list[dict] = []
+    for p in sorted(pins, key=lambda p: int(getattr(p, "char_start", 0) or 0)):
+        if start <= int(p.char_start) < end and all(o["article_id"] != p.article_id for o in out):
+            out.append(_pinned_text(p))
+    return out
+
+
 def _place_pins(sections: Optional[list[dict]], pins: list) -> list[dict]:
     """Hang each pinned article under the shown section that cites it — the rule of
     ``agents/utils/attachment_delivery.attach_pins``: a citation belongs to the

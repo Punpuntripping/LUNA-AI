@@ -71,8 +71,13 @@ export const FILES_COPY = {
   ownerFilterLabel: "تصفية حسب صاحب القسم",
   broughtBy: "قدّمه",
   emptySection: "لا يحتوي هذا القسم على نص",
-  /** The disclosure under a section (and under a full-text file). */
-  pinnedTexts: "النصوص المثبّتة",
+  /**
+   * The disclosure of the official articles a section cites — under a section,
+   * a full-text file and the «الخيوط» section popup. Owner 2026-11-27: named
+   * «الإحالات», like the references' disclosure (the pane card keeps its stored
+   * name «النصوص المثبّتة»).
+   */
+  pinnedTexts: "الإحالات",
   noText: "لا يوجد نص مستخرج لهذا الملف",
   backToLibrary: "الملفات",
   fileNotFound: "لم نجد هذا الملف في ملفاتك",

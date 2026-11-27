@@ -15,6 +15,7 @@ import {
   stripMarkdownImages,
   type AngleMap,
 } from "@/lib/contracts";
+import { PinnedTexts } from "../PinnedTexts";
 import { ANGLE_KIND_STYLE, ANGLE_SIDE_TAG } from "./angle-style";
 import { AngleNumber } from "./AngleMapDiagram";
 import { ANGLES_COPY } from "./copy";
@@ -82,6 +83,7 @@ export function AngleSectionDialog({
               ) : (
                 <p className="text-sm text-muted-foreground">{ANGLES_COPY.emptySection}</p>
               )}
+              <PinnedTexts pins={section.pinned_texts} />
             </div>
 
             {angles.length > 0 && (

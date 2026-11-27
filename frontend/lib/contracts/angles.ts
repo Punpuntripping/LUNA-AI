@@ -5,7 +5,7 @@
 // A map belongs to the MESSAGE the files were sent in (one map per message
 // group, `attachment_angle_maps`): a conversation can hold several.
 
-import type { FileDocType } from "./files";
+import type { FileDocType, FilePinnedText } from "./files";
 
 // ---------------------------------------------------------------------------
 // Wire types — `GET /files/angle-maps[?conversation_id=]` (light rows) and
@@ -76,6 +76,11 @@ export interface AngleMapSection {
   side: AngleSectionSide | null;
   /** The section's original text. */
   content_md: string;
+  /**
+   * «الإحالات» — the official articles this section cites
+   * (`FILE_PINNED_TEXTS_UI_*`). Empty or absent when off / on an older backend.
+   */
+  pinned_texts?: FilePinnedText[];
 }
 
 export interface AngleMapDocument {

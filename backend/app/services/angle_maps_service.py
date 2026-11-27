@@ -235,6 +235,29 @@ def _refs(value: Any, index: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _add_section_pins(supabase: SupabaseClient, user_id: str, index: dict, sections: list[dict]) -> None:
+    """«النصوص المثبّتة» in the AngleSectionDialog (FILE_PINNED_TEXTS_UI_*): each sent
+    section gets ``pinned_texts`` — the official articles cited inside its range of
+    its document's text, the same rule as the opened file's sections. One read for
+    the map's documents; flag off or none sent = nothing read."""
+    if not sections or not files_service.file_pinned_texts_ui_enabled(user_id):
+        return
+    items = list(dict.fromkeys(str(index[s["ref"]].get("item_id") or "") for s in sections))
+    pins = files_service.load_item_pins(supabase, user_id, [i for i in items if i])
+    if not pins:
+        return
+    for s in sections:
+        row = index[s["ref"]]
+        mine = pins.get(str(row.get("item_id") or ""))
+        if not mine:
+            continue
+        found = files_service.pinned_texts_in_range(
+            mine, _int_or_none(row.get("char_start")), _int_or_none(row.get("char_end")),
+        )
+        if found:
+            s["pinned_texts"] = found
+
+
 def _map_out(supabase: SupabaseClient, user_id: str, stored: dict) -> dict:
     """One stored map (``load_angle_map_for_item`` shape) as ``AngleMap``."""
     head = stored["map"]
@@ -307,6 +330,7 @@ def _map_out(supabase: SupabaseClient, user_id: str, stored: dict) -> dict:
                 str(s.get("content_md") or ""), fixes.get(str(s.get("item_id") or "")),
             ),
         })
+    _add_section_pins(supabase, user_id, index, sections)
 
     left_raw = [x for x in head.get("left_out") or [] if isinstance(x, dict) and x.get("item_id")]
     items = _item_rows(supabase, user_id, member_ids + [str(x["item_id"]) for x in left_raw])

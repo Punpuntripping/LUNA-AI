@@ -22,7 +22,7 @@ function plainArticleText(text: string): string {
 }
 
 /**
- * «النصوص المثبّتة (n)» — the official articles a section of the file cites,
+ * «الإحالات (n)» — the official articles a section of the file cites,
  * collapsed by default. The same disclosure as «الإحالات» in an opened
  * reference (`CrossRefsSection` in ReferencePanel): a quiet toggle, then one
  * tinted block per article — its title, then its official wording.
