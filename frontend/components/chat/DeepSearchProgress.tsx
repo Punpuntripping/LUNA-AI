@@ -1,7 +1,6 @@
 "use client";
 
 import { memo, useEffect, useState } from "react";
-import { Info } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
@@ -15,9 +14,10 @@ import {
 } from "@/lib/progress-stages";
 import { useChatStore } from "@/stores/chat-store";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
-import { PushReadyChip } from "@/components/chat/PushReadyChip";
 import {
+  NOTE_LEAVE_AR,
   StageCard,
+  StageNote,
   formatCountAr,
   useNow,
   usePhraseIndex,
@@ -44,19 +44,16 @@ const EXTENDED_TITLE = "بحث شامل";
 const DONE_LINE = "اكتملت الإجابة";
 
 /**
- * Standing note ABOVE the card. Its whole job is to set the expectation before
- * the wait starts: this run is long *by design*, and leaving the tab is safe —
- * the run lives on the server, so the answer is here on return.
+ * Standing note ABOVE the card («شكرًا لتجربتك ريحان», StageNote). Its whole
+ * job is to set the expectation before the wait starts: this run is long *by
+ * design*, and leaving the tab is safe — the answer is here on return.
  */
-const NOTE_TITLE = "شكرًا لتجربتك ريحان";
-const NOTE_LEAVE =
-  "يمكنك تركه يعمل في الخلفية والانشغال بشيء آخر — ستجد الإجابة بانتظارك هنا.";
 const DEEP_NOTE_BODY =
   "البحث العميق مصمَّم ليمرّ على كل المصادر ذات الصلة بسؤالك، وقد يستغرق من 3 إلى 5 دقائق. " +
-  NOTE_LEAVE;
+  NOTE_LEAVE_AR;
 const EXTENDED_NOTE_BODY =
   "البحث الشامل يبحث في خيوط ملفك ببحوث متوازية ثم يدمجها في جواب واحد، وقد يستغرق من 5 إلى 10 دقائق. " +
-  NOTE_LEAVE;
+  NOTE_LEAVE_AR;
 
 interface StepCopy {
   /** Full name — shown whenever it fits; always the screen-reader name. */
@@ -166,34 +163,6 @@ const EXTENDED_EXPECTED_MS: Record<SearchStep, number> = {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * The expectation-setting note that sits above the tracker for the whole run.
- * Static copy — it never reacts to progress, so it stays out of the tracker's
- * render path and out of the card's live region.
- *
- * While the run is in flight it also carries the web-push opt-in
- * (PushReadyChip, pwa_step1.md §1D): the note already says «you can leave»,
- * the chip is how they get called back.
- */
-function DeepSearchNote({ running, body }: { running: boolean; body: string }) {
-  return (
-    <div
-      dir="rtl"
-      lang="ar"
-      className="w-full rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3"
-    >
-      <div className="flex items-start gap-2">
-        <Info className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold text-foreground">{NOTE_TITLE}</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{body}</p>
-          {running && <PushReadyChip className="mt-2" />}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 interface DeepSearchProgressProps {
   /** The conversation whose run this tracker shows (each has its own slot). */
   conversationId: string;
@@ -257,7 +226,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   if (!progress) {
     return (
       <div className={cn("w-full space-y-2", className)}>
-        <DeepSearchNote running body={DEEP_NOTE_BODY} />
+        <StageNote running body={DEEP_NOTE_BODY} />
         <TypingIndicator conversationId={conversationId} />
       </div>
     );
@@ -295,7 +264,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
 
   return (
     <div className={cn("w-full space-y-2", className)}>
-      <DeepSearchNote
+      <StageNote
         running={!isDone}
         body={extended ? EXTENDED_NOTE_BODY : DEEP_NOTE_BODY}
       />

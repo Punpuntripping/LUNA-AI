@@ -5,7 +5,13 @@ import { memo } from "react";
 import { cn } from "@/lib/utils";
 import { FILE_STEPS, fileStepStatus, fillPercent } from "@/lib/progress-stages";
 import { useChatStore } from "@/stores/chat-store";
-import { StageCard, useNow, type StageCell } from "@/components/chat/StageCard";
+import {
+  NOTE_LEAVE_AR,
+  StageCard,
+  StageNote,
+  useNow,
+  type StageCell,
+} from "@/components/chat/StageCard";
 import type { OcrStage } from "@/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,6 +24,17 @@ import type { OcrStage } from "@/types";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TITLE = "تجهيز المستندات";
+
+/**
+ * «شكرًا لتجربتك ريحان» note above the card (StageNote), same role as the
+ * deep search one: this wait is long by design, and leaving is safe. The time
+ * range follows prod (2026-11-20…27): segmenter start → stored angle map
+ * 2.8 min median, 5.9 min p90; a short file without a map takes under a minute.
+ */
+const NOTE_BODY =
+  "ريحان يقرأ مستنداتك قبل أن يجيب: يستخرج نصّها ويلخّصها ويرتّب أقسامها ويستخرج خيوطها، " +
+  "وقد يستغرق ذلك من دقيقة إلى 5 دقائق بحسب حجم المستندات. " +
+  NOTE_LEAVE_AR;
 
 /** The header line while a step runs — owner wording 2026-11-27. */
 const STEP_LINE: Record<OcrStage, string> = {
@@ -89,7 +106,8 @@ export const FilesProgress = memo(function FilesProgress({
   });
 
   return (
-    <div className={cn("w-full", className)}>
+    <div className={cn("w-full space-y-2", className)}>
+      <StageNote running body={NOTE_BODY} />
       <StageCard
         title={TITLE}
         detail={STEP_LINE[current]}

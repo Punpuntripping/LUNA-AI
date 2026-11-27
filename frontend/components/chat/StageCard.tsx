@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
-import { Check } from "lucide-react";
+import { Check, Info } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { StepStatus } from "@/lib/progress-stages";
+import { PushReadyChip } from "@/components/chat/PushReadyChip";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The live stage card shared by DeepSearchProgress («بحث عميق» / «بحث شامل»)
@@ -119,6 +120,43 @@ function useTightCells(grid: HTMLOListElement | null): boolean {
   }, [grid]);
 
   return tight;
+}
+
+/** Title of the standing note above a long-running card. */
+const NOTE_TITLE = "شكرًا لتجربتك ريحان";
+
+/** Second sentence of every note: leaving is safe, the run lives on the server. */
+export const NOTE_LEAVE_AR =
+  "يمكنك تركه يعمل في الخلفية والانشغال بشيء آخر — ستجد الإجابة بانتظارك هنا.";
+
+/**
+ * The expectation-setting note above a long-running card («بحث عميق»,
+ * «بحث شامل», «تجهيز المستندات»): this wait is long *by design*, and leaving
+ * the tab is safe. Static copy — it never reacts to progress, so it stays out
+ * of the card's render path and live region.
+ *
+ * While the run is in flight it also carries the web-push opt-in
+ * (PushReadyChip, pwa_step1.md §1D): the note already says «you can leave»,
+ * the chip is how they get called back. It owns its own state and renders
+ * nothing when push can't help.
+ */
+export function StageNote({ running, body }: { running: boolean; body: string }) {
+  return (
+    <div
+      dir="rtl"
+      lang="ar"
+      className="w-full rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3"
+    >
+      <div className="flex items-start gap-2">
+        <Info className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-foreground">{NOTE_TITLE}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{body}</p>
+          {running && <PushReadyChip className="mt-2" />}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 interface StageCardProps {
