@@ -118,7 +118,8 @@ jobs:
             agents/deep_search_v4/extended/tests/ \
             backend/tests/test_extended_plan_api.py \
             agents/deep_search_v4/tests/test_case_documents_segmented.py \
-            agents/deep_search_v4/tests/test_segmented_delivery_wiring.py
+            agents/deep_search_v4/tests/test_segmented_delivery_wiring.py \
+            agents/deep_search_v4/extended_merger/tests/
 
   frontend:
     name: Frontend

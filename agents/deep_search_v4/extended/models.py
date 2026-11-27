@@ -255,6 +255,10 @@ class MergedAnswer(BaseModel):
     confidence: Literal["high", "medium", "low"] = "medium"
     resolved: list[Resolution] = Field(default_factory=list)
     report_titles: list[str] = Field(default_factory=list)          # the reports it used, plan order (D14)
+    # The merger's whole output (``extended_merger.models.MergerOutput`` dump: angle
+    # scoreboard, settled contradictions, angles left out, the reports) — the merged
+    # item's publisher reads it. ``None`` on a single report's answer (no merged item).
+    merger: Optional[dict[str, Any]] = None
 
 
 __all__ = [

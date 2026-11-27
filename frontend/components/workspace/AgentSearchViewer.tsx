@@ -8,6 +8,10 @@ import { SaveAsBlogDialog } from "./SaveAsBlogDialog";
 import { AgentOutputDisclaimer } from "./AgentOutputDisclaimer";
 import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
 import { WiPreviewWall } from "./WiPreviewWall";
+import {
+  ExtendedSynthesisLead,
+  ExtendedSynthesisTrail,
+} from "./ExtendedSynthesisSections";
 import { useSetWorkspaceItemFeedback } from "@/hooks/use-workspace";
 import {
   useWorkspaceItemReferences,
@@ -19,6 +23,7 @@ import {
   isWiPreviewLocked,
   wiPreviewVisibleContent,
 } from "@/lib/contracts/wi-preview";
+import { parseExtendedSynthesis } from "@/lib/contracts/extended-synthesis";
 import type { WorkspaceFeedback, WorkspaceItem } from "@/types";
 
 interface AgentSearchViewerProps {
@@ -69,6 +74,14 @@ interface AgentSearchViewerProps {
  * stripped), ``WiPreviewWall`` right after it, the server-filtered reference
  * list with its hidden-count line, and NO مشاركة / حفظ كمدونة / PDF — نسخ
  * stays and copies the visible part. Without ``preview`` nothing changes.
+ *
+ * «بحث موسّع» (``metadata.subtype === "extended_synthesis"``, the merger's
+ * merged answer): the same body, references and action bar, plus its own
+ * sections from the metadata — ``ExtendedSynthesisLead`` above the body
+ * (chip + meta line, «نقاط القوة والضعف», «الجواب») and
+ * ``ExtendedSynthesisTrail`` after it (settled disagreements, gaps, angles left
+ * out, the child reports — each opens that report in the pane). Every other
+ * subtype renders exactly as before.
  */
 export function AgentSearchViewer({
   item,
@@ -90,6 +103,8 @@ export function AgentSearchViewer({
     referenceOpts,
   );
   const setFeedback = useSetWorkspaceItemFeedback();
+  // null for every subtype but «بحث موسّع» — those render exactly as before.
+  const extended = useMemo(() => parseExtendedSynthesis(item.metadata), [item.metadata]);
   const [localFocusedN, setLocalFocusedN] = useState<number | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [saveBlogOpen, setSaveBlogOpen] = useState(false);
@@ -141,14 +156,36 @@ export function AgentSearchViewer({
       data-tour="wi-body"
     >
       <ArtifactPreview
+        // «بحث موسّع» only: a fresh scroll viewport per item, so opening a
+        // child report from the bottom of the merged answer (or coming back to
+        // it) starts at the top. Other items keep the shared key — unchanged.
+        key={extended ? `extended-${item.item_id}` : undefined}
         content={visibleContent}
         copyContent={copyContent}
         hideToolbar
         onCitationClick={handleBodyCitationClick}
+        header={
+          extended ? (
+            <ExtendedSynthesisLead
+              data={extended}
+              refCount={
+                !isLoadingReferences && references.length > 0
+                  ? references.length
+                  : extended.ref_count
+              }
+            />
+          ) : undefined
+        }
         footer={
           <>
             {previewLocked && item.preview && (
               <WiPreviewWall preview={item.preview} contentType={item.kind} />
+            )}
+            {extended && (
+              <ExtendedSynthesisTrail
+                data={extended}
+                conversationId={item.conversation_id}
+              />
             )}
             <ReferencePanel
               references={references}

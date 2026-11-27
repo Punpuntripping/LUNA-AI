@@ -37,6 +37,7 @@ const SUBTYPE_LABEL: Record<string, string> = {
   memory_file: "ذاكرة",
   legal_opinion: "رأي قانوني",
   legal_synthesis: "تحليل قانوني",
+  extended_synthesis: "بحث موسّع",
 };
 
 // The shared library scrollspy watches `#sec-` hrefs by default — the shape a

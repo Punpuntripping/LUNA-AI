@@ -414,3 +414,5 @@ agents/simple_search/tests/*
 # the pause / button / typed-text wiring — all in CI's durable list.
 !agents/deep_search_v4/extended/tests/
 !backend/tests/test_extended_plan_api.py
+# the extended-search merger (angle scoreboard + merged «بحث موسّع» item): prompt, runner, publisher.
+!agents/deep_search_v4/extended_merger/tests/

@@ -13,12 +13,18 @@ from agents.agent_search.models import SearchPublishOutput
 from agents.deep_search_v4.extended.models import MergedAnswer, Resolution
 from agents.deep_search_v4.extended.publish import (
     PUBLISH_FAILED_AR,
-    REPORTS_HEADING_AR,
     merged_agg_output,
     publish_extended,
-    reports_footer,
     write_chat_summary,
 )
+from agents.deep_search_v4.extended_merger import publisher as merged_publisher
+from agents.deep_search_v4.extended_merger.models import (
+    AngleCard,
+    AngleStatus,
+    MergedReportEntry,
+    MergerOutput,
+)
+from agents.deep_search_v4.extended_merger.models import Resolution as MergerResolution
 from agents.deep_search_v4.planner import agent as planner_agent
 from agents.deep_search_v4.planner import runner as planner_runner
 from agents.deep_search_v4.planner.models import PlannerResponse
@@ -40,14 +46,31 @@ def _reports():
 
 
 def _merged() -> MergedAnswer:
-    return MergedAnswer(
+    refs = [make_ref(1, "case:9", source_type="case"), make_ref(2, "reg:a")]
+    out = MergerOutput(
         synthesis_md=f"## الخلاصة\nهويته {FAKE_ID} [1] و[2].",
-        references=[make_ref(1, "case:9", source_type="case").model_dump(mode="json"),
-                    make_ref(2, "reg:a").model_dump(mode="json")],
+        references=refs,
+        ref_reports={1: [2], 2: [1]},
+        confidence="medium",
         gaps=[f"فجوة {FAKE_ID}"],
+        angle_status=[AngleStatus(angle="A1", status="supported", note=f"أساس {FAKE_ID}")],
+        resolved=[MergerResolution(topic="الميعاد", reports=[1, 2], decision=f"قرار {FAKE_ID}", settled=True)],
+        angles=[AngleCard(id="A1", kind="strengthen", strength="strong", title="ثبوت الدين", for_side="claimant")],
+        reports=[
+            MergedReportEntry(n=1, title="بحث الدين", mode="reg_compliance_led", angles=["A1"]),
+            MergedReportEntry(n=2, title="بحث الاختصاص", mode="reg_compliance_led", angles=["A2"]),
+            MergedReportEntry(n=3, title="فشل", mode="reg_compliance_led", angles=[], ok=False),
+        ],
+        prompt_version="merger-v1",
+    )
+    return MergedAnswer(
+        synthesis_md=out.synthesis_md,
+        references=[r.model_dump(mode="json") for r in refs],
+        gaps=list(out.gaps),
         confidence="medium",
         resolved=[Resolution(topic="الميعاد", reports=[1, 2], decision=f"قرار {FAKE_ID}")],
         report_titles=["بحث الدين", "بحث الاختصاص"],
+        merger=out.model_dump(mode="json"),
     )
 
 
@@ -82,6 +105,10 @@ def db(monkeypatch):
     monkeypatch.setattr(workspace_service, "create_workspace_item", _create)
     monkeypatch.setattr(references_service, "persist_item_references",
                         lambda supabase, **kw: calls["refs"].append(kw) or 0)
+    # the merged item's publisher binds both names at import
+    monkeypatch.setattr(merged_publisher, "create_workspace_item", _create)
+    monkeypatch.setattr(merged_publisher, "persist_item_references",
+                        lambda supabase, **kw: calls["refs"].append(kw) or 0)
     calls["state"] = state
     return calls
 
@@ -110,17 +137,16 @@ def test_reports_then_the_merged_item_with_children(db, codec):
     created = db["created"][0]
     assert created["kind"] == "agent_search" and created["title"] == "تقييم الموقف"
     md = created["metadata"]
+    assert md["subtype"] == "extended_synthesis" and md["confidence"] == "medium"
     assert md["children"] == ["wi-1", "wi-2"]
-    assert md["extended_search"]["run_id"] == "run-1"
-    assert md["extended_search"]["titles"] == ["بحث الدين", "بحث الاختصاص"]
-    assert md["extended_search"]["resolved"] == [{"topic": "الميعاد", "reports": [1, 2], "decision": f"قرار {REAL_ID}"}]
-    assert md["subtype"] == "legal_synthesis" and md["confidence"] == "medium"
+    assert md["run_id"] == "run-1" and md["client_side"] == "claimant"
+    assert [(r["n"], r["item_id"], r["ok"]) for r in md["reports"]] == [
+        (1, "wi-1", True), (2, "wi-2", True), (3, None, False)]
+    assert md["resolved"] == [{"topic": "الميعاد", "reports": [1, 2], "decision": f"قرار {REAL_ID}", "settled": True}]
+    assert md["angle_status"] == [{"angle": "A1", "status": "supported", "note": f"أساس {REAL_ID}"}]
     assert md["gaps"] == [f"فجوة {REAL_ID}"]
-    # decoded before storing; the D14 list after the answer, the disclaimer last
-    content = created["content_md"]
-    assert REAL_ID in content and FAKE_ID not in content
-    assert content.index("[1] و[2].") < content.index(REPORTS_HEADING_AR) < content.index("تنبيه قانوني")
-    assert "1. بحث الدين\n2. بحث الاختصاص" in content
+    # decoded before storing; the answer only (the reports are cards from metadata, D14)
+    assert created["content_md"] == f"## الخلاصة\nهويته {REAL_ID} [1] و[2]."
 
     refs = db["refs"][0]
     assert refs["wi_id"] == "wi-merged" and refs["cited_numbers"] == [1, 2]
@@ -168,9 +194,7 @@ def test_merged_title_without_a_task_label(db, codec):
     assert db["created"][0]["title"] == f"بحث موسّع: هويته {REAL_ID}"
 
 
-def test_reports_footer_and_merged_agg_output():
-    assert reports_footer([]) == ""
-    assert reports_footer(["أ", " ", "ب"]) == f"**{REPORTS_HEADING_AR}**\n1. أ\n2. ب"
+def test_merged_agg_output_drops_invalid_references():
     merged = _merged()
     merged.references.append({"n": 3, "bad": True})                  # no longer a Reference → dropped
     agg = merged_agg_output(merged)

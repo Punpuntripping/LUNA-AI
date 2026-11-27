@@ -343,6 +343,41 @@ def test_a_failed_merger_still_publishes_the_reports(turn_env, pipeline):
     assert events[-1]["type"] == "agent_run_finished"
 
 
+def test_a_merge_past_its_deadline_is_dropped_and_the_reports_published(turn_env, pipeline, monkeypatch):
+    """The merge may not eat the turn's pipeline budget: past its deadline the turn stops
+    waiting (without awaiting the task) and publishes the reports alone."""
+    import asyncio
+    from time import perf_counter
+
+    async def slow_merge(reports, **kw):
+        pipeline["merge"] = kw
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(W, "_merge", slow_merge)
+    monkeypatch.setattr(W, "merge_budget_s", lambda started: 0.3)
+    monkeypatch.setattr(W, "MERGE_MIN_S", 0.0)
+    t = perf_counter()
+    events = _turn(_ready(), plan_choice={"run_id": F.RUN, "option": "plan"})
+    assert perf_counter() - t < 10
+    assert "merge" in pipeline and pipeline["publish"]["merged"] is None
+    assert pipeline["summary"]["answer"].synthesis_md == "تقرير 1"
+    assert events[-1]["type"] == "agent_run_finished"
+
+
+def test_no_merge_without_time_left(turn_env, pipeline, monkeypatch):
+    monkeypatch.setattr(W, "merge_budget_s", lambda started: 30.0)     # under MERGE_MIN_S
+    _turn(_ready(), plan_choice={"run_id": F.RUN, "option": "plan"})
+    assert "merge" not in pipeline and pipeline["publish"]["merged"] is None
+    assert pipeline["summary"]["answer"].synthesis_md == "تقرير 1"
+
+
+def test_the_merge_budget_leaves_the_reserve(monkeypatch):
+    from time import perf_counter
+
+    budget = W.merge_budget_s(perf_counter() - 400)
+    assert 900 - 400 - W.MERGE_RESERVE_S - 2 < budget <= 900 - 400 - W.MERGE_RESERVE_S
+
+
 def test_no_usable_report_says_so(turn_env, pipeline):
     pipeline["reports"] = [_report(1, ok=False), _report(2, ok=False)]
     events = _turn(_ready(), plan_choice={"run_id": F.RUN, "option": "plan"})

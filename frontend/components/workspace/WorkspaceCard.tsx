@@ -37,6 +37,8 @@ const SUBTYPE_LABEL: Record<string, string> = {
   memory_file: "ذاكرة",
   legal_opinion: "رأي قانوني",
   legal_synthesis: "تحليل قانوني",
+  // The merged answer of an extended search (lib/contracts/extended-synthesis).
+  extended_synthesis: "بحث موسّع",
   // The «النصوص المثبّتة» card stores its kind as its subtype too; without this
   // line the pill showed the raw key.
   pinned_texts: KIND_LABEL.pinned_texts,

@@ -4,12 +4,13 @@
   publisher (``publish_search_result``): title = the request's title, its own
   references, forensic rows (``retrieval_artifacts`` + ``reranker_runs``) from its own
   URA — exactly what an ordinary deep search stores.
-- The merged answer → one more ``agent_search`` item, written here (no URA of its own,
-  so no forensic rows): its text ends with the code-written list of the reports it was
-  built from («التقارير التي بُني عليها هذا الجواب: …», D14); ``metadata.children`` =
-  the report item ids (the hook for the workspace-item relationships plan) and
-  ``metadata.extended_search = {run_id, titles, resolved}``; its references go to
-  ``workspace_item_references`` like the publisher's.
+- The merged answer → one more ``agent_search`` item through the merger's own publisher
+  (``extended_merger.publisher``): ``metadata.subtype = "extended_synthesis"``; its
+  ``content_md`` is the answer only; ``metadata`` carries the angle scoreboard, the
+  settled contradictions, the angles left out, the gaps and the reports it was built
+  from (D14 — the web item shows them as cards), with ``children`` = the report item
+  ids (the hook for the workspace-item relationships plan); its references go to
+  ``workspace_item_references``; no URA of its own, so no forensic rows.
 - One report usable (or ``merged`` is ``None``) → the reports only, no merged item.
 
 A failed publish never stops the others; any failure adds today's Arabic status line.
@@ -29,14 +30,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from agents.utils.tracking import track_stage
-
 from .models import ExtendedPlan, ExtendedSearchReport, MergedAnswer
 
 logger = logging.getLogger(__name__)
 
-#: D14 — the heading of the code-written list at the end of the merged answer.
-REPORTS_HEADING_AR = "التقارير التي بُني عليها هذا الجواب:"
 #: Same wording as ``_run_deep_search``'s publish-failure line.
 PUBLISH_FAILED_AR = (
     "تعذّر حفظ نتيجة البحث كبطاقة في مساحة العمل — "
@@ -56,14 +53,6 @@ class PublishedExtended:
 
 
 # --------------------------------------------------------------------------- helpers
-
-
-def reports_footer(titles: Sequence[str]) -> str:
-    """D14: «التقارير التي بُني عليها هذا الجواب:» + a numbered list (Latin digits)."""
-    titles = [t.strip() for t in titles if (t or "").strip()]
-    if not titles:
-        return ""
-    return "\n".join([f"**{REPORTS_HEADING_AR}**", *(f"{i}. {t}" for i, t in enumerate(titles, 1))])
 
 
 def _usable(reports: Sequence[ExtendedSearchReport]) -> list[ExtendedSearchReport]:
@@ -123,10 +112,10 @@ def _ura_results(reports: Sequence[ExtendedSearchReport]) -> list[Any]:
     return out
 
 
-def _publish_merged(
+async def _publish_merged(
     merged: MergedAnswer,
     usable: Sequence[ExtendedSearchReport],
-    child_ids: list[str],
+    reports: Sequence[ExtendedSearchReport],
     *,
     supabase: Any,
     user_id: str,
@@ -139,102 +128,37 @@ def _publish_merged(
     task_label: str | None,
     run_id: str | None,
 ) -> tuple[str, list[dict]]:
-    """Insert the merged item + its reference rows. Raises when the item insert fails."""
-    from backend.app.services.references_service import persist_item_references
-    from backend.app.services.workspace_service import create_workspace_item
+    """Insert the merged item (``extended_merger.publisher``: subtype
+    ``extended_synthesis``, the scoreboard / settled contradictions / angles left out /
+    the reports in ``metadata``, ``children`` = the reports' item ids) + its reference
+    rows. Raises when the item insert fails."""
+    from agents.agent_search import SearchPublishDeps
+    from agents.deep_search_v4.extended_merger.models import MergedPublishInput, MergerOutput
+    from agents.deep_search_v4.extended_merger.publisher import publish_merged_result
 
-    first = usable[0].agg_output
-    agg = merged_agg_output(
-        merged,
-        disclaimer_ar=getattr(first, "disclaimer_ar", "") or "",
-        model_used=MERGED_PROMPT_KEY,
-    )
-    titles = list(merged.report_titles) or [r.request.title for r in usable]
-    parts = [(merged.synthesis_md or "").rstrip(), reports_footer(titles)]
-    if agg.disclaimer_ar.strip():
-        parts.append("---\n\n" + agg.disclaimer_ar.strip())
-    content_md = _decode("\n\n".join(p for p in parts if p))
-    title = _merged_title(task_label, query)
-    gaps = [_decode(g) for g in merged.gaps]
-    resolved = [
-        {"topic": _decode(r.topic), "reports": list(r.reports), "decision": _decode(r.decision)}
-        for r in merged.resolved
-    ]
-    metadata: dict[str, Any] = {
-        "subtype": "legal_synthesis",
-        "confidence": merged.confidence,
-        "detail_level": detail_level,
-        "ura_log_id": "",
-        "gaps": gaps,
-        "prompt_key": MERGED_PROMPT_KEY,
-        "ref_count": len(agg.references),
-        "cited_count": len(agg.references),
-        "children": list(child_ids),
-        "extended_search": {
-            "run_id": run_id,
-            "titles": titles,
-            "resolved": resolved,
-            "client_side": plan.client_side,
-        },
-    }
-    with track_stage(
-        "publish.workspace_item",
-        conversation_id=conversation_id,
-        case_id=case_id,
-        agent_family="publish",
-        kind="agent_search",
-        message_id=message_id,
-        extended="merged",
-        children=len(child_ids),
-        title_chars=len(title),
-        content_md_chars=len(content_md),
-        confidence=merged.confidence,
-    ) as span:
-        row = create_workspace_item(
-            supabase,
-            user_id,
-            kind="agent_search",
-            created_by="agent",
-            title=title,
+    if not merged.merger:
+        raise RuntimeError("extended_search: the merged answer carries no merger output")
+    out = MergerOutput.model_validate(merged.merger)
+    ids = {r.index: r.item_id for r in reports}
+    out = out.model_copy(update={"reports": [e.model_copy(update={"item_id": ids.get(e.n)}) for e in out.reports]})
+    published = await publish_merged_result(
+        MergedPublishInput(
+            user_id=user_id,
             conversation_id=conversation_id,
+            output=out,
+            original_query=query,
+            detail_level=detail_level,
             case_id=case_id,
             message_id=message_id,
-            agent_family="deep_search",
-            content_md=content_md,
-            metadata=metadata,
+            task_label=_merged_title(task_label, query),
             describe_query=query,
-        )
-        item_id = row.get("item_id") or row.get("artifact_id") or ""
-        if not item_id:
-            raise RuntimeError("extended_search: merged publish returned no item_id")
-        try:
-            span.set(item_id=item_id, outcome="ok")
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            persist_item_references(
-                supabase,
-                wi_id=item_id,
-                references=list(agg.references),
-                ura_results=_ura_results(usable) or None,
-                cited_numbers=[r.n for r in agg.references],
-                ref_to_sub_queries={},
-            )
-        except Exception as exc:  # noqa: BLE001 - the item is stored; refs are best-effort
-            logger.warning("extended_search: merged references persist failed: %s", exc, exc_info=True)
-    event = {
-        "type": "workspace_item_created",
-        "item_id": item_id,
-        "kind": "agent_search",
-        "title": row.get("title", title),
-        "subtype": "legal_synthesis",
-        "created_by": "agent",
-        # The turn's primary item: message_service puts it FIRST in messages.artifact_ids
-        # (the chat message's citation target), while the event itself comes LAST so the
-        # clients' auto-open (the newest created item) opens the merged answer.
-        "primary": True,
-    }
-    return item_id, [event]
+            ura_results=_ura_results(usable),
+            client_side=plan.client_side,
+            run_id=run_id,
+        ),
+        SearchPublishDeps(supabase=supabase, logger=logger),
+    )
+    return published.item_id, list(published.sse_events)
 
 
 # --------------------------------------------------------------------------- publish
@@ -306,8 +230,8 @@ async def publish_extended(
     merged_id: str | None = None
     if merged is not None and len(usable) >= 2:
         try:
-            merged_id, merged_events = _publish_merged(
-                merged, usable, report_ids,
+            merged_id, merged_events = await _publish_merged(
+                merged, usable, reports,
                 supabase=supabase, user_id=user_id, conversation_id=conversation_id,
                 case_id=case_id, message_id=message_id, query=query, plan=plan,
                 detail_level=detail_level, task_label=task_label, run_id=run_id,
@@ -422,9 +346,7 @@ __all__ = [
     "MERGED_TITLE_PREFIX_AR",
     "PUBLISH_FAILED_AR",
     "PublishedExtended",
-    "REPORTS_HEADING_AR",
     "merged_agg_output",
     "publish_extended",
-    "reports_footer",
     "write_chat_summary",
 ]

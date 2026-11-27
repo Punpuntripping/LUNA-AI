@@ -67,6 +67,26 @@ SINGLE_SEARCH_EVENT = "deep_search.extended.single_search_fallback"
 
 #: Progress poll interval — the orchestrator's ``_PROGRESS_POLL_S``.
 _POLL_S = 0.2
+#: The click's run lives under message_service's ``LUNA_PIPELINE_TIMEOUT_S`` (900 s by
+#: default), and the reports are published only AFTER the merge — so the merge gets what
+#: the run has left minus this reserve for publishing + the chat summary. Past it the merge
+#: is dropped and the reports are published alone (the merger-failure path): a slow merge
+#: must never cost the user the reports they paid for. Measured 2026-11-24 offline: merges
+#: of 304–379 s, and one of 1,079 s on Wafer at peak (38.7k output tokens at ~36 tok/s).
+MERGE_RESERVE_S = 150.0
+#: With less than this left the merge is not started at all.
+MERGE_MIN_S = 90.0
+
+
+def merge_budget_s(started: float) -> float:
+    """Seconds the merge may take for a run that started at ``started`` (perf_counter)."""
+    try:
+        from shared.config import get_settings
+
+        total = float(get_settings().LUNA_PIPELINE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001
+        total = 900.0
+    return total - (perf_counter() - started) - MERGE_RESERVE_S
 
 DEFAULT_TASK_LABEL_AR = "بحث موسّع"
 
@@ -785,13 +805,22 @@ def make_deps_factory(
     return factory
 
 
-async def _drive(coro: Any, queue: "asyncio.Queue[dict]", box: dict) -> AsyncGenerator[dict, None]:
+async def _drive(
+    coro: Any, queue: "asyncio.Queue[dict]", box: dict, *, deadline: float | None = None,
+) -> AsyncGenerator[dict, None]:
     """Run ``coro`` as a task and yield its translated progress while it works (the
-    orchestrator's queue bridge). Its result lands in ``box["result"]``; it re-raises."""
+    orchestrator's queue bridge). Its result lands in ``box["result"]``; it re-raises.
+
+    ``deadline`` (``perf_counter`` time): past it, ``TimeoutError`` — the task is
+    cancelled and NOT awaited, so a model call that ignores the cancellation cannot hold
+    the turn (``asyncio.wait_for`` waits for the cancelled task; a hung call once outlived
+    it — angle mapper, 2026-11-23)."""
     orch = _orch()
     task = asyncio.create_task(coro)
     try:
         while not task.done():
+            if deadline is not None and perf_counter() >= deadline:
+                raise TimeoutError("deadline passed")
             try:
                 raw = await asyncio.wait_for(queue.get(), timeout=_POLL_S)
             except asyncio.TimeoutError:
@@ -1146,14 +1175,18 @@ async def _run_plan(
             merged_item: Any = None   # what publish stores as the merged answer (≥ 2 reports)
             answer: Any               # what the chat summary is written from
             if len(ok) >= 2:
+                budget = merge_budget_s(t0)
+                _set(span, merge_budget_s=round(budget))
                 try:
+                    if budget < MERGE_MIN_S:
+                        raise TimeoutError(f"no time left to merge ({budget:.0f}s)")
                     box = {}
                     async for prog in _drive(
                         _merge(
                             reports, query=pause.describe_query, recent_messages=recent, plan=plan,
                             view=view, supabase=supabase, user_id=user_id, conversation_id=conversation_id,
                         ),
-                        queue, box,
+                        queue, box, deadline=perf_counter() + budget,
                     ):
                         yield prog
                     merged_item = answer = box["result"]

@@ -24,6 +24,7 @@ export * from "./wi-preview";
 export * from "./files";
 export * from "./angles";
 export * from "./extended-plan";
+export * from "./extended-synthesis";
 
 // Pure helpers (mobile Phase 2 — see README "What lives here").
 export * from "./citations";

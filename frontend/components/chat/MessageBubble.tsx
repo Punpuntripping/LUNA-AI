@@ -820,6 +820,7 @@ const DEFINITE_SUBTYPE: Record<string, string> = {
   memory_file: "الذاكرة",
   legal_opinion: "الرأي القانوني",
   legal_synthesis: "التحليل القانوني",
+  extended_synthesis: "البحث الموسّع",
 };
 
 const DEFINITE_KIND: Record<WorkspaceItemKind, string> = {

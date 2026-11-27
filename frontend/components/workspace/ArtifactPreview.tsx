@@ -25,6 +25,12 @@ interface ArtifactPreviewProps {
    */
   headerActions?: ReactNode;
   /**
+   * Content rendered BEFORE the markdown body, inside the same scroll
+   * viewport. Used by AgentSearchViewer for the «بحث موسّع» merged answer's
+   * header + scoreboard (ExtendedSynthesisSections). Omitted → nothing.
+   */
+  header?: ReactNode;
+  /**
    * Additional content rendered after the markdown body, inside the same
    * scroll viewport. Used by AgentSearchViewer to append the ReferencePanel.
    */
@@ -71,6 +77,7 @@ export function ArtifactPreview({
   content,
   copyContent,
   headerActions,
+  header,
   footer,
   hideToolbar = false,
   className,
@@ -161,6 +168,7 @@ export function ArtifactPreview({
           className={cn("p-6 max-md:pb-20", hideToolbar ? "pt-6" : "pt-12")}
           dir="rtl"
         >
+          {header}
           {hasContent ? (
             <MarkdownRenderer
               content={content}
