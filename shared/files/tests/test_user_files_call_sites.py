@@ -133,7 +133,7 @@ TEXT_CORRECTIONS_NOT_APPLIED: dict[str, str] = {
 #: attachment's text: they apply the overlay too.
 SECTION_READERS_APPLYING: dict[str, str] = {
     "agents/utils/attachment_sections.py": "deep-search + writer sections, before _encode_sections",
-    "agents/deep_search_v4/extended/view.py": "«بحث موسّع» marked text, AFTER marking (offsets stay real)",
+    "agents/deep_search_v4/extended/view.py": "«بحث شامل» marked text, AFTER marking (offsets stay real)",
 }
 
 #: Code that works on POSITIONS or LENGTHS of the original text — it must never see

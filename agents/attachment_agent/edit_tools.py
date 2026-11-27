@@ -508,7 +508,7 @@ def stage_remove_thread(deps: AttachmentDeps, thread: str, evidence: str) -> str
            title=str((tmap.angle(seq) or {}).get("title") or ""))
     removed = sum(1 for e in deps.staged_edits if e.kind == "remove_thread" and e.args.get("map_id") == tmap.map_id)
     left = len(tmap.angles) - removed
-    note = " Fewer than two threads will be left: «بحث موسّع» needs two." if left < 2 else ""
+    note = " Fewer than two threads will be left: «بحث شامل» needs two." if left < 2 else ""
     return f"Staged: remove {tmap.thread_label(seq)} (applied after you finish).{note}"
 
 

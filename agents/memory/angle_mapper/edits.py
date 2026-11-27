@@ -74,7 +74,7 @@ CLIENT_FIELDS: tuple[str, ...] = ("side", "party", "basis", "confidence", "by_do
 #: Instead of ``sections``: add to / remove from the current refs.
 SECTION_DELTAS: tuple[str, ...] = ("add_sections", "remove_sections")
 
-#: «بحث موسّع» needs this many angles (``extended/eligibility.py``).
+#: «بحث شامل» needs this many angles (``extended/eligibility.py``).
 MIN_ANGLES_FOR_EXTENDED = 2
 #: Longest free text accepted in one field.
 MAX_TEXT_CHARS = 4_000
@@ -122,7 +122,7 @@ R_UNDO_BUSY = "تحليل الخيوط جارٍ الآن لهذه الملفات
 R_UNDO_NOT_REPLACED = (
     "لم تكتمل إعادة التحليل، فالخيوط الحالية هي نفسها التي كانت قبلها؛ لا يوجد ما يُتراجع عنه."
 )
-W_BELOW_TWO = "بقي في الخريطة أقل من خيطين؛ «بحث موسّع» يحتاج خيطين على الأقل."
+W_BELOW_TWO = "بقي في الخريطة أقل من خيطين؛ «بحث شامل» يحتاج خيطين على الأقل."
 
 
 @dataclass
@@ -142,7 +142,7 @@ class EditResult:
     seq: int | None = None
     #: Snapshot restore: the new map's id (the old one is replaced).
     map_id: str | None = None
-    #: After ``remove_angle``: angles left, and whether «بحث موسّع» lost its 2.
+    #: After ``remove_angle``: angles left, and whether «بحث شامل» lost its 2.
     angles_left: int | None = None
     below_two: bool = False
     warning: str = ""
@@ -663,7 +663,7 @@ def remove_angle(
     message_id: str | None = None,
 ) -> EditResult:
     """Remove thread ``A{seq}``. Done even when fewer than two threads are left —
-    then ``below_two`` / ``warning`` say «بحث موسّع» can no longer run on the map."""
+    then ``below_two`` / ``warning`` say «بحث شامل» can no longer run on the map."""
     kind, target = "remove_angle", f"A{seq}"
     ctx, ev, err = _start(supabase, map_id, user_id, evidence, kind, target)
     if err:

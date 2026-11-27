@@ -6,7 +6,7 @@ file into every conversation it is attached to (D15).
 
 ``user_files.content_md`` is never rewritten: its length drives segment-map and
 angle-map freshness, so a rewrite would re-segment the file, renumber its sections,
-break its threads and make «بحث موسّع» refuse it. Instead every reader that opts in
+break its threads and make «بحث شامل» refuse it. Instead every reader that opts in
 calls :func:`apply_text_corrections` on the whole text, or :func:`apply_to_sections`
 on the sections it hands out.
 

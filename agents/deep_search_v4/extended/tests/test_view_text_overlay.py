@@ -1,4 +1,4 @@
-"""«بحث موسّع» marked text carries the user's text corrections (attachment_agent.md §3.3).
+"""«بحث شامل» marked text carries the user's text corrections (attachment_agent.md §3.3).
 
 Applied AFTER marking: ``marked_text`` compares the paragraphs' offsets with the
 sections' stored offsets (``_paragraphs_fit``), so it must run on the REAL text — the
