@@ -190,6 +190,22 @@ def test_the_two_planner_prompt_variants():
     assert "at most the budget's number" not in SYSTEM_PROMPT_NO_BUDGET
 
 
+def test_a_typed_change_to_the_card_is_planned_from_the_users_version():
+    # owner 2026-11-27 (convo 4b55445a): the card's side words map to modes, the
+    # user's version is the plan, a request for both sides is the reason `full` needs.
+    for p in (SYSTEM_PROMPT_BUDGET, SYSTEM_PROMPT_NO_BUDGET):
+        assert "## When the user changes the plan card" in p
+        assert "«الأنظمة» = `reg_compliance_led`, «الأحكام» = `case_led`, «الأنظمة والأحكام» = `full`" in p
+        assert "the user's version is the plan" in p
+        assert "a user who asks for both sides on a search has given the reason" in p
+        assert "without the sides (code adds them)" in p
+        assert "{" not in p.split("## When the user changes the plan card")[1].split("## The focus")[0]
+    # Beyond the budget: room is made (a merge first) — only a budget mode has one.
+    assert "**Beyond the budget**" in SYSTEM_PROMPT_BUDGET and "first merge two searches" in SYSTEM_PROMPT_BUDGET
+    assert "Beyond the budget" not in SYSTEM_PROMPT_NO_BUDGET
+    assert "`<budget>` sets no limit, so the user's version is the plan" in SYSTEM_PROMPT_NO_BUDGET
+
+
 def test_the_search_instruction_is_the_plan_text():
     assert SEARCH_INSTRUCTION.startswith("How to use the analysis above (instruction for this search):\n1. ")
     assert SEARCH_INSTRUCTION.rstrip().endswith("say plainly that it remains open and what would decide it.")
