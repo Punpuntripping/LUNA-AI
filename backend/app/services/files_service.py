@@ -149,6 +149,21 @@ def my_files_enabled(user_id: Any) -> bool:
         return False
 
 
+def file_pinned_texts_ui_enabled(user_id: Any) -> bool:
+    """``FILE_PINNED_TEXTS_UI_ENABLED`` and (no ``FILE_PINNED_TEXTS_UI_USERS``
+    allow-list, or this ``users.user_id`` is on it). Off on error — off is
+    today's app: no pinned texts on the file, the card under «العناصر»."""
+    try:
+        settings = get_settings()
+        if not getattr(settings, "FILE_PINNED_TEXTS_UI_ENABLED", False):
+            return False
+        users = getattr(settings, "FILE_PINNED_TEXTS_UI_USERS", None)
+        allowed = {u.strip() for u in str(users or "").split(",") if u.strip()}
+        return not allowed or str(user_id or "") in allowed
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ============================================
 # summary_preview (§11 — the one implementation)
 # ============================================
@@ -670,6 +685,7 @@ def _get_from_files(supabase: SupabaseClient, user_id: str, item_id: str) -> Any
         "documents": documents,
         "sections": sections,
     })
+    _add_pinned_texts(supabase, user_id, str(row["file_id"]), sections, detail)
     return detail
 
 
@@ -964,7 +980,8 @@ def _sections(
             .select(
                 "seq, from_p, page_from, page_to, value, what, content_md, "
                 "owner_class, owner, brought_by, "   # seg-v5.2 (migration 220); NULL on older maps
-                "char_start, char_end"               # where the user's promotions fall (234)
+                "char_start, char_end"               # where the user's promotions (234) and a
+                                                     # pinned citation (_place_pins) fall
             )
             .eq("item_id", item_id)
             .order("seq")
@@ -995,9 +1012,87 @@ def _sections(
             "document_index": _document_index(docs, _int_or_none(r.get("from_p"))) if several else None,
             "content_md": str(r.get("content_md") or ""),
             **_section_owner(r),
+            # Read by ``_add_pinned_texts`` and removed there; never sent.
+            _POSITION_KEY: (_int_or_none(r.get("char_start")), _int_or_none(r.get("char_end"))),
         })
     documents = [{"name": name} for name, _a, _b in docs] if several else []
     return apply_to_sections(sections, fixes), documents
+
+
+#: A section's ``(char_start, char_end)`` inside the file's text, kept on the
+#: section dict between ``_sections`` and ``_add_pinned_texts``.
+_POSITION_KEY = "_position"
+
+
+def _file_pins(supabase: SupabaseClient, user_id: str, key: str) -> list:
+    """The pinned citations of one file (``key`` = its file id, or the item id on
+    the pre-files path), each with the library's current official wording —
+    exactly what the agents receive under the sections (``load_pins``: status
+    ``pinned``, the agent's switch respected). Never raises: ``[]``."""
+    try:
+        from agents.memory.citation_pins.store import load_pins
+
+        return list(load_pins(supabase, [key], user_id=user_id).get(key) or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("files: pinned texts unavailable for %s (%s)", key, type(exc).__name__)
+        return []
+
+
+def _pinned_text(pin: Any) -> dict:
+    return {
+        "article_id": str(pin.article_id),
+        "title": str(pin.title),
+        "text": str(pin.text),
+    }
+
+
+def _place_pins(sections: Optional[list[dict]], pins: list) -> list[dict]:
+    """Hang each pinned article under the shown section that cites it — the rule of
+    ``agents/utils/attachment_delivery.attach_pins``: a citation belongs to the
+    section whose ``char_start <= position < char_end``; an article cited twice in
+    one section is listed once there, cited in two sections it is listed under each.
+
+    Returns the pins of a file shown WITHOUT sections (``sections`` is None): each
+    article once, in document order. A citation inside a hidden section (letterhead,
+    repeat) or a section with no stored position is not shown.
+    """
+    ordered = sorted(pins, key=lambda p: int(getattr(p, "char_start", 0) or 0))
+    if sections is None:
+        seen: set[str] = set()
+        loose: list[dict] = []
+        for p in ordered:
+            if p.article_id not in seen:
+                seen.add(p.article_id)
+                loose.append(_pinned_text(p))
+        return loose
+    for p in ordered:
+        pos = int(p.char_start)
+        for s in sections:
+            start, end = s.get(_POSITION_KEY) or (None, None)
+            if start is None or end is None or not start <= pos < end:
+                continue
+            bucket = s.setdefault("pinned_texts", [])
+            if all(b["article_id"] != p.article_id for b in bucket):
+                bucket.append(_pinned_text(p))
+            break
+    return []
+
+
+def _add_pinned_texts(
+    supabase: SupabaseClient, user_id: str, key: str, sections: Optional[list[dict]], detail: dict
+) -> None:
+    """«النصوص المثبّتة» on the opened file (``FILE_PINNED_TEXTS_UI_*``): each shown
+    section gets ``pinned_texts``; a file shown as full text gets them on the file.
+    Always strips the sections' private positions. Flag off: nothing is read."""
+    try:
+        if file_pinned_texts_ui_enabled(user_id) and detail.get("content_md"):
+            pins = _file_pins(supabase, user_id, key)
+            loose = _place_pins(sections, pins) if pins else []
+            if loose:
+                detail["pinned_texts"] = loose
+    finally:
+        for s in sections or []:
+            s.pop(_POSITION_KEY, None)
 
 
 def _section_owner(row: dict) -> dict:
@@ -1087,6 +1182,7 @@ def get_library_file(supabase: SupabaseClient, user_id: str, item_id: str) -> Op
         "documents": documents,
         "sections": sections,
     })
+    _add_pinned_texts(supabase, user_id, item_id, sections, detail)
     return detail
 
 

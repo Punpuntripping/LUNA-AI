@@ -607,6 +607,15 @@ class Settings(BaseSettings):
     # users.user_id; empty = everyone. Env var name == field name.
     MY_FILES_ENABLED: bool = False
     MY_FILES_USERS: Optional[str] = None
+    # «النصوص المثبّتة» on the file (owner 2026-11-27): an opened file shows, under
+    # each section, the official articles that section cites (GET /files/{id}
+    # `pinned_texts`), and the pane lists the conversation's «النصوص المثبّتة»
+    # card under «الملفات» instead of «العناصر» (`pinned_texts` in /files/status).
+    # Display only: the card is still written and read by the agents as before.
+    # Also needs MY_FILES on. *_USERS: comma-separated users.user_id; empty =
+    # everyone. Env var name == field name.
+    FILE_PINNED_TEXTS_UI_ENABLED: bool = False
+    FILE_PINNED_TEXTS_UI_USERS: Optional[str] = None
 
     # ── Files in their own table — .claude/plans/my_files.md §4 (Phase 2) ────
     # Spec: .claude/plans/my_files_phase2.md §C. Migrations 221 + 222 first.

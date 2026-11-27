@@ -99,6 +99,21 @@ export interface FileSection {
   owner?: string | null;
   /** The party that filed or relies on the section, when it is not the owner. */
   brought_by?: string | null;
+  /**
+   * «النصوص المثبّتة» — the official articles this section cites, in the
+   * library's current wording. Empty or absent unless `FILE_PINNED_TEXTS_UI_*`
+   * is on for the user (and on an older backend).
+   */
+  pinned_texts?: FilePinnedText[];
+}
+
+/** One official article a file cites (`FILE_PINNED_TEXTS_UI_*`). */
+export interface FilePinnedText {
+  article_id: string;
+  /** «المادة 77 من نظام العمل». */
+  title: string;
+  /** The official wording. */
+  text: string;
 }
 
 /** `GET /files/{item_id}`. */
@@ -111,6 +126,11 @@ export interface LibraryFileDetail extends LibraryFile {
   documents: { name: string }[];
   /** null = no map or a stale map. */
   sections: FileSection[] | null;
+  /**
+   * A file shown as full text (`sections: null`): the articles it cites, each
+   * once. With sections they ride on each section instead.
+   */
+  pinned_texts?: FilePinnedText[];
 }
 
 // DELETE /files/{item_id} → 204
@@ -849,6 +869,13 @@ export interface FilesStatusResponse {
    * backend: off.
    */
   angle_maps?: boolean;
+  /**
+   * «النصوص المثبّتة» on the file, and the conversation's «النصوص المثبّتة»
+   * card listed under «الملفات» instead of «العناصر»
+   * (`FILE_PINNED_TEXTS_UI_*`). Only ever true with `enabled`. Absent on an
+   * older backend: off.
+   */
+  pinned_texts?: boolean;
 }
 
 // ------------------------------------------

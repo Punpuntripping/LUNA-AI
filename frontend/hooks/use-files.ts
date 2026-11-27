@@ -37,7 +37,12 @@ export const fileKeys = {
  * - `settled` tells a page "the answer is in" (to choose between the page and
  *   not-found without flashing either).
  */
-export function useFilesStatus(): { enabled: boolean; settled: boolean; angleMaps: boolean } {
+export function useFilesStatus(): {
+  enabled: boolean;
+  settled: boolean;
+  angleMaps: boolean;
+  pinnedTexts: boolean;
+} {
   const userId = useAuthStore((s) => s.user?.user_id ?? null);
   const query = useQuery({
     queryKey: fileKeys.status(userId),
@@ -50,13 +55,17 @@ export function useFilesStatus(): { enabled: boolean; settled: boolean; angleMap
     refetchOnMount: false,
     retry: 1,
   });
-  if (!MY_FILES_ENABLED) return { enabled: false, settled: true, angleMaps: false };
+  if (!MY_FILES_ENABLED) {
+    return { enabled: false, settled: true, angleMaps: false, pinnedTexts: false };
+  }
   const enabled = query.data?.enabled === true;
   return {
     enabled,
     settled: query.isSuccess || query.isError,
     // «الأوجه» (angle_map_ui.md): an explicit true only, and never without «الملفات».
     angleMaps: enabled && query.data?.angle_maps === true,
+    // «النصوص المثبّتة» under «الملفات»: same rule.
+    pinnedTexts: enabled && query.data?.pinned_texts === true,
   };
 }
 

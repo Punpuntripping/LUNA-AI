@@ -32,6 +32,7 @@ import {
   type SectionOwnerSide,
 } from "@/lib/contracts";
 import { FILES_COPY } from "./copy";
+import { PinnedTexts } from "./PinnedTexts";
 
 interface FileSectionsProps {
   sections: FileSection[];
@@ -261,6 +262,7 @@ const SectionRow = memo(function SectionRow({
           className="border-t border-border/60 bg-muted/20 px-4 py-3"
         >
           <SectionBody content={section.content_md} eager={eager} />
+          <PinnedTexts pins={section.pinned_texts} />
         </div>
       )}
     </li>

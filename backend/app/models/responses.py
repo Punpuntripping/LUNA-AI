@@ -444,6 +444,14 @@ class LibraryFileListResponse(BaseModel):
     type_counts: dict[str, int]              # keys: a FileDocType, or "untyped"
 
 
+class FilePinnedText(BaseModel):
+    """«النصوص المثبّتة» — one official article the file cites, in the library's
+    current wording (FILE_PINNED_TEXTS_UI_*)."""
+    article_id: str
+    title: str                               # «المادة 77 من نظام العمل»
+    text: str
+
+
 class FileSection(BaseModel):
     """One shown section of an opened file (boilerplate / repeats left out)."""
     seq: int
@@ -457,6 +465,8 @@ class FileSection(BaseModel):
     owner_class: Optional[str] = None        # fixed key (claimant, respondent, court, expert…)
     owner: Optional[str] = None              # the document's own role words («المدعى عليه الثاني»)
     brought_by: Optional[str] = None         # the party that filed it, when not the owner
+    # The official articles this section cites. Empty with FILE_PINNED_TEXTS_UI off.
+    pinned_texts: list[FilePinnedText] = []
 
 
 class FileDocument(BaseModel):
@@ -470,6 +480,9 @@ class LibraryFileDetail(LibraryFile):
     content_md: str = ""                     # full extracted text
     documents: list[FileDocument] = []       # empty unless 2+ documents
     sections: Optional[list[FileSection]] = None  # None = no map or a stale map
+    # A file shown as full text (no sections): the articles it cites, each once.
+    # With sections they ride on each section instead.
+    pinned_texts: list[FilePinnedText] = []
 
 
 class FileMatch(BaseModel):
@@ -491,6 +504,9 @@ class FilesStatusResponse(BaseModel):
     enabled: bool
     #: «الأوجه» in an opened file (ANGLE_MAP_UI_*) — only ever true with ``enabled``.
     angle_maps: bool = False
+    #: «النصوص المثبّتة» on the file and the card under «الملفات»
+    #: (FILE_PINNED_TEXTS_UI_*) — only ever true with ``enabled``.
+    pinned_texts: bool = False
 
 
 # ── «الأوجه» — GET /api/v1/files/angle-maps[/{map_id}] (.claude/plans/angle_map_ui.md)

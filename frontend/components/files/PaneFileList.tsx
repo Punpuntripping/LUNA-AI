@@ -9,6 +9,7 @@ import {
   workspaceAttachmentCardModel,
 } from "@/lib/contracts";
 import type { WorkspaceItem } from "@/types";
+import { WorkspaceCard } from "@/components/workspace/WorkspaceCard";
 import { FileCard } from "./FileCard";
 import { FILES_COPY } from "./copy";
 
@@ -16,6 +17,12 @@ interface PaneFileListProps {
   conversationId: string;
   /** The conversation's `attachment` items (already filtered by kind). */
   items: WorkspaceItem[] | undefined;
+  /**
+   * The conversation's «النصوص المثبّتة» card, when it is listed here instead of
+   * under «العناصر» (`FILE_PINNED_TEXTS_UI_*`). Shown above the files, as the
+   * same card «العناصر» showed.
+   */
+  pinnedItems?: WorkspaceItem[];
   isLoading: boolean;
 }
 
@@ -28,7 +35,7 @@ interface PaneFileListProps {
  * while a chat chip highlights it, and every user-initiated open goes through
  * `trackWiOpened` (product_analytics §3b) before the pane switches to it.
  */
-export function PaneFileList({ conversationId, items, isLoading }: PaneFileListProps) {
+export function PaneFileList({ conversationId, items, pinnedItems, isLoading }: PaneFileListProps) {
   const openWorkspaceItem = useChatStore((s) => s.openWorkspaceItem);
   const highlightedItemId = useChatStore(
     (s) => s.workspaceByConversation[conversationId]?.highlightedItemId ?? null,
@@ -51,6 +58,19 @@ export function PaneFileList({ conversationId, items, isLoading }: PaneFileListP
     );
   }
 
+  const pinned = pinnedItems ?? [];
+  const pinnedCards = pinned.map((item) => (
+    <WorkspaceCard
+      key={item.item_id}
+      item={item}
+      onClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
+    />
+  ));
+
+  if (sorted.length === 0 && pinned.length > 0) {
+    return <div className="space-y-1.5 p-2">{pinnedCards}</div>;
+  }
+
   if (sorted.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
@@ -62,6 +82,7 @@ export function PaneFileList({ conversationId, items, isLoading }: PaneFileListP
 
   return (
     <div className="space-y-1.5 p-2">
+      {pinnedCards}
       {sorted.map((item) => (
         <FileCard
           key={item.item_id}

@@ -97,6 +97,7 @@ async def files_status(
     return FilesStatusResponse(
         enabled=enabled,
         angle_maps=enabled and angle_maps_service.angle_maps_ui_enabled(user_id),
+        pinned_texts=enabled and files_service.file_pinned_texts_ui_enabled(user_id),
     )
 
 

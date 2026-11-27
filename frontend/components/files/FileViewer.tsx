@@ -18,6 +18,7 @@ import { FileTypePill } from "./FileTypePill";
 import { FileTypeTile, fileFamilyStyle } from "./file-type-style";
 import { FileSections } from "./FileSections";
 import { FILES_COPY } from "./copy";
+import { PinnedTexts } from "./PinnedTexts";
 import { ReattachAdvice } from "./ReattachAdvice";
 
 interface FileViewerProps {
@@ -123,7 +124,11 @@ export function FileViewer({ file, variant = "page", notice }: FileViewerProps) 
         {file.sections ? (
           <FileSections sections={file.sections} documents={file.documents ?? []} />
         ) : (
-          <FullText text={text} />
+          <>
+            <FullText text={text} />
+            {/* No sections to hang them under: the file's pinned texts, once each. */}
+            <PinnedTexts pins={file.pinned_texts} className="mt-4" />
+          </>
         )}
       </div>
     </div>

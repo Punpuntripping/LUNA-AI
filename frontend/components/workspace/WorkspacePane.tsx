@@ -10,7 +10,7 @@ import {
   useConversationWorkspace,
 } from "@/hooks/use-workspace";
 import { useConversationDetail } from "@/hooks/use-conversations";
-import { useFilesEnabled, useLibraryFile } from "@/hooks/use-files";
+import { useFilesStatus, useLibraryFile } from "@/hooks/use-files";
 import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { FileViewer } from "@/components/files/FileViewer";
 import { PaneFileList } from "@/components/files/PaneFileList";
@@ -95,21 +95,28 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const inDetailMode = openItemId !== null;
   // On for THIS user only (build flag + GET /files/status); loading or a
   // failed status call keeps the pane exactly as it was.
-  const filesOn = useFilesEnabled();
+  const { enabled: filesOn, pinnedTexts: pinnedInFiles } = useFilesStatus();
   const { showUpcoming } = useFilesUi();
 
   // --- «العناصر» / «الملفات» (flag on) -------------------------------------
   const highlightedItemId = useChatStore(
     (s) => s.workspaceByConversation[conversationId]?.highlightedItemId ?? null,
   );
-  const { otherItems, fileItems } = useMemo(() => {
+  // «النصوص المثبّتة» (FILE_PINNED_TEXTS_UI_*): the card is listed under
+  // «الملفات», beside the files whose sections now show the same texts. It is
+  // still the same item, written and read by the agents as before.
+  const inFilesTab = (kind: string | undefined) =>
+    kind === "attachment" || (pinnedInFiles && kind === "pinned_texts");
+  const { otherItems, fileItems, pinnedItems } = useMemo(() => {
     const all = listData?.items;
-    if (!all) return { otherItems: undefined, fileItems: undefined };
+    if (!all) return { otherItems: undefined, fileItems: undefined, pinnedItems: undefined };
+    const pinnedHere = (i: WorkspaceItem) => pinnedInFiles && i.kind === "pinned_texts";
     return {
-      otherItems: all.filter((i) => i.kind !== "attachment"),
+      otherItems: all.filter((i) => i.kind !== "attachment" && !pinnedHere(i)),
       fileItems: all.filter((i) => i.kind === "attachment"),
+      pinnedItems: all.filter(pinnedHere),
     };
-  }, [listData]);
+  }, [listData, pinnedInFiles]);
 
   // The tab is per conversation (this pane is reused across conversations).
   const [tabState, setTabState] = useState<{ conversationId: string; tab: PaneTab }>(
@@ -148,7 +155,7 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
           : undefined;
     setApplied({ open: openKey, highlight: highlightKey });
     if (kind) {
-      const wanted: PaneTab = kind === "attachment" ? "files" : "items";
+      const wanted: PaneTab = inFilesTab(kind) ? "files" : "items";
       if (wanted !== tab) setTabState({ conversationId, tab: wanted });
     }
   }
@@ -196,6 +203,7 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
                 <PaneFileList
                   conversationId={conversationId}
                   items={fileItems}
+                  pinnedItems={pinnedItems}
                   isLoading={listLoading}
                 />
               </PaneFilesTab>

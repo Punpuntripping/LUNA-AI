@@ -426,7 +426,8 @@ def test_status_reports_angle_maps_only_with_both_switches(client_for):
         ({"ANGLE_MAP_UI_ENABLED": True, "MY_FILES_ENABLED": False}, {"enabled": False, "angle_maps": False}),
     ):
         res = client_for(sb, **settings).get("/api/v1/files/status")
-        assert res.status_code == 200 and res.json() == want
+        # `pinned_texts` (FILE_PINNED_TEXTS_UI_*) is never set here.
+        assert res.status_code == 200 and res.json() == {**want, "pinned_texts": False}
 
 
 def test_routes_are_feature_off_without_the_ui_switch(client_for):

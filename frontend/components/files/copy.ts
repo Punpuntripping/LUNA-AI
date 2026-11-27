@@ -71,6 +71,8 @@ export const FILES_COPY = {
   ownerFilterLabel: "تصفية حسب صاحب القسم",
   broughtBy: "قدّمه",
   emptySection: "لا يحتوي هذا القسم على نص",
+  /** The disclosure under a section (and under a full-text file). */
+  pinnedTexts: "النصوص المثبّتة",
   noText: "لا يوجد نص مستخرج لهذا الملف",
   backToLibrary: "الملفات",
   fileNotFound: "لم نجد هذا الملف في ملفاتك",

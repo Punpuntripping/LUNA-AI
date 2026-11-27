@@ -903,8 +903,9 @@ def test_status_route_is_always_200_and_reads_no_file(client_for):
     ):
         res = client_for(sb, **kwargs).get("/api/v1/files/status")
         assert res.status_code == 200, res.text
-        # `angle_maps` (angle_map_ui.md): off here — ANGLE_MAP_UI_* is not set.
-        assert res.json() == {"enabled": want, "angle_maps": False}
+        # `angle_maps` (angle_map_ui.md) and `pinned_texts`: off here — their
+        # *_UI_* switches are not set.
+        assert res.json() == {"enabled": want, "angle_maps": False, "pinned_texts": False}
         assert res.headers["Cache-Control"] == "private, no-store"
     assert sb.selects == [] and sb.updates == []
 
@@ -1284,3 +1285,174 @@ def test_attach_a_shared_file_stays_listed_when_its_first_conversation_is_delete
     assert [f["file_id"] for f in out["files"]] == [a["item_id"]]
     assert out["files"][0]["item_id"] == copy_row["item_id"]     # the card opens the live copy
     assert out["files"][0]["conversation_id"] == CONV_B
+
+
+# ===========================================================================
+# 11. «النصوص المثبّتة» on the file (FILE_PINNED_TEXTS_UI_*)
+# ===========================================================================
+
+ART_77 = "a7777777-0000-0000-0000-000000000077"
+ART_80 = "a8080808-0000-0000-0000-000000000080"
+
+
+def _pin(article_id: str, at: int, number: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        article_id=article_id, char_start=at, char_end=at + 9,
+        title=f"المادة {number} من نظام العمل", text=f"النص الرسمي للمادة {number}.",
+    )
+
+
+@pytest.fixture
+def pins_world(monkeypatch):
+    """Turns the display switch on (with MY_FILES) and replaces ``load_pins`` with a
+    recorder. Returns ``(set_pins, calls)``."""
+    from agents.memory.citation_pins import store as pins_store
+
+    state: dict = {"pins": [], "calls": []}
+
+    def fake_load_pins(_sb, item_ids, *, user_id=None):
+        ids = list(item_ids)
+        state["calls"].append((ids, user_id))
+        return {ids[0]: list(state["pins"])} if state["pins"] else {}
+
+    monkeypatch.setattr(pins_store, "load_pins", fake_load_pins)
+
+    def on(users: Optional[str] = None):
+        monkeypatch.setattr(fs, "get_settings", lambda: SimpleNamespace(
+            MY_FILES_ENABLED=True, MY_FILES_USERS=None,
+            FILE_PINNED_TEXTS_UI_ENABLED=True, FILE_PINNED_TEXTS_UI_USERS=users,
+        ))
+
+    def set_pins(pins: list) -> None:
+        state["pins"] = pins
+
+    return on, set_pins, state["calls"]
+
+
+def _positioned(item_id: str) -> list[dict]:
+    rows = [
+        seg(item_id, 1, "boilerplate", what="ترويسة"),
+        seg(item_id, 2, "core", what="الوقائع"),
+        seg(item_id, 3, "core", what="الأسباب"),
+        seg(item_id, 4, "core", what="المنطوق"),
+    ]
+    for row, (start, end) in zip(rows, ((0, 10), (10, 30), (30, 60), (60, 80))):
+        row["char_start"], row["char_end"] = start, end
+    return rows
+
+
+def test_detail_pinned_texts_hang_under_the_section_that_cites_them(pins_world, data_path):
+    on, set_pins, calls = pins_world
+    on()
+    a = att()
+    iid = a["item_id"]
+    sb = FakeSupabase(
+        workspace_items=[a], conversations=conversations(),
+        attachment_segment_maps=[smap(iid, len(SAMPLE_TEXT))],
+        attachment_segments=_positioned(iid),
+    )
+    set_pins([
+        _pin(ART_80, 40, "80"),     # الأسباب
+        _pin(ART_77, 12, "77"),     # الوقائع
+        _pin(ART_77, 20, "77"),     # الوقائع again → listed once there
+        _pin(ART_77, 35, "77"),     # الأسباب too → listed again under it
+        _pin(ART_80, 5, "80"),      # inside the hidden letterhead → not shown
+        _pin(ART_80, 500, "80"),    # past every section → not shown
+    ])
+    out = fs.get_library_file(sb, USER, iid)
+
+    by_what = {s["what"]: s for s in out["sections"]}
+    assert [p["article_id"] for p in by_what["الوقائع"]["pinned_texts"]] == [ART_77]
+    assert [p["article_id"] for p in by_what["الأسباب"]["pinned_texts"]] == [ART_77, ART_80]   # document order
+    assert "pinned_texts" not in by_what["المنطوق"]
+    assert by_what["الوقائع"]["pinned_texts"][0] == {
+        "article_id": ART_77, "title": "المادة 77 من نظام العمل", "text": "النص الرسمي للمادة 77.",
+    }
+    assert "pinned_texts" not in out                      # with sections they ride on the sections
+    for s in out["sections"]:
+        assert "_position" not in s
+    # read once, under the file's key (the file id on the user_files path), as this user
+    [(keys, user_id)] = calls
+    assert keys == [str(out.get("file_id") or iid)] and user_id == USER
+
+    # …and through the response model
+    from backend.app.models.responses import LibraryFileDetail
+
+    body = LibraryFileDetail.model_validate(out).model_dump(mode="json")
+    assert [p["title"] for p in body["sections"][1]["pinned_texts"]] == ["المادة 77 من نظام العمل",
+                                                                          "المادة 80 من نظام العمل"]
+    assert body["sections"][2]["pinned_texts"] == [] and body["pinned_texts"] == []
+
+
+def test_detail_pinned_texts_on_a_file_shown_as_full_text(pins_world, data_path):
+    on, set_pins, _calls = pins_world
+    on()
+    a = att()
+    sb = FakeSupabase(workspace_items=[a], conversations=conversations())     # no map
+    set_pins([_pin(ART_80, 40, "80"), _pin(ART_77, 3, "77"), _pin(ART_80, 9, "80")])
+    out = fs.get_library_file(sb, USER, a["item_id"])
+    assert out["sections"] is None
+    assert [p["article_id"] for p in out["pinned_texts"]] == [ART_77, ART_80]   # once each, document order
+
+
+def test_detail_pinned_texts_off_reads_nothing_and_adds_nothing(pins_world, monkeypatch, data_path):
+    on, set_pins, calls = pins_world
+    on(users=OTHER_USER)                                   # on, but not for this user
+    a = att()
+    iid = a["item_id"]
+    sb = FakeSupabase(
+        workspace_items=[a], conversations=conversations(),
+        attachment_segment_maps=[smap(iid, len(SAMPLE_TEXT))],
+        attachment_segments=_positioned(iid),
+    )
+    set_pins([_pin(ART_77, 12, "77")])
+    out = fs.get_library_file(sb, USER, iid)
+    assert calls == []
+    assert "pinned_texts" not in out
+    for s in out["sections"]:
+        assert "pinned_texts" not in s and "_position" not in s
+
+
+def test_detail_pinned_texts_no_pins_leaves_the_file_as_it_was(pins_world, data_path):
+    on, _set_pins, calls = pins_world
+    on()
+    a = att()
+    iid = a["item_id"]
+    sb = FakeSupabase(
+        workspace_items=[a], conversations=conversations(),
+        attachment_segment_maps=[smap(iid, len(SAMPLE_TEXT))],
+        attachment_segments=_positioned(iid),
+    )
+    out = fs.get_library_file(sb, USER, iid)
+    assert len(calls) == 1 and "pinned_texts" not in out
+    assert all("pinned_texts" not in s for s in out["sections"])
+
+
+def test_pinned_texts_flag_rule_and_env_names(monkeypatch):
+    from shared.config import Settings
+
+    def settings(enabled, users=None):
+        return lambda: SimpleNamespace(FILE_PINNED_TEXTS_UI_ENABLED=enabled, FILE_PINNED_TEXTS_UI_USERS=users)
+
+    monkeypatch.setattr(fs, "get_settings", settings(False))
+    assert fs.file_pinned_texts_ui_enabled(USER) is False
+    monkeypatch.setattr(fs, "get_settings", settings(True))
+    assert fs.file_pinned_texts_ui_enabled(USER) is True
+    monkeypatch.setattr(fs, "get_settings", settings(True, f" {OTHER_USER} , "))
+    assert fs.file_pinned_texts_ui_enabled(USER) is False
+    assert fs.file_pinned_texts_ui_enabled(OTHER_USER) is True
+    for field in ("FILE_PINNED_TEXTS_UI_ENABLED", "FILE_PINNED_TEXTS_UI_USERS"):
+        info = Settings.model_fields[field]
+        assert info.validation_alias is None and info.alias is None
+
+
+def test_status_route_pinned_texts_only_with_the_feature(client_for, monkeypatch):
+    sb = FakeSupabase(workspace_items=[att()], conversations=conversations())
+    for my_files, users, want in ((True, None, True), (True, OTHER_USER, False), (False, None, False)):
+        c = client_for(sb, enabled=my_files)
+        monkeypatch.setattr(fs, "get_settings", lambda my_files=my_files, users=users: SimpleNamespace(
+            MY_FILES_ENABLED=my_files, MY_FILES_USERS=None,
+            FILE_PINNED_TEXTS_UI_ENABLED=True, FILE_PINNED_TEXTS_UI_USERS=users,
+        ))
+        res = c.get("/api/v1/files/status")
+        assert res.status_code == 200 and res.json()["pinned_texts"] is want
