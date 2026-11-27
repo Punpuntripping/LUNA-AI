@@ -35,6 +35,7 @@ from agents.tool_repository.add_user_template import (
     USER_COL,
 )
 from agents.utils.tracking import track_stage
+from shared.attachments.overlay import correct_text
 from shared.files import store as files_store
 from agents.utils.usage_sink import record_call
 
@@ -288,6 +289,14 @@ def _load_content_md(
     content_md = (data.get("content_md") or "").strip()
     if not content_md:
         return None
+    # The template is cleaned from the user's file: its text fixes
+    # (attachment_agent.md §3.3) apply, on the REAL text, before the codec
+    # encodes it. ``file_id`` when the read switch selected it; none / a failed
+    # read = the stored text.
+    content_md = correct_text(
+        supabase, content_md, item_id=item_id, user_id=user_id,
+        **({"file_id": data.get("file_id")} if "file_id" in data else {}),
+    )
     title = data.get("title")
     return (title, content_md)
 

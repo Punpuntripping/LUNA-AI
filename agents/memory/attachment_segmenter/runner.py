@@ -33,7 +33,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
@@ -42,6 +42,8 @@ from pydantic_ai.usage import RunUsage
 from agents.utils.segmenter_flags import segmenter_enabled
 from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import collect_llm_calls, in_scope
+from shared.attachments.overlay import corrections_for_rows
+from shared.attachments.text_corrections import apply_text_corrections
 from shared.files import store as files_store
 
 from . import store
@@ -448,6 +450,27 @@ def _plans(
 # ---------------------------------------------------------------------------
 
 
+def _text_fixes(supabase: Any, rows: Sequence[Mapping[str, Any]], user_id: str) -> dict[str, list]:
+    """``{item_id: its file's active text corrections}`` (attachment_agent.md §3.3)
+    for the loaded rows — one read. ``{}`` with none, or on any failure (the
+    model then reads the stored text, as before)."""
+    return corrections_for_rows(supabase, rows, user_id=user_id or None)
+
+
+def _for_model(paragraphs: Sequence[Paragraph], fixes: Sequence[Any] | None) -> Sequence[Paragraph]:
+    """The paragraphs as the MODEL reads them: each text with the file's text
+    corrections. Numbers, pages and offsets are unchanged, so the cuts and the
+    calls are today's; repair, repeats and the stored rows keep the REAL
+    paragraphs. No fixes → the same sequence."""
+    if not fixes:
+        return paragraphs
+    out: list[Paragraph] = []
+    for p in paragraphs:
+        text = apply_text_corrections(p.text, fixes)
+        out.append(p if text == p.text else replace(p, text=text))
+    return out
+
+
 def _load_item(supabase: Any, item_id: str) -> dict | None:
     # Files in their own table (my_files_phase2.md §C4). No user before the
     # read: with a *_USERS allow-list set this stays on the conversation item.
@@ -587,11 +610,16 @@ async def _run(
     # calls are told, and the sections are stamped below.
     layer = text_layer_pages(metadata)
 
+    # The user's text fixes (attachment_agent.md §3.3) reach the MODEL only: the
+    # repair, the repeats and the stored rows keep the REAL paragraphs / content_md,
+    # and content_chars stays the real length (map freshness).
+    fixes = await asyncio.to_thread(_text_fixes, supabase, [row], user_id)
+
     # وضع السرية — encode everything the model reads (the user's words included, since
     # they are part of the message), persist new fakes first.
     codec = _codec_for(supabase, user_id)
     plans, split_info = _plans(
-        paragraphs,
+        _for_model(paragraphs, fixes.get(item_id)),
         content_chars=len(content_md),
         doc_type=doc_type,
         title=str(row.get("title") or ""),
@@ -988,9 +1016,19 @@ async def _run_bundle(
     for paras, span_k, layer_k in zip(local, spans, layers):
         marks.update(marks_for(paras, layer_k, first_n=span_k.first_p))
 
+    # The members' text fixes reach the model only — as in ``_run``.
+    fixes = await asyncio.to_thread(_text_fixes, supabase, live, user_id)
+    model_paragraphs = list(paragraphs)
+    for span_k in spans:
+        mine = fixes.get(span_k.item_id)
+        if mine and span_k.last_p >= span_k.first_p:
+            model_paragraphs[span_k.first_p - 1:span_k.last_p] = _for_model(
+                paragraphs[span_k.first_p - 1:span_k.last_p], mine,
+            )
+
     codec = _codec_for(supabase, user_id)
     plans, split_info = _bundle_plans(
-        paragraphs, files, chars=total_chars, doc_type=doc_type,
+        model_paragraphs, files, chars=total_chars, doc_type=doc_type,
         encode=lambda text: _enc(codec, text), user_words=user_words, marks=marks,
     )
     if not preview:

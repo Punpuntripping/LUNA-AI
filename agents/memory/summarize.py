@@ -34,6 +34,8 @@ from agents.memory.artifact_summarizer import (
 )
 from agents.utils.tracking import track_stage
 from agents.utils.usage_sink import collect_llm_calls, in_scope
+from shared.attachments.overlay import corrections_for_rows
+from shared.attachments.text_corrections import apply_text_corrections
 from shared.files import store as files_store
 from shared.observability import get_logfire
 
@@ -537,6 +539,15 @@ async def summarize_workspace_item(
             _user_id = str(row.get("user_id") or "")
             _codec = _summarize_codec(supabase, _user_id)
             _source_length = len(content_md)
+            # An uploaded file's text fixes (attachment_agent.md §3.3) reach the
+            # model; ``_source_length`` above stays the REAL length, else
+            # resummarize_dirty_items would see the summary as stale forever.
+            # None / a failed read = the stored text.
+            if kind == "attachment":
+                _fixes = corrections_for_rows(
+                    supabase, [row], user_id=_user_id or None,
+                ).get(str(row.get("item_id") or item_id))
+                content_md = apply_text_corrections(content_md, _fixes)
             content_md = _enc(_codec, content_md)
 
             if len(content_md) < MIN_CONTENT_LENGTH_CHARS:

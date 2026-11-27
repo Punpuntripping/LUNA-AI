@@ -21,6 +21,8 @@ from dataclasses import replace
 from typing import Any
 
 from agents.utils.attachment_delivery import Section, attach_pins, sections_from_rows
+from shared.attachments.overlay import corrections_for_item_ids
+from shared.attachments.text_corrections import apply_to_sections
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,17 @@ def _encode_sections(sections: list[Section]) -> list[Section]:
         )
         for s in sections
     ]
+
+
+def _text_fixes(supabase: Any, maps: dict, user_id: str) -> dict[str, list]:
+    """``{item_id: the file's active text corrections}`` — ONE read for every item,
+    keyed by the file ``load_segment_maps`` already resolved (``StoredMap.file_key``;
+    no second lookup). The attachment agent's flag off for the user → ``{}`` with no
+    request (``overlay.corrections_for_item_ids``). Never raises."""
+    if not maps:
+        return {}
+    keys = {str(i): getattr(m, "file_key", None) for i, m in maps.items()}
+    return corrections_for_item_ids(supabase, list(keys), user_id=user_id or None, file_keys=keys)
 
 
 def _pins_on(user_id: str) -> bool:
@@ -122,10 +135,17 @@ async def wait_and_load_sections(
         logger.warning("wait_and_load_sections: load failed", exc_info=True)
         return {}, telemetry
 
+    # The user's text fixes (attachment_agent.md §3.3), keyed by each item's file:
+    # applied to the REAL section text BEFORE the codec encodes it. Positions stay
+    # on the original text (pins are placed by them). None / a failed read = as is.
+    fixes = await asyncio.to_thread(_text_fixes, supabase, maps or {}, user_id)
     out: dict[str, list[Section]] = {}
     for item_id, stored in (maps or {}).items():
         sections = sections_from_rows(getattr(stored, "segments", None) or [])
         if sections:
+            mine = fixes.get(str(item_id))
+            if mine:
+                sections = apply_to_sections(sections, mine)
             out[str(item_id)] = _encode_sections(sections) if encode else sections
     telemetry["segments.loaded"] = sorted(out)
 

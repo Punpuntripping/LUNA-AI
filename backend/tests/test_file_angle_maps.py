@@ -346,6 +346,38 @@ def test_get_one_map_labels_and_only_the_sections_in_use(one_map):
     assert m["left_out"] == [{"item_id": ITEM_B1, "title": "عقد توريد", "reason": "skipped_no_map"}]
 
 
+@pytest.mark.parametrize("mode", ["fixed", "none", "down", "flag-off"])
+def test_get_one_map_section_text_carries_the_users_text_fixes(one_map, mode, monkeypatch):
+    """The AngleSectionDialog text (attachment_agent.md §3.3): a fix of a document's
+    file applies to that document's sections only; none / a failed read / the
+    attachment agent off for the user (no request at all) = stored."""
+    from shared.attachments import text_corrections as tc
+    from shared.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "ATTACHMENT_AGENT_ENABLED", mode != "flag-off")
+    monkeypatch.setattr(get_settings(), "ATTACHMENT_AGENT_USERS", None)
+    tc.reset_backoff()
+    sb = _world()
+    sb.tables["attachment_text_corrections"] = [] if mode == "none" else [{
+        "id": "c1", "file_id": ITEM_A1, "user_id": USER, "wrong_text": "الطلبات", "right_text": "المطالبات",
+        "occurrences": 1, "evidence": "صحح الكلمة", "created_at": "2026-11-27T10:00:00+00:00",
+        "reverted_at": None,
+    }]
+    if mode == "down":
+        sb.fail_tables.add("attachment_text_corrections")
+    try:
+        m = ams.get_angle_map(sb, USER, MAP_A)
+    finally:
+        tc.reset_backoff()
+    texts = {s["ref"]: s["content_md"] for s in m["sections"]}
+    assert texts["D1.S1"] == ("نص المطالبات" if mode == "fixed" else "نص الطلبات")
+    if mode == "flag-off":
+        assert [t for t, _c in sb.selects if t == "attachment_text_corrections"] == []
+        assert [c for t, c in sb.selects if t == "workspace_items" and c == "item_id, file_id"] == []
+    assert (texts["D2.S1"], texts["D1.S2"]) == ("نص الدفع", "نص المنطوق")
+    assert SEGMENTS[ITEM_A1]["segments"][0]["content_md"] == "نص الطلبات"     # the stored rows untouched
+
+
 def test_get_is_none_for_another_users_map_a_stale_one_or_an_unknown_id(one_map):
     sb = _world()
     one_map["stored"] = _stored(user=OTHER_USER)

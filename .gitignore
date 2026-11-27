@@ -99,6 +99,17 @@ agents/tests/*
 # drops, coverage repair, contract-party labels and the store's rollback all fail
 # silently in production — same reason as the segmenter's suite
 !agents/memory/angle_mapper/tests/
+# a local CI-like test run moves .env aside under this name — never commit it
+.env.ci_hidden
+# the attachment agent (attachment_agent.md, 2026-11-27): quote checks, the
+# evidence guard on edits, the text-correction overlay and its offset map, the
+# router's flag-off byte identity — all fail silently in production
+!agents/attachment_agent/tests/
+!shared/attachments/tests/
+!agents/router/tests/
+agents/router/tests/*
+!agents/router/tests/test_wi_preview_lock.py
+!agents/router/tests/test_attachment_agent_router.py
 !agents/memory/ocr_extractor/tests/
 !agents/deep_search_v4/tests/
 agents/deep_search_v4/tests/*

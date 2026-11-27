@@ -100,6 +100,7 @@ from agents.deep_search_v4.ura.principles import (
 )
 from agents.deep_search_v4.ura.schema import CaseURAResult
 from agents.utils.reading_corrections import KEY as CORRECTIONS_KEY, with_corrections
+from shared.attachments.overlay import correct_text
 from shared.files import store as files_store
 from shared.seo.judgment_naming import judgment_subject
 # The WI preview lock — the SAME decision and cut the backend applies to the
@@ -247,6 +248,8 @@ class HasWorkspaceContext(Protocol):
 
     Optional, read with ``getattr``: ``wi_lock_policy`` (RouterDeps only) — the
     WI preview lock for this router turn; absent / None = full content.
+    ``attachment_agent_on`` (RouterDeps only) — uploaded files are read by the
+    attachment agent, not unfolded; ``workspace_item_summaries`` supplies kinds.
     """
 
     supabase: object
@@ -327,14 +330,16 @@ def _fetch_item(
     ``with_lock_columns`` adds what the WI preview lock decides on (kind,
     created_by, created_at, metadata, created_while_paid — migration 198) and
     ``wi_seq`` for the marker. Only a router turn of a free user with the flag
-    on asks for them, so every other read keeps its two-column select.
+    on asks for them, so every other read keeps its short select. ``kind`` is
+    always read: only an attachment carries the user's text corrections
+    (``unfold_parts``), so a report's unfold never looks for them.
     """
     columns = (
         "title, content_md, wi_seq, kind, created_by, created_at, metadata, "
         "created_while_paid"
         if with_lock_columns
         # Only the saved reading corrections, not the whole metadata.
-        else f"title, content_md, {CORRECTIONS_KEY}:metadata->{CORRECTIONS_KEY}"
+        else f"title, content_md, kind, {CORRECTIONS_KEY}:metadata->{CORRECTIONS_KEY}"
     )
     # Files in their own table (my_files_phase2.md §C4): an attachment's title
     # and text come from user_files when the read switch is on.
@@ -887,10 +892,18 @@ def unfold_parts(
     )
     if item is None:
         return None
+    raw = item.get("content_md") or ""
+    # An uploaded file's text fixes (attachment_agent.md §3.3) — the planner and
+    # the writer planner still unfold whole files. The REAL text, before the
+    # turn's codec encodes it (``unfold_for_deps``). Attachments only, and only
+    # while the attachment agent is on for the user (``correct_text`` reads
+    # nothing otherwise). None / a failed read = as is.
+    if item.get("kind") == "attachment":
+        raw = correct_text(supabase, raw, item_id=item_id, user_id=user_id)
     # A report's saved reading corrections follow its text (plan
     # artifact_analyzer_scope_full_text.md §4.4); the card itself is unchanged.
     content_md = with_corrections(
-        item.get("content_md") or "",
+        raw,
         item.get(CORRECTIONS_KEY) or item.get("metadata"),
     )
     lines = resolve_used_sources(supabase, item_id, snippet_max_chars=snippet_max_chars)
@@ -973,18 +986,57 @@ def _encode_unfold_output(supabase, user_id: str, content: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+#: The router's unfold of a user's uploaded file while the attachment agent is on
+#: for the user (attachment_agent.md §2.1, D4).
+ATTACHMENT_AGENT_UNFOLD_LINE = (
+    "〔[نظام] ملفات المستخدم المرفوعة تُقرأ عبر ask_attachment_agent لا عبر هذه الأداة.〕"
+)
+
+
+def _item_kind(deps: HasWorkspaceContext, item_id: str) -> str:
+    """The item's kind: from the router's loaded cards (no query), else one
+    one-column read (a raw UUID that is not on a card). ``""`` when unknown."""
+    for card in getattr(deps, "workspace_item_summaries", None) or []:
+        if str(card.get("item_id") or "") == str(item_id):
+            return str(card.get("kind") or "")
+    try:
+        resp = (
+            deps.supabase.table(_ITEMS_TABLE)
+            .select("kind")
+            .eq("item_id", item_id)
+            .eq("user_id", deps.user_id)
+            .is_("deleted_at", "null")
+            .maybe_single()
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("unfold: kind read failed for %s: %s", item_id, exc)
+        return ""
+    row = getattr(resp, "data", None) if resp else None
+    return str((row or {}).get("kind") or "")
+
+
 async def unfold_for_deps(deps: HasWorkspaceContext, wi: str) -> str:
     """The ``unfold_workspace_item`` tool body, for any agent's deps.
 
     Kept outside the registered closure so the deps-driven behaviour is
     testable on its own: RouterDeps may carry ``wi_lock_policy`` (WI preview
     lock); planner / writer deps never do, so their unfolds stay full.
+    Likewise ``attachment_agent_on`` (RouterDeps only): while it is set, the
+    user's uploaded files are read by the attachment agent, so an attachment
+    unfolds to one line pointing there. Planner / writer-planner deps never
+    carry it, so their unfold of an attachment is unchanged (plan D5).
     """
     item_id = _resolve_wi_alias(wi, getattr(deps, "wi_alias_map", {}) or {})
     if not item_id:
         logger.info("unfold_workspace_item: alias %r not resolvable", wi)
         return ""
     try:
+        if getattr(deps, "attachment_agent_on", False) and await asyncio.to_thread(
+            _item_kind, deps, item_id,
+        ) == "attachment":
+            logger.info("unfold_workspace_item: %s is an attachment — sent to the agent", wi)
+            return ATTACHMENT_AGENT_UNFOLD_LINE
         # WI preview lock: only RouterDeps carries this field (None when the
         # flag is off or the user is paid); planner / writer deps have none,
         # so getattr keeps their unfolds full.
@@ -1077,6 +1129,7 @@ def register_unfold_workspace_item(agent: Agent) -> None:
 
 
 __all__ = [
+    "ATTACHMENT_AGENT_UNFOLD_LINE",
     "register_unfold_workspace_item",
     "unfold_item",
     "unfold_parts",

@@ -29,6 +29,7 @@ from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import upload_session_service, wi_preview_service
 from backend.app.services.case_service import get_user_id
 from backend.app.services.demo_service import is_demo_conversation, is_demo_item
+from shared.attachments.overlay import correct_rows
 from shared.config import get_settings
 from shared.files import store as files_store
 from shared.storage.client import build_storage_path, upload_file
@@ -268,6 +269,9 @@ def list_workspace_items_by_conversation(
     # an attachment's text, summary and metadata come from user_files when the
     # read switch is on. The demo conversation holds no attachment.
     items = files_store.overlay_files(supabase, result.data or [], user_id=user_id)
+    # The user's text fixes (attachment_agent.md §3.3) on the attachment text the
+    # web / app pane shows; none / a failed read = as stored.
+    items = correct_rows(supabase, items, user_id=user_id)
     return items, result.count or 0
 
 
@@ -309,6 +313,7 @@ def list_workspace_items_by_case(
 
     # Files in their own table (my_files_phase2.md §C4) — as above.
     items = files_store.overlay_files(supabase, result.data or [], user_id=user_id)
+    items = correct_rows(supabase, items, user_id=user_id)   # text fixes — as above
     return items, result.count or 0
 
 
@@ -316,8 +321,14 @@ def get_workspace_item(
     supabase: SupabaseClient,
     auth_id: str,
     item_id: str,
+    *,
+    text_corrections: bool = False,
 ) -> dict:
     """Get single workspace_item. Returns 404 if not found or not owned.
+
+    ``text_corrections`` — an attachment's text comes back with the user's text
+    fixes applied (attachment_agent.md §3.3). Only the GET route asks: the
+    ownership-gate callers below never show the text, so they skip the read.
 
     Exception: the ONE shared demo item (``demo_service.DEMO_ITEM_ID``) is
     readable by every account, so the ``user_id`` filter is dropped for that
@@ -371,6 +382,8 @@ def get_workspace_item(
     # Files in their own table (my_files_phase2.md §C4) — as in the lists. The
     # demo item is not an attachment.
     [item] = files_store.overlay_files(supabase, [result.data], user_id=user_id)
+    if text_corrections:
+        [item] = correct_rows(supabase, [item], user_id=user_id)
     return item
 
 

@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterable, Mapping
 
+from shared.attachments.flags import edits_enabled
+from shared.attachments.segment_overrides import apply_segment_overrides, load_segment_overrides
 from shared.files import store as files_store
 
 from .models import StoredMap, StoredSegment
@@ -191,6 +193,47 @@ def _segment_rows(supabase: Any, ids: list[str]) -> list[dict]:
         offset += _PAGE_ROWS
 
 
+def _with_promotions(
+    supabase: Any, maps: dict[str, StoredMap], keys: Mapping[str, str], user_id: str | None
+) -> dict[str, StoredMap]:
+    """``maps`` with the sections the user promoted turned ``core`` (migration 234,
+    ``shared/attachments/segment_overrides.py``; attachment_agent.md §3.1): ONE read
+    for every file of the call; a section that is not core and overlaps an active
+    promotion range of its file loads as ``core`` with ``promoted_by_user=True``.
+    Promote only. No promotion, or any failure → ``maps`` unchanged (never breaks
+    delivery).
+
+    Gated by the attachment agent's flag (``shared.attachments.flags``; only the
+    agent writes promotions): a map is looked at only when the flag is on for its
+    owner — ``user_id``, else the map row's own ``user_id``. None on → ``maps``
+    with no request at all (rollback = flag off: promotions stop applying)."""
+    if not maps:
+        return maps
+    try:
+        on = {
+            item_id for item_id, smap in maps.items()
+            if edits_enabled(user_id or smap.user_id)
+        }
+        if not on:
+            return maps
+        overrides = load_segment_overrides(
+            supabase, list(dict.fromkeys(keys[i] for i in maps if i in on)), user_id=user_id
+        )
+        if not overrides:
+            return maps
+        out: dict[str, StoredMap] = {}
+        for item_id, smap in maps.items():
+            mine = overrides.get(keys[item_id]) if item_id in on else None
+            out[item_id] = (
+                smap.model_copy(update={"segments": apply_segment_overrides(smap.segments, mine)})
+                if mine else smap
+            )
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("attachment_segmenter: promotions not applied (%s)", type(exc).__name__)
+        return maps
+
+
 def load_segment_maps(
     supabase: Any,
     item_ids: Iterable[str],
@@ -204,6 +247,10 @@ def load_segment_maps(
     (``content_chars != len(workspace_items.content_md)``), its map has no
     segments, or the item is missing / soft-deleted. Segments come in document
     order (``seq``) with their original text in ``content_md``.
+
+    Sections the user promoted (attachment agent, migration 234) come back
+    ``core`` with ``promoted_by_user=True`` — :func:`_with_promotions`, one extra
+    read per call; its failure leaves the stored values.
 
     ``content_chars`` — the caller's ``{item_id: len(content_md)}`` when it
     already holds the rows; the ``workspace_items`` read (and with it the
@@ -258,8 +305,9 @@ def load_segment_maps(
                 content_chars=int(r["content_chars"]),
                 created_at=str(r.get("created_at") or "") or None,
                 segments=segs,
+                file_key=keys[item_id],
             )
-        return out
+        return _with_promotions(supabase, out, keys, user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("attachment_segmenter: load_segment_maps failed (%s)", type(exc).__name__)
         return {}

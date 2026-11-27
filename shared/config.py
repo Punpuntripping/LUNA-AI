@@ -572,6 +572,15 @@ class Settings(BaseSettings):
     ROUTER_HELPER_WAITS_ENABLED: bool = False
     ROUTER_HELPER_WAITS_USERS: Optional[str] = None
 
+    # ── Attachment agent — .claude/plans/attachment_agent.md ────────────────
+    # On: the router reaches the user's uploaded files only through the
+    # attachment agent (a router tool: reads by outline / find / sections /
+    # pages, returns code-checked quotes, applies the edits the user asked
+    # for). Off: the router opens attachments with unfold_workspace_item as
+    # before. *_USERS: comma-separated users.user_id; empty = everyone.
+    ATTACHMENT_AGENT_ENABLED: bool = False
+    ATTACHMENT_AGENT_USERS: Optional[str] = None
+
     # ── Completion Search — .claude/plans/completion_search.md §4.10 ────────
     # COMPLETION_SEARCH: the two planners get `complete_search` / `keep_results`
     # (the search planner in place of `fetch_article`). Off: the search planner

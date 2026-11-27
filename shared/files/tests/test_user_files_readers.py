@@ -169,7 +169,8 @@ def test_unfold_fetch_item_and_unfold_item(read_on):
 
     sb = db()
     row = uw._fetch_item(sb, ITEM, USER)
-    assert set(row) == {"title", "content_md", "reading_corrections"}     # file_id never leaks
+    # file_id never leaks; kind tells unfold_parts whether text corrections can apply
+    assert set(row) == {"title", "content_md", "kind", "reading_corrections"}
     assert (row["title"], row["content_md"]) == (want(read_on, "title"), want(read_on, "content_md"))
     locked = uw._fetch_item(sb, ITEM, USER, with_lock_columns=True)
     assert "file_id" not in locked and locked["content_md"] == want(read_on, "content_md")

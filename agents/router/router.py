@@ -34,6 +34,7 @@ from supabase import Client as SupabaseClient
 
 from agents.models import CheckPriorReports, ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
 from agents.utils.history import strip_system_tags
+from agents.tool_repository.attachment_agent_tool import register_ask_attachment_agent
 from agents.tool_repository.edit_artifact import register_edit_artifact
 from agents.tool_repository.rayhan_docs import register_rayhan_docs
 from agents.tool_repository.save_memo import register_save_memo
@@ -201,6 +202,18 @@ class RouterDeps:
     # the flag is off for this user: no section, and ``extended=true`` is refused.
     # Built by ``orchestrator._route`` (``extended.router_view``).
     extended_view: "RouterExtendedView | None" = None
+    # Attachment agent (attachment_agent.md §2.1): on for this user
+    # (``attachment_agent_enabled``, resolved in ``orchestrator._route``). On, the
+    # router gets ``ask_attachment_agent`` and the new «own documents» section,
+    # and ``unfold_workspace_item`` no longer opens the user's uploaded files.
+    # Off (the default), the router reads attachments exactly as before.
+    attachment_agent_on: bool = False
+    # The current user message's id (``messages.message_id``) — the attachment
+    # agent's ledger rows and edit records point at it. None in tests / evals.
+    message_id: str | None = None
+    # Set by ``ask_attachment_agent`` on its first call: one agent run per user
+    # message, so a second call this run runs nothing.
+    attachment_agent_called: bool = False
 
 
 @dataclass
@@ -246,7 +259,12 @@ ROUTER_LIMITS = UsageLimits(
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 
-SYSTEM_PROMPT = """\
+# The router's prompt is assembled from three parts so the section «The
+# conversation's own documents» can be chosen per user (attachment_agent.md §2.1):
+# _PROMPT_HEAD + that section + _PROMPT_TAIL. ``SYSTEM_PROMPT`` (today's section)
+# is today's prompt byte for byte; ``SYSTEM_PROMPT_ATTACHMENT_AGENT`` swaps in the
+# attachment-agent section at the same place. ``inject_system_prompt`` picks one.
+_PROMPT_HEAD = """\
 You are ريحان (Rayhan), the intelligent legal assistant for Saudi lawyers.
 
 ## Output rule (mandatory)
@@ -282,18 +300,9 @@ You have three functions:
 - **Where something is in, or what is written in, the user's own files or our own outputs** — find the item and open it yourself (§ The conversation's own documents, below).
 - Ambiguous messages — ask the user before routing
 
-## The conversation's own documents — find the item, open it, answer
-The workspace holds the user's own documents — the files they uploaded (`kind=attachment`: a claim, a judgment, hearing minutes, an expert report, a contract…) — and everything we produced in this conversation (search reports, drafted memos, notes). When the user asks **where** something is in them, **what** one of them says on a point, or **where a statement in one of our outputs comes from** («حدد مكان هذه الإفادة من المدعي»، «وين قال الخبير إن المدة المتبقية 142 يوم؟»، «اش مكتوب في البند السادس من العقد المرفق؟»، «من وين جبت إن المدعي سدد في 13/11؟»), that is your job — never a specialist's. simple_search and deep_search search the public legal library: they cannot see the user's files, and a dispatch there spends minutes and the user's points on a search that cannot find it.
+"""
 
-1. **Identify the item.** Match what the user points at against the items' titles, `doc_type`s and summaries. A statement taken from one of our memos or reports usually says where it came from — an exhibit («مرفق رقم 2») or a numbered reference: open that output and read what the exhibit points to (a memo's «المرفقات» list names each exhibit by what it is), then find the uploaded item that matches.
-2. **Open it** with `unfold_workspace_item("WI-N")` and find the passage. Open several items in parallel when it could be in any of them. Dates and numbers in an uploaded text are often in Arabic-Indic digits (٢٥/٣/١٤٤٧) where the user typed Latin ones (25/3/1447) — they are the same.
-3. **Answer** with `ChatResponse`: the document (its title as the user sees it), where in it (the section, whose statement it is, the numbered point, the page when the text marks one), and the passage quoted word for word. Answer what was asked — the location and the text — and add nothing the document does not say.
-
-- **A vague pointer is a question, not a search.** When the message does not quote or name what it asks about, or leaves open which document it means — «وين مكتوب هذا الكلام؟»، «وين ذكروا هذا؟»، «في أي ملف؟» — do not open documents and guess, and do not take «هذا» to mean our last reply: that reply holds several statements. Ask instead, in one short `ChatResponse`, without opening anything — the summaries in your context are enough: list the candidate documents, each by its title as the user sees it and a few words from its summary saying what it is («ضبط الجلسة الثانية — فيه صحيفة الدعوى ومذكرة المدعي الجوابية»), and ask which one they mean — and which statement, if that is unclear too.
-- If the passage is not in the items you opened, say so plainly and ask which document they mean. Never give a location you did not read.
-- This is not `CheckPriorReports`: that check is for a question that may need a new search. Finding a passage in documents we already hold needs none.
-- A **library** source stays with simple_search: a نظام, مادة, حكم, تعميم or خدمة cited in one of our reports is opened by simple_search (§ the source rule below). The test is whose document it is — **the user's file or our own output: open it yourself; a document from the legal library: route it.**
-
+_PROMPT_TAIL = """\
 ## Before searching again — CheckPriorReports
 When the workspace holds a prior search report (kind=agent_search) and the user's message continues that matter — it answers a question we asked, adds a fact, or asks something more about the same issue — emit `CheckPriorReports`, not `DispatchAgent(deep_search)`. We may already hold the answer.
 Emit `DispatchAgent(deep_search)` instead when:
@@ -464,9 +473,61 @@ When the user **explicitly shares a substantive request or a long template** tha
 - Respond in Arabic unless the user wrote in English
 - Do not mention the word "مهمة" or "task" or any technical details — the user does not know about the routing system
 - {NO_INTERNALS_RULE}
-""".replace("{MAX_ATTACHED_ITEMS}", str(MAX_ATTACHED_ITEMS)).replace(
-    "{NO_INTERNALS_RULE}", NO_INTERNALS_RULE,
-)
+"""
+
+
+# «The conversation's own documents» — today's section, word for word as it
+# stood in the one-piece prompt, at the same place (between _PROMPT_HEAD and
+# _PROMPT_TAIL).
+OWN_DOCUMENTS_SECTION = """\
+## The conversation's own documents — find the item, open it, answer
+The workspace holds the user's own documents — the files they uploaded (`kind=attachment`: a claim, a judgment, hearing minutes, an expert report, a contract…) — and everything we produced in this conversation (search reports, drafted memos, notes). When the user asks **where** something is in them, **what** one of them says on a point, or **where a statement in one of our outputs comes from** («حدد مكان هذه الإفادة من المدعي»، «وين قال الخبير إن المدة المتبقية 142 يوم؟»، «اش مكتوب في البند السادس من العقد المرفق؟»، «من وين جبت إن المدعي سدد في 13/11؟»), that is your job — never a specialist's. simple_search and deep_search search the public legal library: they cannot see the user's files, and a dispatch there spends minutes and the user's points on a search that cannot find it.
+
+1. **Identify the item.** Match what the user points at against the items' titles, `doc_type`s and summaries. A statement taken from one of our memos or reports usually says where it came from — an exhibit («مرفق رقم 2») or a numbered reference: open that output and read what the exhibit points to (a memo's «المرفقات» list names each exhibit by what it is), then find the uploaded item that matches.
+2. **Open it** with `unfold_workspace_item("WI-N")` and find the passage. Open several items in parallel when it could be in any of them. Dates and numbers in an uploaded text are often in Arabic-Indic digits (٢٥/٣/١٤٤٧) where the user typed Latin ones (25/3/1447) — they are the same.
+3. **Answer** with `ChatResponse`: the document (its title as the user sees it), where in it (the section, whose statement it is, the numbered point, the page when the text marks one), and the passage quoted word for word. Answer what was asked — the location and the text — and add nothing the document does not say.
+
+- **A vague pointer is a question, not a search.** When the message does not quote or name what it asks about, or leaves open which document it means — «وين مكتوب هذا الكلام؟»، «وين ذكروا هذا؟»، «في أي ملف؟» — do not open documents and guess, and do not take «هذا» to mean our last reply: that reply holds several statements. Ask instead, in one short `ChatResponse`, without opening anything — the summaries in your context are enough: list the candidate documents, each by its title as the user sees it and a few words from its summary saying what it is («ضبط الجلسة الثانية — فيه صحيفة الدعوى ومذكرة المدعي الجوابية»), and ask which one they mean — and which statement, if that is unclear too.
+- If the passage is not in the items you opened, say so plainly and ask which document they mean. Never give a location you did not read.
+- This is not `CheckPriorReports`: that check is for a question that may need a new search. Finding a passage in documents we already hold needs none.
+- A **library** source stays with simple_search: a نظام, مادة, حكم, تعميم or خدمة cited in one of our reports is opened by simple_search (§ the source rule below). The test is whose document it is — **the user's file or our own output: open it yourself; a document from the legal library: route it.**
+"""
+
+# The same section with the attachment agent on for this user (attachment_agent.md
+# §2.1, D4): the router keeps the cards and the «which document?» rule, and the
+# user's uploaded files are read — and changed — by the attachment agent.
+OWN_DOCUMENTS_SECTION_AGENT = """\
+## The conversation's own documents — find the file, ask the attachment agent, answer
+The workspace holds the user's own documents — the files they uploaded (`kind=attachment`: a claim, a judgment, hearing minutes, an expert report, a contract…) — and everything we produced in this conversation (search reports, drafted memos, notes). When the user asks **where** something is in them, **what** one of them says on a point, or **where a statement in one of our outputs comes from** («حدد مكان هذه الإفادة من المدعي»، «وين قال الخبير إن المدة المتبقية 142 يوم؟»، «اش مكتوب في البند السادس من العقد المرفق؟»، «من وين جبت إن المدعي سدد في 13/11؟»), that is your job — never a specialist's. simple_search and deep_search search the public legal library: they cannot see the user's files, and a dispatch there spends minutes and the user's points on a search that cannot find it.
+
+**You do not open the user's uploaded files yourself — the attachment agent reads them for you.** "Open it yourself" in this prompt, and "call `unfold_workspace_item`" in the workspace list, mean: **the user's uploaded files (`kind=attachment`) → call `ask_attachment_agent`; our own outputs (reports, memos, notes) → `unfold_workspace_item`.** `unfold_workspace_item` on an uploaded file returns only a line sending you here.
+
+1. **Identify the file.** Match what the user points at against the items' titles, `doc_type`s and summaries. A statement taken from one of our memos or reports usually says where it came from — an exhibit («مرفق رقم 2») or a numbered reference: open that output with `unfold_workspace_item` and read what the exhibit points to (a memo's «المرفقات» list names each exhibit by what it is), then find the uploaded file that matches.
+2. **Call `ask_attachment_agent`** with `files` = the WI-N aliases of the file(s) it could be in — several when it could be in any of them; an empty list means every file the user uploaded in this conversation. It receives the user's message word for word by itself: there is no question to write. **One call per user message** — put every file the message concerns into that one call, and do not call it again for the same message.
+3. **Answer** with `ChatResponse` **only from what it returned**: the document (its title as the user sees it), where in it (the section, whose statement it is, the page) and the quotes — exactly as returned, quoted word for word. Answer what was asked and add nothing the document does not say. **Never give a location or a quote it did not return.**
+   - It applied changes → tell the user plainly what changed, as it listed them.
+   - It started a re-analysis → tell the user «الخيوط» are being re-analyzed and will show within minutes.
+   - It asks a question → ask the user that question, in one short `ChatResponse`.
+   - It found nothing, or could not read the files now → say so plainly, and ask which document they mean (unless it already asked). Never guess a location.
+
+- **A vague pointer is a question, not a search.** When the message does not quote or name what it asks about, or leaves open which document it means — «وين مكتوب هذا الكلام؟»، «وين ذكروا هذا؟»، «في أي ملف؟» — do not call the attachment agent or open documents to guess, and do not take «هذا» to mean our last reply: that reply holds several statements. Ask instead, in one short `ChatResponse`, without calling or opening anything — the summaries in your context are enough: list the candidate documents, each by its title as the user sees it and a few words from its summary saying what it is («ضبط الجلسة الثانية — فيه صحيفة الدعوى ومذكرة المدعي الجوابية»), and ask which one they mean — and which statement, if that is unclear too.
+- **A change to a file goes to the attachment agent too.** When the user asks to change something in their file as we read it — a name or number misread from the scan («الاسم الصحيح محمود مو محمد»), a section that matters more than we marked it, a thread in «الخيوط» (add, drop, reword, whose side it serves), a gap, the client's side — or asks to re-analyze it («ماعجبني التحليل، أعد تحليله») → `ask_attachment_agent`. Not `edit_artifact` (that edits our own outputs) and not a dispatch.
+- **A search about what a file says still routes as before.** When the user wants the law on what the file says — «هل هذا الشرط الجزائي صحيح نظاماً؟»، «وش حقوق موكلي حسب هذا الحكم؟»، «ابحث عن الرد على دفوع المدعى عليه في المذكرة» — that is a legal question → deep_search (or `CheckPriorReports`) as the sections below say, with the file in `attached_wis`: the search reads the files itself. A summary of a whole file is still writing (subtype "summary").
+- This is not `CheckPriorReports`: that check is for a question that may need a new search. Finding a passage in documents we already hold needs none.
+- A **library** source stays with simple_search: a نظام, مادة, حكم, تعميم or خدمة cited in one of our reports is opened by simple_search (§ the source rule below). The test is whose document it is — **the user's uploaded file: `ask_attachment_agent`; our own output: `unfold_workspace_item`; a document from the legal library: route it.**
+"""
+
+
+def _assemble_prompt(own_documents_section: str) -> str:
+    return (_PROMPT_HEAD + own_documents_section + "\n" + _PROMPT_TAIL).replace(
+        "{MAX_ATTACHED_ITEMS}", str(MAX_ATTACHED_ITEMS)
+    ).replace("{NO_INTERNALS_RULE}", NO_INTERNALS_RULE)
+
+
+#: Today's prompt, byte for byte — every user the attachment agent is off for.
+SYSTEM_PROMPT = _assemble_prompt(OWN_DOCUMENTS_SECTION)
+#: The same prompt with the attachment-agent section in that section's place.
+SYSTEM_PROMPT_ATTACHMENT_AGENT = _assemble_prompt(OWN_DOCUMENTS_SECTION_AGENT)
 
 
 # ── Agent definition ──────────────────────────────────────────────────────────
@@ -482,7 +543,8 @@ router_agent = Agent(
     # (no text-shaped equivalent) so routing decisions remain structured.
     output_type=[ChatResponse, DispatchAgent, CheckPriorReports, TextOutput(_text_as_chat)],
     deps_type=RouterDeps,
-    instructions=SYSTEM_PROMPT,
+    # No literal ``instructions=``: the prompt is the first instructions function
+    # (``inject_system_prompt``), which picks one of two fixed texts per user.
     retries=2,
     output_retries=4,
     # ``exhaustive`` (not ``early``) is LOAD-BEARING for save_memo: the model
@@ -659,9 +721,25 @@ def _esc(value: object) -> str:
 
 
 @router_agent.instructions
+def inject_system_prompt(ctx: RunContext[RouterDeps]) -> str:
+    """The router's prompt: today's, or the one with the attachment-agent section
+    when the agent is on for this user (attachment_agent.md §2.1).
+
+    Registered FIRST, so it opens the instructions exactly where the literal
+    ``instructions=SYSTEM_PROMPT`` did: flag off, the text the model receives is
+    today's byte for byte (same section, same place — no cache miss). Each of the
+    two texts is fixed, so each is a stable cached prefix of its own. Stripped,
+    as pydantic-ai strips a literal prompt.
+    """
+    if getattr(ctx.deps, "attachment_agent_on", False):
+        return SYSTEM_PROMPT_ATTACHMENT_AGENT.strip()
+    return SYSTEM_PROMPT.strip()
+
+
+@router_agent.instructions
 def inject_today() -> str:
-    """Today's date. Registered first: it changes once a day, so it sits right
-    after the static prompt and every block below keeps its place.
+    """Today's date. Registered right after the prompt: it changes once a day, so
+    it sits right after the static prompt and every block below keeps its place.
     """
     return today_line()
 
@@ -846,6 +924,15 @@ register_edit_artifact(router_agent)
 register_rayhan_docs(router_agent)
 
 
+# ``ask_attachment_agent`` — the router's way into the user's uploaded files
+# (plan: .claude/plans/attachment_agent.md §2.1). Shown only while the attachment
+# agent is on for this user (``RouterDeps.attachment_agent_on``, a ``prepare``
+# hook), so the flag-off tool list is today's. The agent gets the user's message
+# word for word; the router only picks the files.
+# See agents/tool_repository/attachment_agent_tool.py.
+register_ask_attachment_agent(router_agent)
+
+
 @router_agent.tool
 async def list_workspace_items(ctx: RunContext[RouterDeps]) -> list[dict]:
     """List existing workspace items (artifacts/chips) for the current conversation.
@@ -855,9 +942,12 @@ async def list_workspace_items(ctx: RunContext[RouterDeps]) -> list[dict]:
     or you need a fresh listing.
 
     Returns:
-        Compact list of {wi, title, kind_hint, created_at} dicts where ``wi``
-        is the ``WI-{seq}`` alias for use in attached_wis / target_wi.
-        Empty list on any error.
+        Compact list of {wi, title, kind_hint, artifact_type, created_at} dicts
+        where ``wi`` is the ``WI-{seq}`` alias for use in attached_wis /
+        target_wi. ``kind_hint``: ``attachment`` = a file the user uploaded,
+        ``references`` = a library page the user brought in, ``agent_search`` =
+        one of our search reports, ``agent_writing`` = a draft or note,
+        ``pinned_texts`` = the pinned texts. Empty list on any error.
     """
     try:
         result = (
@@ -886,10 +976,12 @@ async def list_workspace_items(ctx: RunContext[RouterDeps]) -> list[dict]:
                 "title": row.get("title", ""),
                 # «النصوص المثبّتة» (kind pinned_texts) is neither a draft nor a
                 # search report: it keeps its own name so it is never offered
-                # as "the previous analysis".
+                # as "the previous analysis". Nor is a file the user uploaded
+                # (attachment) or a library page they brought in (references):
+                # both were labelled agent_search before (attachment_agent.md §1).
                 "kind_hint": (
                     "agent_writing" if kind in ("note", "agent_writing")
-                    else "pinned_texts" if kind == "pinned_texts"
+                    else kind if kind in ("pinned_texts", "attachment", "references")
                     else "agent_search"
                 ),
                 "artifact_type": subtype,
@@ -929,6 +1021,8 @@ async def run_router(
     conversation_memory: list[MemoryEntry] | None = None,
     planner_handback: str | None = None,
     extended_view: "RouterExtendedView | None" = None,
+    attachment_agent_on: bool = False,
+    message_id: str | None = None,
 ) -> RouterRunResult:
     """Run the router agent to classify user intent and respond or dispatch.
 
@@ -969,6 +1063,11 @@ async def run_router(
             then explores the request in a ChatResponse and may not dispatch.
         extended_view: «بحث موسّع» this turn (``extended.router_view``), or
             None while the flag is off for this user.
+        attachment_agent_on: The attachment agent is on for this user
+            (``attachment_agent_enabled``): the router gets
+            ``ask_attachment_agent`` and the new «own documents» section, and
+            does not unfold uploaded files. False keeps today's router.
+        message_id: The current user message's id, for the attachment agent.
 
     Returns:
         A ``RouterRunResult`` wrapping the structured output (ChatResponse if
@@ -1004,6 +1103,8 @@ async def run_router(
         conversation_memory=list(conversation_memory or []),
         planner_handback=planner_handback,
         extended_view=extended_view,
+        attachment_agent_on=bool(attachment_agent_on),
+        message_id=message_id,
     )
 
     # PII note: user_id intentionally NOT on this span. The monitor recovers
@@ -1027,6 +1128,7 @@ async def run_router(
             None if extended_view is None
             else ("available" if extended_view.available else extended_view.reason)
         ),
+        attachment_agent=bool(attachment_agent_on),
     ) as span:
         try:
             result = await router_agent.run(

@@ -21,7 +21,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, Literal, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Iterator, Literal, Mapping, Optional
 
 from shared.observability import get_logfire
 
@@ -108,8 +108,13 @@ def spawn(
     *,
     conversation_id: str | None = None,
     queue: bool = False,
+    also: Iterable[str] = (),
 ) -> asyncio.Task:
-    """Start one run, keep it alive, register it. Raises only if the loop refuses."""
+    """Start one run, keep it alive, register it. Raises only if the loop refuses.
+
+    ``also``: more keys the same run is in flight for (an angle-map re-analysis
+    maps a whole group: every member, and the items carrying its map, see it)."""
+    keys = list(dict.fromkeys([key, *(str(k) for k in also if k)]))
     try:
         task = asyncio.get_running_loop().create_task(coro, name=f"helper.{helper}")
     except Exception:
@@ -118,12 +123,14 @@ def spawn(
         raise
     _BACKGROUND.add(task)
     task.add_done_callback(_BACKGROUND.discard)
-    _INFLIGHT[(helper, key)] = task
+    for k in keys:
+        _INFLIGHT[(helper, k)] = task
 
     def _forget(done: asyncio.Task) -> None:
-        # Only its own entry: a finished run must not evict a newer one.
-        if _INFLIGHT.get((helper, key)) is done:
-            del _INFLIGHT[(helper, key)]
+        # Only its own entries: a finished run must not evict a newer one.
+        for k in keys:
+            if _INFLIGHT.get((helper, k)) is done:
+                del _INFLIGHT[(helper, k)]
         if queue and conversation_id and _CONVO_LATEST.get((helper, conversation_id)) is done:
             del _CONVO_LATEST[(helper, conversation_id)]
 

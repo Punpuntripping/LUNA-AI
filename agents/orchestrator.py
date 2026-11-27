@@ -116,6 +116,7 @@ from agents.utils.prior_coverage import analyzer_enabled
 from agents.utils.reading_corrections import with_corrections
 from agents.utils.reply_guard import ReplyGuard, scrub_reply
 from agents.utils.usage_sink import bind_run_id, collect_llm_calls, record_call
+from shared.attachments.overlay import correct_rows
 from shared.files import store as files_store
 from shared.observability import get_logfire
 
@@ -352,6 +353,11 @@ def _load_attached_items(
     overlaid = files_store.overlay_files(
         supabase, [d for _iid, d in loaded], user_id=user_id,
     )
+    # An uploaded file's text fixes (attachment_agent.md §3.3): the planner's
+    # <attached_items>, case documents, simple search, the legacy writer context
+    # and the extended fallback all read these snapshots. REAL text (each consumer
+    # encodes later); one read for every row; none / a failed read = as is.
+    overlaid = correct_rows(supabase, overlaid, user_id=user_id)
     snapshots: list[WorkspaceItemSnapshot] = []
     for (item_id, _raw), d in zip(loaded, overlaid):
         try:
@@ -3638,6 +3644,11 @@ async def _route(
 
     persist_new_mappings(supabase, user_id, active_codec())
 
+    # Attachment agent (attachment_agent.md §2.1): on for this user, the router
+    # reads the user's uploaded files through ``ask_attachment_agent``. Off, the
+    # router is today's.
+    from agents.utils.attachment_agent_flags import attachment_agent_enabled
+
     router_result = await run_router(
         question=question,
         supabase=supabase,
@@ -3655,6 +3666,8 @@ async def _route(
         wi_lock_policy=wi_lock_policy,
         conversation_memory=ctx.conversation_memory,
         extended_view=extended_view,
+        attachment_agent_on=attachment_agent_enabled(user_id),
+        message_id=user_message_id,
     )
 
     # Drain any save_memo side effects FIRST so the pinned-memo chip appears
@@ -3814,7 +3827,10 @@ async def _route_after_handback(
     )
     # Any fake minted by a fresh load must be stored before the router reads it.
     persist_new_mappings(supabase, user_id, active_codec())
-
+    # The attachment agent's tool is withheld on this talk-only run, so the router
+    # keeps today's «own documents» section and today's unfold here
+    # (``attachment_agent_on=False``): with the agent's section and the unfold
+    # redirect but no tool, it could not read any uploaded file on this turn.
     router_result = await run_router(
         question=question,
         supabase=supabase,
@@ -3832,6 +3848,7 @@ async def _route_after_handback(
         wi_lock_policy=wi_lock_policy,
         conversation_memory=ctx.conversation_memory,
         planner_handback=handback_note or "",
+        attachment_agent_on=False,
     )
     for ev in router_result.sse_events:
         yield ev

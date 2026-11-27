@@ -474,6 +474,149 @@ def test_detail_section_read_failure_falls_back_to_full_text():
     assert out["sections"] is None and out["content_md"] == SAMPLE_TEXT
 
 
+# ── the user's edits on an opened file (attachment_agent.md §3.1 / §3.3) ──────────
+# Both hang on the FILE: on every data path the key is the attachment's own id (the
+# items path reads by item; the files paths read the backfilled file, file_id = item_id).
+
+_TEXT_FIXES = "attachment_text_corrections"
+_PROMOTIONS = "attachment_segment_overrides"
+
+
+@pytest.fixture(autouse=True)
+def _overlay_backoff():
+    from shared.attachments import segment_overrides, text_corrections
+
+    text_corrections.reset_backoff()
+    segment_overrides.reset_backoff()
+    yield
+    text_corrections.reset_backoff()
+    segment_overrides.reset_backoff()
+
+
+@pytest.fixture
+def agent_on(monkeypatch):
+    """The attachment agent's flag on — the gate of both reads (only the agent
+    writes corrections and promotions)."""
+    from shared.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "ATTACHMENT_AGENT_ENABLED", True)
+    monkeypatch.setattr(get_settings(), "ATTACHMENT_AGENT_USERS", None)
+
+
+def _text_fix(file_id: str, wrong: str = "المؤجر", right: str = "المالك", *, user: str = USER) -> dict:
+    return {"id": _id(), "file_id": file_id, "user_id": user, "wrong_text": wrong, "right_text": right,
+            "occurrences": 1, "evidence": "صحح الكلمة", "created_at": "2026-11-27T10:00:00+00:00",
+            "reverted_at": None}
+
+
+def _promotion(file_id: str, start: int, end: int, *, user: str = USER) -> dict:
+    return {"id": _id(), "file_id": file_id, "user_id": user, "char_start": start, "char_end": end,
+            "value": "core", "created_at": "2026-11-27T10:00:00+00:00", "reverted_at": None}
+
+
+def _ranged(item_id: str, seq: int, value: str, start: int, end: int, **kw: Any) -> dict:
+    return {**seg(item_id, seq, value, **kw), "char_start": start, "char_end": end}
+
+
+def _opened(*, fixes: list[dict] | None = None, promotions: list[dict] | None = None,
+            segments: Optional[list] = None) -> tuple[FakeSupabase, str]:
+    a = att()
+    iid = a["item_id"]
+    sb = FakeSupabase(
+        workspace_items=[a], conversations=conversations(),
+        attachment_segment_maps=[smap(iid, len(SAMPLE_TEXT))],
+        attachment_segments=segments(iid) if segments else [
+            _ranged(iid, 1, "metadata", 0, 9, text="بين المؤجر والمستأجر"),
+            _ranged(iid, 2, "core", 9, 40, text="المؤجر يسلّم المحل"),
+        ],
+        **{_TEXT_FIXES: [dict(f, file_id=iid) for f in fixes or []],
+           _PROMOTIONS: [dict(p, file_id=iid) for p in promotions or []]},
+    )
+    return sb, iid
+
+
+def test_detail_text_fixes_reach_the_text_and_the_sections(agent_on):
+    sb, iid = _opened(fixes=[_text_fix("-")])
+    out = fs.get_library_file(sb, USER, iid)
+    assert out["content_md"] == SAMPLE_TEXT.replace("المؤجر", "المالك")        # the viewer + Copy
+    assert [s["content_md"] for s in out["sections"]] == ["بين المالك والمستأجر", "المالك يسلّم المحل"]
+    # the stored text is untouched; the size and the map's freshness use its REAL length
+    assert out["chars"] == len(SAMPLE_TEXT) and out["has_sections"] is True
+    assert "المؤجر" in sb.row(iid)["content_md"]
+
+
+def test_detail_without_text_fixes_or_when_their_read_fails_is_unchanged(agent_on):
+    sb, iid = _opened()
+    out = fs.get_library_file(sb, USER, iid)
+    assert out["content_md"] == SAMPLE_TEXT
+    assert [s["content_md"] for s in out["sections"]] == ["بين المؤجر والمستأجر", "المؤجر يسلّم المحل"]
+    sb, iid = _opened(fixes=[_text_fix("-")])
+    sb.fail_tables.add(_TEXT_FIXES)
+    out = fs.get_library_file(sb, USER, iid)
+    assert out["content_md"] == SAMPLE_TEXT and out["sections"][1]["content_md"] == "المؤجر يسلّم المحل"
+
+
+def test_detail_another_users_fix_never_applies(agent_on):
+    sb, iid = _opened(fixes=[_text_fix("-", user=OTHER_USER)])
+    assert fs.get_library_file(sb, USER, iid)["content_md"] == SAMPLE_TEXT
+
+
+def test_detail_promoted_sections_show_as_core(agent_on):
+    """``_sections`` reads the segment rows itself (not ``load_segment_maps``), so it
+    applies the promotions: a promoted letterhead / repeat is shown, a promoted
+    metadata section is no longer «بيانات»; an unpromoted repeat stays hidden."""
+    def segments(iid: str) -> list[dict]:
+        return [
+            _ranged(iid, 1, "boilerplate", 0, 10, text="شعار المحكمة"),
+            _ranged(iid, 2, "metadata", 10, 20, text="رقم الصك"),
+            _ranged(iid, 3, "core", 20, 40, text="الوقائع"),
+            _ranged(iid, 4, "repeat", 40, 50, text="تذييل مكرر"),
+            _ranged(iid, 5, "repeat", 50, 60, text="تذييل ثان"),
+        ]
+
+    sb, iid = _opened(segments=segments, promotions=[_promotion("-", 0, 20), _promotion("-", 40, 45)])
+    out = fs.get_library_file(sb, USER, iid)
+    assert [s["seq"] for s in out["sections"]] == [1, 2, 3, 4]
+    assert [s["is_metadata"] for s in out["sections"]] == [False, False, False, False]
+    for s in out["sections"]:      # the response shape is unchanged
+        assert set(s) == {"seq", "what", "is_metadata", "page_from", "page_to", "document_index", "content_md",
+                          "owner_class", "owner", "brought_by"}
+
+
+def test_detail_a_promotion_opens_a_file_whose_sections_were_all_hidden(agent_on):
+    def segments(iid: str) -> list[dict]:
+        return [_ranged(iid, 1, "boilerplate", 0, 10), _ranged(iid, 2, "repeat", 10, 20)]
+
+    sb, iid = _opened(segments=segments)
+    assert fs.get_library_file(sb, USER, iid)["sections"] is None
+    sb, iid = _opened(segments=segments, promotions=[_promotion("-", 12, 13)])
+    out = fs.get_library_file(sb, USER, iid)
+    assert [s["seq"] for s in out["sections"]] == [2] and out["has_sections"] is True
+
+
+def test_detail_failed_promotions_read_keeps_the_stored_values(agent_on):
+    def segments(iid: str) -> list[dict]:
+        return [_ranged(iid, 1, "metadata", 0, 10), _ranged(iid, 2, "boilerplate", 10, 20),
+                _ranged(iid, 3, "core", 20, 40)]
+
+    sb, iid = _opened(segments=segments, promotions=[_promotion("-", 0, 20)])
+    sb.fail_tables.add(_PROMOTIONS)
+    out = fs.get_library_file(sb, USER, iid)
+    assert [(s["seq"], s["is_metadata"]) for s in out["sections"]] == [(1, True), (3, False)]
+
+
+def test_detail_flag_off_reads_no_fixes_and_no_promotions():
+    """Rollback = the attachment agent's flag off: stored rows kept, nothing applied,
+    and not one extra request."""
+    def segments(iid: str) -> list[dict]:
+        return [_ranged(iid, 1, "boilerplate", 0, 10, text="شعار المؤجر"), _ranged(iid, 2, "core", 10, 40)]
+
+    sb, iid = _opened(segments=segments, fixes=[_text_fix("-")], promotions=[_promotion("-", 0, 10)])
+    out = fs.get_library_file(sb, USER, iid)
+    assert out["content_md"] == SAMPLE_TEXT and [s["seq"] for s in out["sections"]] == [2]
+    assert [t for t, _c in sb.selects if t in (_TEXT_FIXES, _PROMOTIONS)] == []
+
+
 def test_detail_is_owner_only_and_attachment_only():
     mine = att()
     theirs = att(user=OTHER_USER, conv=CONV_OTHER)

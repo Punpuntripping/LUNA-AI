@@ -419,6 +419,11 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # searcher it is built from: tool orchestration with one real judgement
     # ("which law does this name mean").
     "completion_search":          _FLASH_MEDIUM,
+    # Layer-3 Task, called by the router as a tool (.claude/plans/attachment_agent.md).
+    # Reads the user's uploaded files by outline → find → sections / pages, returns
+    # quotes code checks word for word, and stages the edits the user asked for
+    # (code applies them). Owner D10 (2026-11-27): Flash for now.
+    "attachment_agent":           _FLASH,
     # Layer-3 Task. Opens ONE already-unfolded object and answers from it: it
     # validates the object is the one meant, writes the Arabic answer, and
     # decides whether a workspace card is warranted. Up to 3 run per turn (the

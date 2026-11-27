@@ -17,6 +17,8 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 
 #: Files that read (or write) attachment content — each must use shared.files.
 READS_THROUGH_FILES: dict[str, str] = {
+    "agents/attachment_agent/context.py": "S2 load_attachment_rows (with_file_id + overlay_files); lengths, "
+                                          "maps and pages through the segmenter's files-aware loaders",
     "agents/memory/agent.py": "S2 _load_compaction_context, resummarize_dirty_items",
     "agents/memory/angle_mapper/group.py": "S2 item_titles (titles of the attachments a map leaves out); "
                                            "pointer_rows reads pointer columns only; lengths, maps and text "
@@ -45,6 +47,8 @@ READS_THROUGH_FILES: dict[str, str] = {
     "scripts/my_files_type_backfill.py": "S3 apply; its label read is a one-off dev tool (A6)",
     "shared/files/flags.py": "the schema probe",
     "shared/files/store.py": "the module itself",
+    "shared/attachments/derived.py": "S3 the derived-wording fix (attachment_agent.md §3.3): the file's title / "
+                                     "summary through load_files + patch_file; its items' own copies by item",
 }
 
 #: Files that query the table but never read an attachment's content.
@@ -52,6 +56,7 @@ NO_ATTACHMENT_CONTENT: dict[str, str] = {
     "agents/artifact_editor/agent.py": "never an attachment",
     "agents/base/context.py": "never an attachment",
     "agents/memory/artifact_analyzer/context.py": "never an attachment",
+    "agents/memory/angle_mapper/reanalysis.py": "pointers only: the other items of a file (item_id, file_id)",
     "agents/memory/convo_memory_writer/runner.py": "lists pointers (titles)",
     "agents/router/router.py": "lists pointers (list_workspace_items tool)",
     "agents/tool_repository/completion_search_tool.py": "the pinned_texts card only (its entries)",
@@ -80,6 +85,71 @@ NO_ATTACHMENT_CONTENT: dict[str, str] = {
     "scripts/user_files_parity.py": "parity tool: lists attachment ids (+ name/size/type for the match "
                                     "call) to drive the real loaders under both switches",
 }
+
+#: User text corrections (attachment_agent.md §3.3, D12/D15) are an OVERLAY: content_md is
+#: never rewritten (its length drives segment-map / angle-map freshness), so every
+#: reader above decides. A reader that hands an attachment's TEXT to a model or a
+#: person applies the file's corrections …
+TEXT_CORRECTIONS_APPLIED: dict[str, str] = {
+    "agents/attachment_agent/context.py": "the agent's outline and read tools (its own package)",
+    "agents/memory/attachment_segmenter/runner.py": "the model's message only (_for_model); the stored rows are "
+                                                    "cut from the REAL text, content_chars stays real",
+    "agents/memory/summarize.py": "the summary input; _source_length stays the REAL length",
+    "agents/memory/template_ingester/runner.py": "_load_content_md, before the codec",
+    "agents/orchestrator.py": "_load_attached_items (planner <attached_items>, case documents, simple search, "
+                              "legacy writer context, extended fallback)",
+    "agents/router/context.py": "the no-summary fallback, before its 1,500 / 6,000 cut",
+    "agents/tool_repository/unfold_workspace_item.py": "unfold_parts (planner / writer planner), before the codec",
+    "agents/writer_planner/walkers.py": "_fetch_workspace_items_sync — the writer's whole-text bodies",
+    "backend/app/services/angle_maps_service.py": "_map_out — the AngleSectionDialog section text",
+    "backend/app/services/files_service.py": "the opened file's text (viewer + Copy) and _sections "
+                                             "(which also applies the section promotions)",
+    "backend/app/services/workspace_service.py": "list routes; get_workspace_item(text_corrections=True) for "
+                                                 "the GET route only (not the ownership gate)",
+}
+
+#: … or says why it must not (positions, lengths, freshness) or need not (no text).
+TEXT_CORRECTIONS_NOT_APPLIED: dict[str, str] = {
+    "agents/memory/agent.py": "compaction reads summaries only; resummarize_dirty_items compares the REAL "
+                              "length with summary_source_length (a corrected length would loop)",
+    "agents/memory/angle_mapper/group.py": "lengths, maps and paragraph fit on the REAL text; the mapper's "
+                                           "prompt overlay lives in angle_mapper/runner.py",
+    "agents/memory/attachment_segmenter/bundles.py": "membership and lengths only",
+    "agents/memory/attachment_segmenter/store.py": "content_chars — map freshness",
+    "agents/memory/item_analyzer/runner.py": "no live caller (removed from the pipeline 2026-06-08)",
+    "agents/memory/ocr_extractor/runner.py": "writes the text the overlay sits on",
+    "backend/app/services/attachment_cleanup.py": "retention purge, no text shown",
+    "backend/app/services/message_service.py": "page counts only",
+    "backend/app/services/upload_reconciler.py": "promote / soft-delete, no text shown",
+    "backend/app/services/writer_planner_context.py": "summaries only, never content_md",
+    "scripts/angle_map_preview.py": "dev tool",
+    "scripts/my_files_type_backfill.py": "dev tool (labels)",
+    "shared/files/flags.py": "the schema probe",
+    "shared/files/store.py": "the loader itself — the overlay is the reader's choice",
+    "shared/attachments/derived.py": "writes the derived wording (title / summary) at fix time — not a reader",
+}
+
+#: Section readers that never query workspace_items themselves but hand out an
+#: attachment's text: they apply the overlay too.
+SECTION_READERS_APPLYING: dict[str, str] = {
+    "agents/utils/attachment_sections.py": "deep-search + writer sections, before _encode_sections",
+    "agents/deep_search_v4/extended/view.py": "«بحث موسّع» marked text, AFTER marking (offsets stay real)",
+}
+
+#: Code that works on POSITIONS or LENGTHS of the original text — it must never see
+#: corrected text (citation pins, page offsets, freshness).
+NEVER_CORRECTED: tuple[str, ...] = (
+    "agents/memory/attachment_segmenter/store.py",
+    "agents/memory/attachment_segmenter/bundles.py",
+    "agents/memory/agent.py",
+    "agents/memory/citation_pins",
+)
+
+_OVERLAY_IMPORT = re.compile(r"from shared\.attachments(?:\.(?:overlay|text_corrections))? import")
+_OVERLAY_CALL = re.compile(
+    r"\b(?:correct_rows|correct_text|corrections_for_rows|corrections_for_items|corrections_for_item_ids|"
+    r"load_text_corrections|apply_text_corrections|apply_to_sections)\("
+)
 
 _CALL = re.compile(r"""\.table\(\s*["']workspace_items["']\s*\)""")
 _CONST = re.compile(r"""^\s*_?[A-Z_]*TABLE[A-Z_]*\s*(?::\s*\w+\s*)?=\s*["']workspace_items["']""", re.M)
@@ -128,3 +198,37 @@ def test_readers_go_through_shared_files():
             continue
         assert re.search(r"from shared\.files import (store|flags)", text), rel
         assert re.search(r"files_(store|flags)\.\w+\(", text), rel
+
+
+def test_every_attachment_reader_decides_on_text_corrections():
+    """attachment_agent.md §3.3: a new attachment reader must say whether the user's text
+    fixes reach what it reads — and why not when they must not."""
+    applied, skipped = set(TEXT_CORRECTIONS_APPLIED), set(TEXT_CORRECTIONS_NOT_APPLIED)
+    assert not applied & skipped, sorted(applied & skipped)
+    undecided = sorted(set(READS_THROUGH_FILES) - applied - skipped)
+    assert not undecided, (
+        "Attachment reader(s) with no text-correction decision: " + ", ".join(undecided) + ". If it "
+        "hands the text to a model or a person, apply shared.attachments.overlay.correct_rows (or "
+        "text_corrections.*) on the REAL text before any encoding and list it in TEXT_CORRECTIONS_APPLIED; "
+        "otherwise list it in TEXT_CORRECTIONS_NOT_APPLIED with the reason."
+    )
+    assert not (applied | skipped) - set(READS_THROUGH_FILES), sorted((applied | skipped) - set(READS_THROUGH_FILES))
+
+
+def test_readers_that_apply_text_corrections_call_the_overlay():
+    for rel in {**TEXT_CORRECTIONS_APPLIED, **SECTION_READERS_APPLYING}:
+        text = (REPO / rel).read_text(encoding="utf-8")
+        assert _OVERLAY_IMPORT.search(text), rel
+        assert _OVERLAY_CALL.search(text), rel
+
+
+def test_position_and_length_code_never_reads_corrected_text():
+    for rel in NEVER_CORRECTED:
+        path = REPO / rel
+        files = [path] if path.is_file() else [
+            p for p in path.rglob("*.py") if "tests" not in p.relative_to(REPO).parts
+        ]
+        assert files, rel
+        for p in files:
+            text = p.read_text(encoding="utf-8")
+            assert "shared.attachments.overlay" not in text and "shared.attachments.text_corrections" not in text, p

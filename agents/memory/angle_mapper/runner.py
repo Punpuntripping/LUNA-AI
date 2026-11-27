@@ -11,7 +11,13 @@ Two entry points:
   per item, after that item's segmenter. It resolves the item's group and makes
   sure the group is mapped ONCE;
 - :func:`run_message_angle_map` ``(supabase, message_id, item_ids)`` — the group
-  run itself, on the items a caller names (the preview tool).
+  run itself, on the items a caller names (the preview tool; a RE-ANALYSIS the user
+  asked for, ``reanalysis.py``, with ``guidance`` — their words, after the
+  documents — and ``bill_to`` — their turn instead of the upload message).
+
+The numbered paragraphs the model reads carry the file's TEXT CORRECTIONS (the
+user's fixes of extraction mistakes, ``shared/attachments/text_corrections.py``);
+offsets, the paragraph fit check and character counts stay on the real text.
 
 **One run per group — the trigger rule (why this pattern).** The frame starts the
 helper for each member when THAT member's segmenter run ends — whoever started that
@@ -105,7 +111,8 @@ keyed to the GROUP — its conversation, user and message (``_run_group``; scope
 nest: an open turn scope gets nothing). Never the turn's scope: the turn that
 happens to start the run may be another message's (an abandoned upload, a file
 OCR'd later); a joined run's calls land once, in the group's scope. A preview runs
-DETACHED from any scope: no ledger row, no fakes saved, nothing stored.
+DETACHED from any scope: no ledger row, no fakes saved, nothing stored. A re-analysis
+(``bill_to``) opens the same kind of scope keyed to the user's CURRENT turn.
 """
 from __future__ import annotations
 
@@ -475,19 +482,39 @@ async def run_angle_mapper(supabase: Any, item_id: str, *, preview: bool = False
     return result
 
 
+@dataclass(frozen=True)
+class BillTo:
+    """Whose turn a group run is billed to, instead of the group's upload message:
+    a re-analysis the user asked for is billed to the CURRENT turn (its
+    conversation and message — plan ``attachment_agent.md`` D16). ``case_id``
+    ``None`` = the group's case when the conversation is the group's own, else
+    none."""
+
+    conversation_id: str | None
+    message_id: str | None
+    case_id: str | None = None
+
+
 async def run_message_angle_map(
     supabase: Any,
     message_id: str | None,
     item_ids: Sequence[str],
     *,
     preview: bool = False,
+    guidance: str = "",
+    bill_to: BillTo | None = None,
 ) -> AngleMapRunResult:
     """Map ONE message group — ``item_ids`` (the message's attachments, or any
     items of one user a caller names; members are ordered D1… by upload order) —
     and store it under ``message_id`` (``None`` = no message: a file with no
     message link). No pending check, no fresh check, no joining: the caller
-    decided this group runs now (the preview tool). Never raises (cancellation
-    aside).
+    decided this group runs now (the preview tool, a re-analysis). Never raises
+    (cancellation aside).
+
+    ``guidance`` — a re-analysis: the user's words about the previous map, put
+    after the documents (``prompts.guidance_block``); ``""`` = the prompt of a
+    normal run, byte for byte. ``bill_to`` — the ledger scope's turn instead of the
+    group's upload message (:class:`BillTo`); ``None`` = the group's, as always.
 
     The group's user (and so its conversation) comes from the FIRST LIVE
     ATTACHMENT among ``item_ids`` (in the order given) — the run's ``item_id``.
@@ -538,7 +565,9 @@ async def run_message_angle_map(
                         if not group.docs:
                             result.outcome = group.excluded.get(result.item_id) or "skipped_no_map"
                         else:
-                            await _run_group(supabase, group, result, preview=preview, t0=t0)
+                            await _run_group(
+                                supabase, group, result, preview=preview, t0=t0, guidance=guidance, bill_to=bill_to,
+                            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -740,7 +769,29 @@ async def _run_or_join(
 # ---------------------------------------------------------------------------
 
 
-def _prompt_documents(group: Group) -> list[PromptDocument]:
+def _text_corrections(supabase: Any, group: Group) -> dict[str, list]:
+    """``{item_id: [the file's active text corrections]}`` of the members (plan
+    ``attachment_agent.md`` §3.3 — the user's fixes of extraction mistakes, keyed by
+    the file). Members without one are left out. Never raises: ``{}`` on any
+    failure (the model then reads the text as extracted)."""
+    try:
+        from shared.attachments.text_corrections import corrections_for_items
+
+        return corrections_for_items(supabase, group.item_ids, user_id=group.user_id or None)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("angle_mapper: text corrections not read for %s (%s)", group.key, type(exc).__name__)
+        return {}
+
+
+def _prompt_documents(group: Group, corrections: Mapping[str, Sequence[Any]] | None = None) -> list[PromptDocument]:
+    """The members as the prompt shows them. ``corrections`` (the overlay, per
+    item) fix ONLY the numbered paragraphs the model reads: the group's paragraphs,
+    their offsets, the fit check against the sections and the header's character
+    counts stay on the REAL text (``group.group_from_state``). No corrections = the
+    group's own paragraphs, untouched."""
+    fixes = corrections or {}
+    if fixes:
+        from shared.attachments.text_corrections import apply_to_sections
     return [
         PromptDocument(
             index=d.index,
@@ -751,7 +802,7 @@ def _prompt_documents(group: Group) -> list[PromptDocument]:
             documents_in_file=d.smap.documents_in_file,
             sections=d.sections,
             key_paragraphs=d.smap.key_paragraphs,
-            paragraphs=d.paragraphs,
+            paragraphs=apply_to_sections(d.paragraphs, fixes[d.item_id]) if fixes.get(d.item_id) else d.paragraphs,
         )
         for d in group.docs
     ]
@@ -792,6 +843,8 @@ async def _run_group(
     *,
     preview: bool,
     t0: float,
+    guidance: str = "",
+    bill_to: BillTo | None = None,
 ) -> None:
     st = result.stats
     if group.total_chars > MAX_GROUP_CHARS:
@@ -804,7 +857,14 @@ async def _run_group(
     user_words = await asyncio.to_thread(_load_user_words, supabase, group.docs[0].row)
     st["user_words_chars"] = len(user_words)
     unread = await asyncio.to_thread(_unread_titles, supabase, group)
-    message = build_user_message(documents=_prompt_documents(group), user_words=user_words, unread=unread)
+    corrections = await asyncio.to_thread(_text_corrections, supabase, group)
+    if corrections:
+        st["text_corrections"] = sum(len(c) for c in corrections.values())
+    if guidance.strip():
+        st["guidance_chars"] = len(guidance.strip())
+    message = build_user_message(
+        documents=_prompt_documents(group, corrections), user_words=user_words, unread=unread, guidance=guidance,
+    )
     st["input_chars"] = len(message)
     instructions = build_instructions([d.doc_type for d in group.docs])
 
@@ -827,6 +887,17 @@ async def _run_group(
     )
     if preview:
         scope: Any = detached()  # a preview records no ledger row, even inside a caller's scope
+    elif bill_to is not None:
+        # A re-analysis the user asked for: billed to THEIR turn (D16), in its own
+        # scope all the same (the turn's may flush before this run ends).
+        same_conversation = str(bill_to.conversation_id or "") == str(group.conversation_id or "")
+        scope = collect_llm_calls(
+            supabase,
+            conversation_id=bill_to.conversation_id,
+            user_id=user_id or None,
+            message_id=bill_to.message_id,
+            case_id=bill_to.case_id or (group.case_id if same_conversation else None),
+        )
     else:
         # ALWAYS the group's own scope (nested inside any open one, which then gets
         # nothing): the turn whose scope is open may be another message's — an
@@ -953,6 +1024,7 @@ def _write(
 
 
 __all__ = [
+    "BillTo",
     "CALL_TIMEOUT_S",
     "MAX_ATTEMPTS",
     "MAX_GROUP_CHARS",

@@ -145,6 +145,8 @@ def build_planner_view(supabase: Any, angle_map: dict, *, user_id: str) -> Plann
     from agents.memory.angle_mapper.refs import canonical_ref
     from agents.memory.attachment_segmenter.runner import _load_items
     from agents.memory.attachment_segmenter.store import load_segment_maps
+    from shared.attachments.overlay import corrections_for_rows
+    from shared.attachments.text_corrections import apply_text_corrections
 
     row = dict((angle_map or {}).get("map") or {})
     items = sorted((angle_map or {}).get("items") or [], key=lambda i: int(i.get("doc_index") or 0))
@@ -164,6 +166,12 @@ def build_planner_view(supabase: Any, angle_map: dict, *, user_id: str) -> Plann
     smaps = load_segment_maps(supabase, ids, user_id=str(user_id), content_chars=lengths)
     index = section_index(items, smaps)
     client = dict(row.get("client") or {})
+    # The user's text fixes (attachment_agent.md §3.3), applied AFTER marking: the
+    # marking compares paragraph offsets with the sections' stored offsets
+    # (``_paragraphs_fit``), so it runs on the REAL text; ``content_chars`` too.
+    fixes = corrections_for_rows(
+        supabase, [rows[i] for i in ids], user_id=str(user_id), kinds=None,
+    )
 
     docs: list[DocView] = []
     for it in items:
@@ -181,7 +189,9 @@ def build_planner_view(supabase: Any, angle_map: dict, *, user_id: str) -> Plann
             doc_type=doc_type,
             summary=str(r.get("summary") or ""),
             content_chars=len(content),
-            marked_text=marked_text(content, secs, doc_type=doc_type),
+            marked_text=apply_text_corrections(
+                marked_text(content, secs, doc_type=doc_type), fixes.get(item_id),
+            ),
         ))
 
     cards: list[AngleCard] = []

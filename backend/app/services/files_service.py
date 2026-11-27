@@ -32,6 +32,14 @@ from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.models.responses import FileDocType
+from shared.attachments.flags import edits_enabled
+from shared.attachments.segment_overrides import apply_segment_overrides, load_segment_overrides
+from shared.attachments.text_corrections import (
+    TextCorrection,
+    apply_text_corrections,
+    apply_to_sections,
+    load_text_corrections,
+)
 from shared.config import get_settings
 from shared.files import flags as files_flags
 from shared.files import store as files_store
@@ -643,8 +651,11 @@ def _get_from_files(supabase: SupabaseClient, user_id: str, item_id: str) -> Any
 
     row = _file_row(frow, pointer)
     content = frow.get("content_md") or ""
-    chars = len(content)
-    sections, documents = _sections(supabase, user_id, row["file_id"], chars) if chars else (None, [])
+    chars = len(content)   # the REAL length: map freshness and the card's size
+    fixes = _text_fixes(supabase, user_id, row["file_id"]) if chars else []
+    sections, documents = (
+        _sections(supabase, user_id, row["file_id"], chars, fixes=fixes) if chars else (None, [])
+    )
     detail = _file_dict(
         row,
         chars=chars,
@@ -655,7 +666,7 @@ def _get_from_files(supabase: SupabaseClient, user_id: str, item_id: str) -> Any
     detail.update({
         "file_id": row["file_id"],
         "summary": summary if isinstance(summary, str) else None,
-        "content_md": content,
+        "content_md": apply_text_corrections(content, fixes),   # FileViewer text + Copy
         "documents": documents,
         "sections": sections,
     })
@@ -900,8 +911,25 @@ def _document_index(docs: list[tuple[str, Optional[int], Optional[int]]], from_p
     return best if best is not None else 0
 
 
+def _text_fixes(supabase: SupabaseClient, user_id: str, file_key: str) -> list[TextCorrection]:
+    """The file's active text corrections, oldest first (attachment_agent.md §3.3:
+    an overlay — ``content_md`` is never rewritten). ``file_key`` — the file id on
+    the files path, the item id on the items path (a file's first item has
+    ``file_id = item_id``). ``[]`` when there are none or the read failed (the
+    loader never raises) — and, with NO request, when the attachment agent is off
+    for the user (only the agent writes corrections)."""
+    if not edits_enabled(user_id):
+        return []
+    return load_text_corrections(supabase, [file_key], user_id=user_id).get(str(file_key)) or []
+
+
 def _sections(
-    supabase: SupabaseClient, user_id: str, item_id: str, chars: int
+    supabase: SupabaseClient,
+    user_id: str,
+    item_id: str,
+    chars: int,
+    *,
+    fixes: Optional[list[TextCorrection]] = None,
 ) -> tuple[Optional[list[dict]], list[dict]]:
     """``(sections, documents)`` for the opened file (§11 sections rule).
 
@@ -909,6 +937,16 @@ def _sections(
     once letterheads and repeats are removed, or a failed read → ``(None, [])``:
     the client shows the full text. The English ``label`` is never selected
     and the core/supporting rating leaves only as ``is_metadata``.
+
+    The user's edits (attachment_agent.md §3.1 / §3.3), both keyed by the file
+    (``item_id`` here is the key the map is stored under): a section they
+    PROMOTED reads as ``core`` — so a promoted letterhead / repeat is shown and a
+    promoted metadata section is no longer ``is_metadata`` (this reads the
+    segments directly, not through ``load_segment_maps``, so the promotions are
+    applied here); ``fixes`` — the file's text corrections — on each section's
+    text. Positions and the freshness check stay on the REAL text. A failed
+    promotions read keeps the stored values; with the attachment agent off for the
+    user, promotions are not read at all.
     """
     try:
         smap = _first(
@@ -925,7 +963,8 @@ def _sections(
             lambda: supabase.table(SEGMENTS_TABLE)
             .select(
                 "seq, from_p, page_from, page_to, value, what, content_md, "
-                "owner_class, owner, brought_by"   # seg-v5.2 (migration 220); NULL on older maps
+                "owner_class, owner, brought_by, "   # seg-v5.2 (migration 220); NULL on older maps
+                "char_start, char_end"               # where the user's promotions fall (234)
             )
             .eq("item_id", item_id)
             .order("seq")
@@ -934,6 +973,12 @@ def _sections(
         logger.warning("files: section read failed for %s (%s) — full text", item_id, type(exc).__name__)
         return None, []
 
+    promoted = (
+        load_segment_overrides(supabase, [item_id], user_id=user_id).get(str(item_id))
+        if edits_enabled(user_id) else None
+    )
+    if promoted:
+        rows = apply_segment_overrides(rows, promoted)
     shown = [r for r in rows if r.get("value") not in HIDDEN_SECTION_VALUES]
     if not shown:
         return None, []
@@ -952,7 +997,7 @@ def _sections(
             **_section_owner(r),
         })
     documents = [{"name": name} for name, _a, _b in docs] if several else []
-    return sections, documents
+    return apply_to_sections(sections, fixes), documents
 
 
 def _section_owner(row: dict) -> dict:
@@ -1024,8 +1069,11 @@ def get_library_file(supabase: SupabaseClient, user_id: str, item_id: str) -> Op
         return None
 
     content = row.get("content_md") or ""
-    chars = len(content)
-    sections, documents = _sections(supabase, user_id, item_id, chars) if chars else (None, [])
+    chars = len(content)   # the REAL length: map freshness and the card's size
+    fixes = _text_fixes(supabase, user_id, item_id) if chars else []
+    sections, documents = (
+        _sections(supabase, user_id, item_id, chars, fixes=fixes) if chars else (None, [])
+    )
     detail = _file_dict(
         row,
         chars=chars,
@@ -1035,7 +1083,7 @@ def get_library_file(supabase: SupabaseClient, user_id: str, item_id: str) -> Op
     summary = row.get("summary")
     detail.update({
         "summary": summary if isinstance(summary, str) else None,
-        "content_md": content,
+        "content_md": apply_text_corrections(content, fixes),   # FileViewer text + Copy
         "documents": documents,
         "sections": sections,
     })

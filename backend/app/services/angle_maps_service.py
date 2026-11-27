@@ -39,6 +39,8 @@ from agents.memory.angle_mapper.store import load_fresh_angle_map_for_item
 from agents.memory.attachment_segmenter.store import load_segment_maps
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.services import files_service
+from shared.attachments.overlay import corrections_for_item_ids
+from shared.attachments.text_corrections import apply_text_corrections
 from shared.config import get_settings
 from shared.files import store as files_store
 
@@ -240,7 +242,8 @@ def _map_out(supabase: SupabaseClient, user_id: str, stored: dict) -> dict:
     member_ids = [str(m["item_id"]) for m in members]
     client_raw = head.get("client") if isinstance(head.get("client"), dict) else {}
 
-    index = section_index(members, load_segment_maps(supabase, member_ids, user_id=user_id))
+    seg_maps = load_segment_maps(supabase, member_ids, user_id=user_id)
+    index = section_index(members, seg_maps)
 
     angles = []
     used: list[str] = []
@@ -274,6 +277,16 @@ def _map_out(supabase: SupabaseClient, user_id: str, stored: dict) -> dict:
             "sections": [{"ref": r, "side": _label(index, r, {}, client_raw)} for r in refs],
         })
 
+    # The user's text fixes (attachment_agent.md §3.3) on the section text the
+    # AngleSectionDialog shows — keyed by file, so they follow a «الملفات» file into
+    # every conversation. One read, only when a section is sent and the attachment
+    # agent is on for the user, keyed by the files the segment loader resolved;
+    # none / flag off / a failed read = the stored text.
+    used_items = list(dict.fromkeys(str(index[ref].get("item_id") or "") for ref in used))
+    fixes = corrections_for_item_ids(
+        supabase, used_items, user_id=user_id,
+        file_keys={i: getattr(seg_maps.get(i), "file_key", None) for i in used_items},
+    )
     sections = []
     for ref in dict.fromkeys(used):
         s = index[ref]
@@ -290,7 +303,9 @@ def _map_out(supabase: SupabaseClient, user_id: str, stored: dict) -> dict:
             "page_from": _int_or_none(s.get("page_from")),
             "page_to": _int_or_none(s.get("page_to")),
             "side": _label(index, ref, {}, client_raw),
-            "content_md": str(s.get("content_md") or ""),
+            "content_md": apply_text_corrections(
+                str(s.get("content_md") or ""), fixes.get(str(s.get("item_id") or "")),
+            ),
         })
 
     left_raw = [x for x in head.get("left_out") or [] if isinstance(x, dict) and x.get("item_id")]

@@ -187,6 +187,10 @@ class StoredSegment(BaseModel):
     owner_class: str | None = None
     owner: str | None = None
     brought_by: str | None = None
+    #: Not a column: ``True`` when ``value`` is ``core`` only because the user
+    #: promoted the section (migration 234, ``shared/attachments/segment_overrides``,
+    #: applied by ``store.load_segment_maps``).
+    promoted_by_user: bool = False
 
 
 class StoredMap(BaseModel):
@@ -203,6 +207,10 @@ class StoredMap(BaseModel):
     content_chars: int
     created_at: str | None = None
     segments: list[StoredSegment] = Field(default_factory=list)
+    #: Not a column: the id the map is stored under — the item's FILE (or the item
+    #: itself when it links none), as ``load_segment_maps`` resolved it. Readers key
+    #: the file's text corrections by it without a second lookup.
+    file_key: str | None = None
 
     def by_value(self, *values: str) -> list[StoredSegment]:
         return [s for s in self.segments if s.value in values]

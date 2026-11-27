@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from agents.writer.models import AnalyzedItem
 from backend.app.services.references_service import fetch_item_references
+from shared.attachments.overlay import correct_rows
 from shared.files import store as files_store
 
 from .models import PlannerRole
@@ -77,6 +78,12 @@ def _fetch_workspace_items_sync(
         return {}
     rows = getattr(result, "data", None) or []
     rows = files_store.overlay_files(supabase, rows, user_id=user_id)
+    # An uploaded file's text fixes (attachment_agent.md §3.3) on every whole-text
+    # body the writer reads — templates, prior drafts, unsegmented files and the
+    # fallback text of segmented ones (their sections are corrected where they
+    # load, ``attachment_sections``). REAL text: the writer's executor encodes
+    # the package. None / a failed read = as is.
+    rows = correct_rows(supabase, rows, user_id=user_id)
     out: dict[str, dict] = {}
     for row in rows:
         if not isinstance(row, dict):

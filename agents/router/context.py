@@ -39,6 +39,7 @@ from agents.utils.conversation_memory import (
 from agents.utils.history import messages_to_history, provenance_item_ids
 from agents.utils.reading_corrections import KEY as CORRECTIONS_KEY, with_corrections
 from pydantic_ai.messages import ModelMessage
+from shared.attachments.overlay import correct_rows
 from shared.files import store as files_store
 from shared.identity import resolve_call_name
 from shared.workspace.preview_lock import LockPolicy, is_locked, preview_cut
@@ -376,6 +377,13 @@ def _load_workspace_item_summaries(
             conversation_id, e,
         )
         return [], None
+    # The user's text fixes (attachment_agent.md §3.3) on the only attachment text
+    # the router reads here — the no-summary fallback — BEFORE its 1,500 / 6,000 cut.
+    # Read only for attachments with no summary; none / a failed read = the rows as is.
+    rows = correct_rows(
+        supabase, rows, user_id=user_id,
+        where=lambda r: not (r.get("summary") or "").strip(),
+    )
 
     summaries: list[dict] = []
     compaction_summary_md: str | None = None

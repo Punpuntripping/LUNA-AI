@@ -272,11 +272,13 @@ async def get_workspace_item(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Get a single workspace item (preview lock applied)."""
+    """Get a single workspace item (preview lock applied; an attachment's text
+    with the user's text fixes — attachment_agent.md §3.3)."""
     validate_uuid(item_id, "معرف العنصر")
     data = await run_db(
         workspace_service.get_workspace_item,
         supabase, current_user.auth_id, item_id,
+        text_corrections=True,
     )
     previews = await wi_preview_service.previews_for(supabase, [data])
     wi_preview_service.note_served(
