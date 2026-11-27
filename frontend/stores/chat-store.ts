@@ -157,7 +157,7 @@ export interface DeepSearchProgressState {
    */
   topicsSeen: number;
   /**
-   * «بحث موسّع» only (``data.searches``): the run's parallel searches — how
+   * «بحث شامل» only (``data.searches``): the run's parallel searches — how
    * many in all and how many have finished. ``null`` on an ordinary deep
    * search; kept when a later event omits it.
    */
@@ -178,10 +178,12 @@ export interface DeepSearchSummary {
   sources: number;
   elapsedMs: number;
   log: string[];
+  /** «بحث شامل» run (``data.searches`` seen) — the chip then says so. */
+  extended: boolean;
 }
 
 /**
- * «بحث موسّع» ``data.searches`` → progress state: N parallel searches, M
+ * «بحث شامل» ``data.searches`` → progress state: N parallel searches, M
  * finished. ``done`` is monotonic and never above ``total``; an event without
  * a valid block keeps the previous value.
  */
@@ -249,6 +251,14 @@ interface WorkspaceUiState {
    * cleared via a setTimeout in the same action.
    */
   highlightedItemId: string | null;
+  /**
+   * The opened item fills the whole page: the chat is hidden and the sidebar
+   * folds (desktop only — on a phone the pane is already a full-screen
+   * overlay). Set by the pane's «توسيع» button, and by the pane itself when
+   * it opens the «بحث شامل» merged answer. Leaving the item (back to the
+   * list, closing the pane) drops it.
+   */
+  expanded: boolean;
 }
 
 /**
@@ -301,9 +311,27 @@ export interface StreamState {
    * step's phrase («ريحان يستخرج المستندات»…) instead of «ريحان يفكّر».
    */
   extractingDocuments: boolean;
-  /** Which step (``ocr_progress.stage``); null when none runs. */
+  /** Which step (``ocr_progress.stage``); null when none runs. MONOTONIC
+   *  (``OCR_STAGE_ORDER``) — a step never walks back. */
   extractingStage: OcrStage | null;
+  /** Client clock at the first ``ocr_progress`` of this turn — the timer of
+   *  ``FilesProgress``; null when no step runs. */
+  extractingStartedAt: number | null;
+  /** When each step was first seen — the origin of that step's bar creep. */
+  extractingStageStarts: Partial<Record<OcrStage, number>>;
 }
+
+/**
+ * Order of the steps on the user's files before the answer (``ocr_progress``,
+ * orchestrator ``OCR_STAGES``) — keeps ``extractingStage`` monotonic.
+ */
+export const OCR_STAGE_ORDER: Record<OcrStage, number> = {
+  extracting: 0,
+  summarizing: 1,
+  arranging: 2,
+  organizing: 3,
+  threads: 4,
+};
 
 /**
  * Per-conversation refusal banner (``QuotaBanner``): the quota gate
@@ -557,6 +585,8 @@ interface ChatState {
   closeWorkspaceItem: (conversationId: string) => void;
   closeWorkspace: (conversationId: string) => void;
   toggleWorkspace: (conversationId: string) => void;
+  /** Full page on/off for the opened item (no-op unless an item is open). */
+  setWorkspaceExpanded: (conversationId: string, expanded: boolean) => void;
   setSplitRatio: (ratio: number) => void;
   startAgentRun: (
     conversationId: string,
@@ -609,6 +639,7 @@ const DEFAULT_WORKSPACE: WorkspaceUiState = {
   openItemId: null,
   focusedReferenceN: null,
   highlightedItemId: null,
+  expanded: false,
 };
 
 // Duration of the WorkspaceCard ring highlight triggered by the Phase E chip.
@@ -635,6 +666,8 @@ function newStreamState(sendId: number): StreamState {
     runningAgentSubtype: null,
     extractingDocuments: false,
     extractingStage: null,
+    extractingStartedAt: null,
+    extractingStageStarts: {},
   };
 }
 
@@ -957,6 +990,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // Preserve an active highlight so a chip click that targets a
             // card in the list view can keep ringing it after the pane opens.
             highlightedItemId: cur.highlightedItemId,
+            // An item auto-opened while another one is on full page stays
+            // on full page (the chat is hidden — the user is reading here).
+            expanded: cur.isOpen && cur.openItemId !== null && cur.expanded,
           },
         },
       };
@@ -973,6 +1009,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             openItemId: itemId,
             focusedReferenceN: n,
             highlightedItemId: cur.highlightedItemId,
+            expanded: cur.isOpen && cur.openItemId !== null && cur.expanded,
           },
         },
       };
@@ -1029,6 +1066,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openItemId: null,
           focusedReferenceN: null,
           highlightedItemId: itemId,
+          expanded: false,
         },
       },
     }));
@@ -1065,7 +1103,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         workspaceByConversation: {
           ...state.workspaceByConversation,
-          [conversationId]: { ...cur, openItemId: null, focusedReferenceN: null },
+          // Full page belongs to an opened item: the list goes back beside
+          // the chat.
+          [conversationId]: {
+            ...cur,
+            openItemId: null,
+            focusedReferenceN: null,
+            expanded: false,
+          },
         },
       };
     }),
@@ -1079,9 +1124,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
           openItemId: null,
           focusedReferenceN: null,
           highlightedItemId: null,
+          expanded: false,
         },
       },
     })),
+
+  setWorkspaceExpanded: (conversationId, expanded) =>
+    set((state) => {
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      const next = expanded && cur.isOpen && cur.openItemId !== null;
+      if (cur.expanded === next) return state;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: { ...cur, expanded: next },
+        },
+      };
+    }),
 
   toggleWorkspace: (conversationId) =>
     set((state) => {
@@ -1094,6 +1153,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             openItemId: cur.isOpen ? null : cur.openItemId,
             focusedReferenceN: null,
             highlightedItemId: cur.isOpen ? null : cur.highlightedItemId,
+            expanded: false,
           },
         },
       };
@@ -1108,10 +1168,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setExtractingDocuments: (conversationId, extracting, stage) =>
     set(
       (state) =>
-        patchStream(state.streams, conversationId, () => ({
-          extractingDocuments: extracting,
-          extractingStage: extracting ? (stage ?? "extracting") : null,
-        })) ?? state,
+        patchStream(state.streams, conversationId, (cur) => {
+          if (!extracting) {
+            return {
+              extractingDocuments: false,
+              extractingStage: null,
+              extractingStartedAt: null,
+              extractingStageStarts: {},
+            };
+          }
+          const now = Date.now();
+          const incoming: OcrStage = stage ?? "extracting";
+          // Monotonic: the steps run in order, so an out-of-order event (an
+          // older backend repeating the bare phase) never walks the card back.
+          const next =
+            cur.extractingStage !== null &&
+            OCR_STAGE_ORDER[incoming] < OCR_STAGE_ORDER[cur.extractingStage]
+              ? cur.extractingStage
+              : incoming;
+          return {
+            extractingDocuments: true,
+            extractingStage: next,
+            extractingStartedAt: cur.extractingStartedAt ?? now,
+            extractingStageStarts:
+              cur.extractingStageStarts[next] !== undefined
+                ? cur.extractingStageStarts
+                : { ...cur.extractingStageStarts, [next]: now },
+          };
+        }) ?? state,
     ),
 
   startAgentRun: (conversationId, agentFamily, subtype) =>
@@ -1288,6 +1372,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             sources: run.sources,
             elapsedMs: Math.max(0, Date.now() - run.startedAt),
             log: run.log,
+            extended: run.searches !== null,
           },
         },
       };

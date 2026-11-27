@@ -1,10 +1,10 @@
-"""The router waits for the file helpers and chooses «بحث موسّع» (extended_search.md D34).
+"""The router waits for the file helpers and chooses «بحث شامل» (extended_search.md D34).
 
 Owner 2026-11-27: the segmenter, the citation pins and the angle map are critical
 for the router on THIS message's files (before the pause check), the client sees
 one phrase per step that is still running, a file the router waited on is never
 waited on again later in the turn, and the router — not a silent code check —
-starts «بحث موسّع» with ``DispatchAgent(extended=True)``.
+starts «بحث شامل» with ``DispatchAgent(extended=True)``.
 
 Offline; ``asyncio.run`` (CI has no pytest-asyncio).
 """
@@ -331,7 +331,7 @@ def test_helpers_that_end_at_once_show_only_the_ocr_line(monkeypatch, quick_stag
 
 
 # --------------------------------------------------------------------------- #
-# The router's «بحث موسّع» section and its validator
+# The router's «بحث شامل» section and its validator
 # --------------------------------------------------------------------------- #
 
 
@@ -412,7 +412,7 @@ def test_the_section_lists_the_files_and_angles_when_available():
     assert 'extended=true, attached_wis=["WI-3", "WI-4"]' in text
     assert "never `CheckPriorReports`" in text
     # D32 under D34: a typed change to a plan card is re-planned as a new card.
-    assert "«بحث موسّع — الخطة المقترحة»" in text
+    assert "«بحث شامل — الخطة المقترحة»" in text
 
 
 @pytest.mark.parametrize(

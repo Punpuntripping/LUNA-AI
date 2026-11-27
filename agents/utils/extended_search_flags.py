@@ -1,4 +1,4 @@
-"""On/off check for «بحث موسّع» (extended search).
+"""On/off check for «بحث شامل» (extended search).
 
 Plan: ``.claude/plans/extended_search.md`` §4.8. A leaf module — the orchestrator wiring
 and the extended package ask it without importing each other. Same rule as

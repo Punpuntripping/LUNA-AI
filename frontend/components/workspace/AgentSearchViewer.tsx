@@ -75,7 +75,7 @@ interface AgentSearchViewerProps {
  * list with its hidden-count line, and NO مشاركة / حفظ كمدونة / PDF — نسخ
  * stays and copies the visible part. Without ``preview`` nothing changes.
  *
- * «بحث موسّع» (``metadata.subtype === "extended_synthesis"``, the merger's
+ * «بحث شامل» (``metadata.subtype === "extended_synthesis"``, the merger's
  * merged answer): the same body, references and action bar, plus its own
  * sections from the metadata — ``ExtendedSynthesisLead`` above the body
  * (chip + meta line, «نقاط القوة والضعف», «الجواب») and
@@ -103,7 +103,7 @@ export function AgentSearchViewer({
     referenceOpts,
   );
   const setFeedback = useSetWorkspaceItemFeedback();
-  // null for every subtype but «بحث موسّع» — those render exactly as before.
+  // null for every subtype but «بحث شامل» — those render exactly as before.
   const extended = useMemo(() => parseExtendedSynthesis(item.metadata), [item.metadata]);
   const [localFocusedN, setLocalFocusedN] = useState<number | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
@@ -156,7 +156,7 @@ export function AgentSearchViewer({
       data-tour="wi-body"
     >
       <ArtifactPreview
-        // «بحث موسّع» only: a fresh scroll viewport per item, so opening a
+        // «بحث شامل» only: a fresh scroll viewport per item, so opening a
         // child report from the bottom of the merged answer (or coming back to
         // it) starts at the top. Other items keep the shared key — unchanged.
         key={extended ? `extended-${item.item_id}` : undefined}

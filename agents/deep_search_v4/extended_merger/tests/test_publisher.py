@@ -1,4 +1,4 @@
-"""The merged answer («بحث موسّع») is published as ONE agent_search workspace item
+"""The merged answer («بحث شامل») is published as ONE agent_search workspace item
 with ``metadata.subtype = "extended_synthesis"`` (plan extended_search.md §4.7, D14).
 
 ``create_workspace_item`` / ``persist_item_references`` / ``decode_for_persist``
@@ -223,8 +223,8 @@ def test_ids_and_enums_are_never_decoded(calls) -> None:
         ("عنوان الموجّه", "سؤال", "عنوان الموجّه"),
         (None, "سؤال المستخدم", "سؤال المستخدم"),
         ("   ", "سؤال المستخدم", "سؤال المستخدم"),
-        (None, "", "بحث موسّع"),
-        ("", "  ", "بحث موسّع"),
+        (None, "", "بحث شامل"),
+        ("", "  ", "بحث شامل"),
         ("ع" * 120, "سؤال", "ع" * 80),
         (None, "س" * 120, "س" * 80),
     ],

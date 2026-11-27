@@ -282,12 +282,12 @@ describe("send — deep_search_gated (plan gate, migration 197)", () => {
       plan_id: "free",
       upgrade_options: ["basic", "pro", "max"],
       resets_at: "2026-11-19T09:00:00+00:00",
-      message_ar: "استخدمت البحث المعمّق المتاح في باقتك لهذه الفترة.",
+      message_ar: "استخدمت البحث العميق المتاح في باقتك لهذه الفترة.",
     };
     const s = h.streams[0];
     s.push(frame("message_start", START));
     s.push(frame("deep_search_gated", info));
-    s.push(frame("token", { text: "يحتاج هذا الطلب إلى بحث معمّق." }));
+    s.push(frame("token", { text: "يحتاج هذا الطلب إلى بحث عميق." }));
     s.push(frame("done", DONE));
     const result = await promise;
 
@@ -296,7 +296,7 @@ describe("send — deep_search_gated (plan gate, migration 197)", () => {
     assert.equal(committed(), 1);
     const [answer, user] = h.cache.rows(C1);
     assert.equal(answer.message_id, "a1");
-    assert.equal(answer.content, "يحتاج هذا الطلب إلى بحث معمّق.");
+    assert.equal(answer.content, "يحتاج هذا الطلب إلى بحث عميق.");
     assert.equal(user.message_id, "u1");
     assert.deepEqual(h.store.getState().notices[C1], { kind: "deep_search_gated", info });
   });
@@ -305,7 +305,7 @@ describe("send — deep_search_gated (plan gate, migration 197)", () => {
     const h = harness();
     h.store.setNotice(C1, {
       kind: "deep_search_gated",
-      info: { reason: "low_points", plan_id: "basic", upgrade_options: [], resets_at: null, message_ar: "رصيدك المتبقي لا يكفي لبدء بحث معمّق جديد." },
+      info: { reason: "low_points", plan_id: "basic", upgrade_options: [], resets_at: null, message_ar: "رصيدك المتبقي لا يكفي لبدء بحث عميق جديد." },
     });
     await startSend(h);
     assert.equal(h.store.getState().notices[C1], undefined);
@@ -838,6 +838,27 @@ describe("auto-open", () => {
     await promise;
     assert.deepEqual(h.store.getState().autoOpen[C1], { itemId: "d1", kind: "agent_writing", title: "مذكرة", seq: 1 });
   });
+
+  test("«بحث شامل»: the first report opens, later ones never swap the sheet, the merged answer does", async () => {
+    const h = harness();
+    const { promise } = await startSend(h);
+    const s = h.streams[0];
+    s.push(frame("message_start", START));
+    s.push(frame("agent_progress", { stage: "searching", text: "", data: { searches: { total: 3, done: 0 } } }));
+    s.push(frame("workspace_item_created", { item_id: "r2", kind: "agent_search", title: "تقرير 2", created_by: "agent" }));
+    await tick();
+    assert.equal(h.store.getState().autoOpen[C1]?.itemId, "r2", "the first report to finish opens");
+    s.push(frame("workspace_item_created", { item_id: "r1", kind: "agent_search", title: "تقرير 1", created_by: "agent" }));
+    await tick();
+    assert.equal(h.store.getState().autoOpen[C1]?.itemId, "r2", "a later report only joins the list");
+    s.push(frame("workspace_item_created", {
+      item_id: "m1", kind: "agent_search", title: "جواب مدمج", created_by: "agent", subtype: "extended_synthesis",
+    }));
+    await tick();
+    assert.equal(h.store.getState().autoOpen[C1]?.itemId, "m1", "the merged answer always opens");
+    s.push(frame("done", DONE));
+    await promise;
+  });
 });
 
 describe("workspace item events", () => {
@@ -943,7 +964,7 @@ describe("retry / regenerate", () => {
   });
 });
 
-describe("send — «بحث موسّع» plan choice", () => {
+describe("send — «بحث شامل» plan choice", () => {
   const CHOICE = { run_id: "r1", option: "plan" as const };
   const TAG = { kind: "agent_answer", run_id: "r1", plan_choice: "plan" };
   const QUOTA = { meter: "ord" as const, period: "daily" as const, used: 1, limit: 1, resets_at: "", message_ar: "حد" };

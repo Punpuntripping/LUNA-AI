@@ -91,7 +91,7 @@ export interface SendParams {
   /** `message_start` (or an adopted send): the server took the send — release
    *  the composer chips now, never earlier. */
   onCommitted?: () => void;
-  /** «بحث موسّع» plan-card button (`SendMessagePayload.plan_choice`): `content`
+  /** «بحث شامل» plan-card button (`SendMessagePayload.plan_choice`): `content`
    *  is then the button's label. Sent with no attachments; a refusal hands no
    *  text back (it was never typed — the card's buttons come back instead). */
   planChoice?: PlanChoicePayload | null;
@@ -167,6 +167,12 @@ interface SendCtx {
   nextSteps: NextStep[];
   templatesUsed: TemplateUsed[] | undefined;
   outcome: SendResult | null;
+  /** «بحث شامل» run (`data.searches` seen on its progress). Its reports land one by
+   *  one as their searches end: the first raises the sheet, later ones only refresh
+   *  the list (the sheet never swaps under the reader); the merged answer
+   *  (subtype `extended_synthesis`) always does. Web use-chat, same rule. */
+  shamil: boolean;
+  shamilReportOpened: boolean;
 }
 
 interface RecoveryWatch {
@@ -458,6 +464,7 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
         store.finish(conv, sid);
         return false;
       case "agent_progress":
+        if (ev.data.data?.searches) ctx.shamil = true;
         store.progress(conv, sid, ev.data);
         if (ev.data.stage === "done" && ctx.assistantId) store.seal(conv, sid, ctx.assistantId);
         return false;
@@ -476,7 +483,10 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       case "workspace_item_created": {
         cache.invalidateWorkspace(conv);
         const { item_id: itemId, kind } = ev.data;
-        if (itemId && kind && AUTO_OPEN_KINDS.has(kind)) {
+        const shamilReport = ctx.shamil && ev.data.subtype !== "extended_synthesis";
+        const laterShamilReport = shamilReport && ctx.shamilReportOpened;
+        if (shamilReport) ctx.shamilReportOpened = true;
+        if (itemId && kind && AUTO_OPEN_KINDS.has(kind) && !laterShamilReport) {
           store.requestAutoOpen(conv, { itemId, kind: kind as AutoOpenKind, title: ev.data.title ?? "" });
         }
         return false;
@@ -609,6 +619,8 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
         nextSteps: [],
         templatesUsed: undefined,
         outcome: null,
+        shamil: false,
+        shamilReportOpened: false,
       };
       active.set(conv, ctx);
       store.begin(conv, ctx.sendId);

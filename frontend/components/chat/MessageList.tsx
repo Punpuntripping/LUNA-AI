@@ -23,6 +23,7 @@ import {
 } from "@/components/chat/MessageBubble";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { DeepSearchProgress } from "@/components/chat/DeepSearchProgress";
+import { FilesProgress } from "@/components/chat/FilesProgress";
 import { DeepSearchSummaryChip } from "@/components/chat/DeepSearchSummaryChip";
 import { FailedResponseBubble } from "@/components/chat/FailedResponseBubble";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
@@ -56,7 +57,7 @@ interface MessageListProps {
   onEditResend?: (messageId: string, newContent: string) => void;
   /** Called when user clicks Retry on a failed message */
   onRetry?: (messageId: string) => void;
-  /** «بحث موسّع» plan-card button → send the choice (see PlanCard). */
+  /** «بحث شامل» plan-card button → send the choice (see PlanCard). */
   onPlanChoice?: PlanChoiceHandler;
 }
 
@@ -630,19 +631,25 @@ export function MessageList({
  * The "assistant is working" row, in both slots where MessageList shows one
  * (the empty-placeholder path and the standalone path).
  *
- * ``deep_search`` runs for 1–4 minutes, so it gets the live step tracker;
- * every other family keeps the generic TypingIndicator. The family read lives
- * HERE rather than in MessageList so the agent_run_started/finished flips
- * re-render this 1-line component instead of the whole list.
+ * The steps on this turn's files (``ocr_progress``) run before the router picks
+ * a family, so their card («تجهيز المستندات») wins while on. ``deep_search``
+ * runs for minutes, so it gets the live step tracker («بحث عميق» / «بحث شامل»);
+ * every other family keeps the generic TypingIndicator. The reads live HERE
+ * rather than in MessageList so these flips re-render this 1-line component
+ * instead of the whole list.
  */
 const ThinkingRow = memo(function ThinkingRow({
   conversationId,
 }: {
   conversationId: string;
 }) {
+  const isExtracting = useChatStore(
+    (s) => s.streams[conversationId]?.extractingDocuments ?? false,
+  );
   const isDeepSearch = useChatStore(
     (s) => s.streams[conversationId]?.runningAgentFamily === "deep_search",
   );
+  if (isExtracting) return <FilesProgress conversationId={conversationId} />;
   return isDeepSearch ? (
     <DeepSearchProgress conversationId={conversationId} />
   ) : (

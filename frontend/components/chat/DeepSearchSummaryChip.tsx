@@ -9,13 +9,15 @@ import {
   formatCountAr,
   formatElapsedAr,
   type ArabicPlural,
-} from "@/components/chat/DeepSearchProgress";
+} from "@/components/chat/StageCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EDITABLE CONFIG — all Arabic copy for the collapsed chip (no i18n framework).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const LABEL = "بحث معمّق";
+/** «بحث عميق» — or «بحث شامل» for a run with parallel searches. */
+const DEEP_LABEL = "بحث عميق";
+const EXTENDED_LABEL = "بحث شامل";
 
 /** Sources counted in the chip ("24 مصدرًا"). */
 const SOURCE_FORMS: ArabicPlural = {
@@ -25,11 +27,13 @@ const SOURCE_FORMS: ArabicPlural = {
   many: "مصدرًا",
 };
 
-const EXPAND_LABEL = "عرض خطوات البحث المعمّق";
-const COLLAPSE_LABEL = "إخفاء خطوات البحث المعمّق";
+const DEEP_EXPAND_LABEL = "عرض خطوات البحث العميق";
+const DEEP_COLLAPSE_LABEL = "إخفاء خطوات البحث العميق";
+const EXTENDED_EXPAND_LABEL = "عرض خطوات البحث الشامل";
+const EXTENDED_COLLAPSE_LABEL = "إخفاء خطوات البحث الشامل";
 const EMPTY_LOG = "لا توجد تفاصيل إضافية";
 
-/** Separator between the chip's parts: «بحث معمّق · 24 مصدرًا · 01:50». */
+/** Separator between the chip's parts: «بحث عميق · 24 مصدرًا · 01:50». */
 const SEP = "·";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +58,8 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
 }: DeepSearchSummaryChipProps) {
   const [isOpen, setIsOpen] = useState(false);
 
-  const parts: string[] = [LABEL];
+  const ext = summary.extended;
+  const parts: string[] = [ext ? EXTENDED_LABEL : DEEP_LABEL];
   if (summary.sources > 0) {
     parts.push(formatCountAr(summary.sources, SOURCE_FORMS));
   }
@@ -75,7 +80,11 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
             type="button"
             onClick={() => setIsOpen((open) => !open)}
             aria-expanded={isOpen}
-            aria-label={isOpen ? COLLAPSE_LABEL : EXPAND_LABEL}
+            aria-label={
+              isOpen
+                ? ext ? EXTENDED_COLLAPSE_LABEL : DEEP_COLLAPSE_LABEL
+                : ext ? EXTENDED_EXPAND_LABEL : DEEP_EXPAND_LABEL
+            }
             className={cn(
               "flex h-7 items-center gap-1.5 rounded-full border bg-muted/40 px-2.5",
               // Same Kawkab Mono "system voice" as the live tracker it replaces.

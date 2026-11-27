@@ -1,4 +1,4 @@
-"""«بحث موسّع» — extended search (plan: .claude/plans/extended_search.md; build spec:
+"""«بحث شامل» — extended search (plan: .claude/plans/extended_search.md; build spec:
 .claude/plans/extended_search_build.md).
 
 When a deep-search turn carries attachments with a stored angle map and the user is

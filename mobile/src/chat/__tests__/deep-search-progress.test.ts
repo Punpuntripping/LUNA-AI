@@ -4,7 +4,7 @@ import { describe, test } from "node:test";
 
 import { applyProgress, formatSearches, mergeSearches } from "../deep-search-progress";
 
-// «بحث موسّع» — `data.searches` on agent_progress (web chat-store
+// «بحث شامل» — `data.searches` on agent_progress (web chat-store
 // `mergeSearches` + DeepSearchProgress `formatSearchesAr`).
 
 describe("mergeSearches", () => {

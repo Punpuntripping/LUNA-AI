@@ -33,7 +33,7 @@ from .models import (
 #: Q13 — the cheaper option is dropped when it saves less than this (rounded points).
 CHEAPER_MIN_SAVING_POINTS = 1
 
-CARD_TITLE_AR = "بحث موسّع — الخطة المقترحة"
+CARD_TITLE_AR = "بحث شامل — الخطة المقترحة"
 MERGE_LINE_AR = "ثم أجمع النتائج في جواب واحد"
 HINT_AR = "أو اكتب طلبك في خانة الرسالة"
 SIDES_AR: dict[str, str] = {"regulations": "الأنظمة", "judgments": "الأحكام", "both": "الأنظمة والأحكام"}

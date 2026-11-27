@@ -15,6 +15,7 @@ from agents.deep_search_v4.extended.publish import (
     PUBLISH_FAILED_AR,
     merged_agg_output,
     publish_extended,
+    publish_report,
     write_chat_summary,
 )
 from agents.deep_search_v4.extended_merger import publisher as merged_publisher
@@ -189,9 +190,49 @@ def test_a_failed_merged_publish_keeps_the_reports(db):
     assert out.sse_events[-1]["text"] == PUBLISH_FAILED_AR
 
 
+def _post(report, **kw):
+    args = dict(supabase=object(), user_id="u1", conversation_id="c1", case_id=None, message_id="m1",
+                query="ما موقفي؟", detail_level="medium")
+    args.update(kw)
+    return asyncio.run(publish_report(report, **args))
+
+
+def test_a_report_is_posted_on_its_own_when_its_search_ends(db):
+    r1, _r2, r3 = _reports()
+    assert _post(r1) == [{"type": "workspace_item_created", "item_id": "wi-1"}]
+    assert r1.item_id == "wi-1" and db["reports"][0].task_label == "بحث الدين"
+    assert db["reports"][0].message_id == "m1" and db["reports"][0].describe_query == "ما موقفي؟"
+    assert _post(r1) == [] and len(db["reports"]) == 1          # already posted → nothing
+    assert _post(r3) == [] and r3.item_id is None                # not usable → nothing
+
+
+def test_the_end_posts_only_what_is_left_then_the_merged_answer(db):
+    """Reports posted as their searches ended are not posted twice and their events
+    are not sent again; they still count as the merged answer's children."""
+    reports = _reports()
+    _post(reports[1])                                            # report 2 finished first
+    out = _publish_all(reports, _merged())
+    assert [inp.task_label for inp in db["reports"]] == ["بحث الاختصاص", "بحث الدين"]
+    assert out.report_item_ids == ["wi-2", "wi-1"]               # plan order: report 1, report 2
+    assert [r.item_id for r in reports] == ["wi-2", "wi-1", None]
+    assert [e["item_id"] for e in out.sse_events] == ["wi-2", "wi-merged"]   # wi-1's event already out
+    assert db["created"][0]["metadata"]["children"] == ["wi-2", "wi-1"]
+
+
+def test_an_early_post_that_failed_is_tried_again_at_the_end(db):
+    reports = _reports()
+    db["state"]["fail_reports"].add("بحث الدين")
+    with pytest.raises(RuntimeError):
+        _post(reports[0])
+    db["state"]["fail_reports"].clear()
+    out = _publish_all(reports, _merged())
+    assert out.report_item_ids == ["wi-1", "wi-2"] and out.merged_item_id == "wi-merged"
+    assert not any(e.get("type") == "status" for e in out.sse_events)
+
+
 def test_merged_title_without_a_task_label(db, codec):
     _publish_all(_reports(), _merged(), task_label=None, query=f"هويته {FAKE_ID}")
-    assert db["created"][0]["title"] == f"بحث موسّع: هويته {REAL_ID}"
+    assert db["created"][0]["title"] == f"بحث شامل: هويته {REAL_ID}"
 
 
 def test_merged_agg_output_drops_invalid_references():

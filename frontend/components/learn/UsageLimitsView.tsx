@@ -86,7 +86,7 @@ const OPERATION_ROWS: readonly OperationRow[] = [
   },
   {
     icon: Search,
-    label: "البحث المعمّق",
+    label: "البحث العميق",
     cost: "5–10 نقاط",
     note: "أثقل عملية في ريحان — عدة وكلاء على المصادر الرسمية",
     emphasis: true,
@@ -161,7 +161,7 @@ const WINDOW_POINTS = [
   {
     title: "المجانية — نافذة واحدة 30 يوماً",
     // Deep-search plan gate (migration 197) + WI preview lock — copy owner-approved 2026-10-30.
-    body: "لا جلسة ولا أسبوع في الباقة المجانية: 5 نقاط تتحرك على آخر 30 يوماً، ومعها بحث معمّق واحد كل 30 يوماً لتجربته قبل أن تقرر — يظهر لك منه نحو 40% من التقرير، والباقي في الباقات المدفوعة.",
+    body: "لا جلسة ولا أسبوع في الباقة المجانية: 5 نقاط تتحرك على آخر 30 يوماً، ومعها بحث عميق واحد كل 30 يوماً لتجربته قبل أن تقرر — يظهر لك منه نحو 40% من التقرير، والباقي في الباقات المدفوعة.",
   },
   {
     title: "النقاط لا تُرحّل",
@@ -283,7 +283,7 @@ export function UsageLimitsView() {
           </ul>
 
           <p className="mt-6 text-center text-sm leading-relaxed text-muted-foreground">
-            البحث المعمّق هو أغلى ما تفعله في ريحان — يُشغّل عدة وكلاء متخصصين
+            البحث العميق هو أغلى ما تفعله في ريحان — يُشغّل عدة وكلاء متخصصين
             على الأنظمة واللوائح والأحكام القضائية والتعاميم، ثم يحرّر لك تقريراً
             موثّقاً بالمصادر. وهو أيضاً ما لن تجده في أداة عامة بأي سعر.
           </p>
@@ -298,7 +298,7 @@ export function UsageLimitsView() {
               وكم يكفيك ذلك؟
             </h2>
             <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-              بحساب البحث المعمّق — أثقل العمليات — هذا ما تتيحه كل باقة. أما
+              بحساب البحث العميق — أثقل العمليات — هذا ما تتيحه كل باقة. أما
               الأسئلة والصياغة فتكلفتها جزء بسيط من ذلك:
             </p>
           </div>
@@ -312,13 +312,13 @@ export function UsageLimitsView() {
                     نقاط الجلسة
                   </th>
                   <th className="p-3 font-medium text-muted-foreground">
-                    بحث معمّق / جلسة
+                    بحث عميق / جلسة
                   </th>
                   <th className="p-3 font-medium text-muted-foreground">
                     نقاط الأسبوع
                   </th>
                   <th className="p-3 font-medium text-muted-foreground">
-                    بحث معمّق / أسبوع
+                    بحث عميق / أسبوع
                   </th>
                 </tr>
               </thead>
@@ -359,7 +359,7 @@ export function UsageLimitsView() {
           </div>
 
           <p className="mt-6 text-center text-xs leading-relaxed text-muted-foreground">
-            الأعمدة تفترض أن كل نقطة تذهب إلى البحث المعمّق وحده. الاستخدام
+            الأعمدة تفترض أن كل نقطة تذهب إلى البحث العميق وحده. الاستخدام
             الواقعي يخلط الأسئلة والصياغة، فالعدد الفعلي أعلى من ذلك عادةً.
           </p>
           {/* free is out of the table on purpose — it has neither of the two
@@ -370,7 +370,7 @@ export function UsageLimitsView() {
               Copy owner-approved 2026-10-30. */}
           <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
             الباقة المجانية خارج الجدول: نافذة واحدة بـ5 نقاط كل 30 يوماً، وفيها
-            بحث معمّق واحد كل 30 يوماً يبدأ متى بقيت في رصيدك نقطتان على الأقل —
+            بحث عميق واحد كل 30 يوماً يبدأ متى بقيت في رصيدك نقطتان على الأقل —
             لتجربة ريحان قبل الاشتراك.
             تقارير الباحث ومسودات الكاتب التي تُنشأ فيها تظهر معاينةً بنحو 40% من
             النص، والباقي في الباقات المدفوعة، ولا تُشارَك المعاينة ولا تُحفظ
@@ -378,7 +378,7 @@ export function UsageLimitsView() {
             التي سبقت هذه السياسة لا تتأثر.
           </p>
           <p className="mt-2 text-center text-xs leading-relaxed text-muted-foreground">
-            وفي الباقة الأساسية لا يبدأ بحث معمّق جديد إذا بقيت لك نقطة واحدة أو
+            وفي الباقة الأساسية لا يبدأ بحث عميق جديد إذا بقيت لك نقطة واحدة أو
             أقل في الجلسة أو في الأسبوع.
           </p>
         </div>

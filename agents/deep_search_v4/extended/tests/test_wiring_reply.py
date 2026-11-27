@@ -1,4 +1,4 @@
-"""The message after a «بحث موسّع» plan card (build spec C; plan §4.3 at the click,
+"""The message after a «بحث شامل» plan card (build spec C; plan §4.3 at the click,
 §4.4, D31, D32; lead 11-24: a button of a dead card gets a short reply).
 
 Unit level: ``answer_card_reply`` (button / typed label / typed other / expired /
@@ -259,14 +259,22 @@ def pipeline(monkeypatch):
     """B's searches / merger / publish / summary, scripted; records every call."""
     rec: dict[str, Any] = {"reports": [_report(1), _report(2)], "deps": []}
 
-    async def searches(requests, *, plan, view, query, deps_factory, emit_sse):
+    async def searches(requests, *, plan, view, query, deps_factory, emit_sse, on_report=None):
         rec["searches"] = dict(requests=list(requests), plan=plan, view=view, query=query)
         rec["deps"] = [deps_factory(1), deps_factory(2)]
         emit_sse({"type": "agent_progress", "stage": "searching", "text": "بحث",
                   "data": {"sources": 4, "searches": {"total": 2, "done": 0}}})
+        for report in rec["reports"]:           # like the runner: each as its search ends
+            if report.ok and on_report is not None:
+                await on_report(report)
         emit_sse({"type": "agent_progress", "stage": "aggregating", "text": "دمج",
                   "data": {"sources": 10, "searches": {"total": 2, "done": 2}}})
         return rec["reports"]
+
+    async def post_report(report, **kw):
+        rec.setdefault("posted", []).append((report.index, kw))
+        report.item_id = f"wi-r{report.index}"
+        return [{"type": "workspace_item_created", "item_id": report.item_id, "kind": "agent_search"}]
 
     async def merge(reports, **kw):
         rec["merge"] = kw
@@ -291,6 +299,7 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(W, "_searches", searches)
     monkeypatch.setattr(W, "_merge", merge)
     monkeypatch.setattr(W, "_publish", publish)
+    monkeypatch.setattr(W, "_post_report", post_report)
     monkeypatch.setattr(W, "_summary", summary)
     monkeypatch.setattr(W, "_load_angle_map", lambda _db, map_id: {"map": {"map_id": map_id}})
     monkeypatch.setattr(W, "_planner_view", lambda _db, m, **_k: SimpleNamespace(map_id=m["map"]["map_id"]))
@@ -321,6 +330,20 @@ def test_a_plan_click_runs_searches_merger_publish_and_summary(turn_env, pipelin
 
     assert F.outcome(db) == "plan" and db.row("paused_runs", run_id=F.RUN) is None
     assert _user_meta(db) == {"kind": "agent_answer", "run_id": F.RUN, "plan_choice": "plan"}
+
+
+def test_each_report_reaches_the_workspace_before_the_merge(turn_env, pipeline):
+    """Owner 2026-11-27: a ready report is posted right away, not held for the merger —
+    its item event goes out while the run is still at the searches."""
+    events = _turn(_ready(), plan_choice={"run_id": F.RUN, "option": "plan"})
+    at = {e.get("item_id"): i for i, e in enumerate(events) if e["type"] == "workspace_item_created"}
+    first_aggregating = next(i for i, e in enumerate(events)
+                             if e["type"] == "agent_progress" and e["stage"] == "aggregating")
+    assert at["wi-r1"] < at["wi-r2"] < first_aggregating < at["wi-m"]
+    assert [i for i, _ in pipeline["posted"]] == [1, 2]
+    _, kw = pipeline["posted"][0]
+    assert kw["message_id"] == "m-placeholder" and kw["query"] == F.ORIGINAL
+    assert kw["conversation_id"] == F.CONVO and kw["user_id"] == F.USER
 
 
 def test_cheaper_runs_the_cheaper_requests(turn_env, pipeline):
@@ -612,7 +635,11 @@ def test_publish_and_summary_run_inside_the_turns_codec_and_ledger_scope(turn_en
     codec = PrivacyCodec(real_to_fake={}, fake_to_real={}, enabled=False)
     monkeypatch.setattr("backend.app.services.masking_service.persist_new_mappings", lambda *_a, **_k: 0)
     seen: dict[str, Any] = {}
-    real_publish, real_summary = W._publish, W._summary
+    real_publish, real_summary, real_post = W._publish, W._summary, W._post_report
+
+    async def post_report(report, **kw):
+        seen["post"] = (active_codec() is codec, usage_sink.in_scope(), usage_sink._run_id.get())
+        return await real_post(report, **kw)
 
     async def publish(reports, merged, **kw):
         seen["publish"] = (active_codec() is codec, usage_sink.in_scope(), usage_sink._run_id.get())
@@ -624,6 +651,7 @@ def test_publish_and_summary_run_inside_the_turns_codec_and_ledger_scope(turn_en
         return await real_summary(answer, **kw)
 
     monkeypatch.setattr(W, "_publish", publish)
+    monkeypatch.setattr(W, "_post_report", post_report)
     monkeypatch.setattr(W, "_summary", summary)
     db = _ready()
 
@@ -637,6 +665,7 @@ def test_publish_and_summary_run_inside_the_turns_codec_and_ledger_scope(turn_en
 
     events = asyncio.run(go())
     assert events[-1]["type"] == "agent_run_finished"
+    assert seen["post"] == (True, True, F.RUN)        # a report posted as its search ends
     assert seen["publish"] == (True, True, F.RUN)
     assert seen["summary"] == (True, True, F.RUN)
     (row,) = db.tables["llm_calls"]

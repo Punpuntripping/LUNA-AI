@@ -1,10 +1,10 @@
-"""«بحث موسّع» — the orchestrator wiring (build spec package C; plan §4.1, §4.3, §4.4).
+"""«بحث شامل» — the orchestrator wiring (build spec package C; plan §4.1, §4.3, §4.4).
 
 Two moments, each reached from ``agents/orchestrator.py`` through one small call site:
 
 * **The planning turn** — :func:`plan_extended_turn`, called by ``_run_deep_search`` on a
   FRESH deep-search turn (no decision, no editorial pin, reached from ``_dispatch``) that
-  the ROUTER chose as «بحث موسّع» (``DispatchAgent.extended``, D34 — 2026-11-27; the
+  the ROUTER chose as «بحث شامل» (``DispatchAgent.extended``, D34 — 2026-11-27; the
   router is told whether it is available by ``router_view``).
   Flag off → ``None`` at once, no database read. On: eligibility (D30, D23, D24) → the
   planner's view → the angle-aware planner. One request → the plan is dropped and
@@ -69,6 +69,10 @@ SINGLE_SEARCH_EVENT = "deep_search.extended.single_search_fallback"
 
 #: Progress poll interval — the orchestrator's ``_PROGRESS_POLL_S``.
 _POLL_S = 0.2
+
+#: Raw events ``_drive`` relays as they are: a report's ``workspace_item_created``,
+#: posted the moment its search ends (owner 2026-11-27).
+_RELAYED_AS_IS = frozenset({"workspace_item_created"})
 #: The click's run lives under message_service's ``LUNA_PIPELINE_TIMEOUT_S`` (900 s by
 #: default), and the reports are published only AFTER the merge — so the merge gets what
 #: the run has left minus this reserve for publishing + the chat summary. Past it the merge
@@ -90,7 +94,7 @@ def merge_budget_s(started: float) -> float:
         total = 900.0
     return total - (perf_counter() - started) - MERGE_RESERVE_S
 
-DEFAULT_TASK_LABEL_AR = "بحث موسّع"
+DEFAULT_TASK_LABEL_AR = "بحث شامل"
 
 EXPIRED_REPLY_AR = "انتهت صلاحية هذه الخطة. أعد إرسال طلبك لأجهّز لك خطة جديدة."
 #: §4.3 at the click: the option's budget mode no longer fits what is left (D23).
@@ -115,8 +119,8 @@ WORKSPACE_FULL_REPLY_AR = (
 MAP_GONE_REPLY_AR = (
     "تعذّر تنفيذ الخطة لأن المستندات المرفقة تغيّرت بعد عرضها. يرجى إعادة إرسال طلبك."
 )
-RUN_FAILED_REPLY_AR = "عذراً، تعذّر إكمال البحث الموسّع. يرجى المحاولة مرة أخرى."
-SUMMARY_FALLBACK_AR = "اكتمل البحث الموسّع، والجواب المدمج وتقاريره محفوظة في مساحة العمل."
+RUN_FAILED_REPLY_AR = "عذراً، تعذّر إكمال البحث الشامل. يرجى المحاولة مرة أخرى."
+SUMMARY_FALLBACK_AR = "اكتمل البحث الشامل، والجواب المدمج وتقاريره محفوظة في مساحة العمل."
 
 
 # --------------------------------------------------------------------------- seams (A / B, lazy)
@@ -185,6 +189,12 @@ async def _publish(reports: Sequence[Any], merged: Any, **kw: Any) -> Any:
     from .publish import publish_extended
 
     return await publish_extended(reports, merged, **kw)
+
+
+async def _post_report(report: Any, **kw: Any) -> list[dict]:
+    from .publish import publish_report
+
+    return await publish_report(report, **kw)
 
 
 async def _summary(merged: Any, **kw: Any) -> Any:
@@ -833,7 +843,7 @@ async def _drive(
                 raw = await asyncio.wait_for(queue.get(), timeout=_POLL_S)
             except asyncio.TimeoutError:
                 continue
-            prog = orch._progress_from_planner_event(raw)
+            prog = _relay(orch, raw)
             if prog is not None:
                 yield prog
         while True:
@@ -841,13 +851,21 @@ async def _drive(
                 raw = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            prog = orch._progress_from_planner_event(raw)
+            prog = _relay(orch, raw)
             if prog is not None:
                 yield prog
         box["result"] = await task
     finally:
         if not task.done():
             task.cancel()
+
+
+def _relay(orch: Any, raw: Any) -> dict | None:
+    """One queued event → what the turn yields: a posted report's item event as it is,
+    anything else through the orchestrator's progress mapper."""
+    if isinstance(raw, dict) and raw.get("type") in _RELAYED_AS_IS:
+        return raw
+    return orch._progress_from_planner_event(raw)
 
 
 def _merged_mode(requests: Sequence[ExtendedRequest]) -> str:
@@ -1168,11 +1186,28 @@ async def _run_plan(
         async with httpx.AsyncClient(timeout=30.0) as http_client:
             factory = make_deps_factory(major_input, supabase, http_client=http_client, detail_level=detail_level)
 
+            # A report is posted to the workspace the moment its search ends (owner
+            # 2026-11-27: a ready report is not held for the merger); its item event goes
+            # out on the same queue. One post at a time, so the items land in finishing
+            # order. A failed post is tried again by _publish at the end.
+            post_lock = asyncio.Lock()
+
+            async def on_report(report: Any) -> None:
+                async with post_lock:
+                    posted = await _post_report(
+                        report, supabase=supabase, user_id=user_id,
+                        conversation_id=conversation_id, case_id=case_id,
+                        message_id=assistant_message_id, query=pause.describe_query,
+                        detail_level=detail_level,
+                    )
+                for ev in posted:
+                    queue.put_nowait(ev)
+
             box: dict = {}
             async for prog in _drive(
                 _searches(
                     requests, plan=plan, view=view, query=pause.describe_query,
-                    deps_factory=factory, emit_sse=queue.put_nowait,
+                    deps_factory=factory, emit_sse=queue.put_nowait, on_report=on_report,
                 ),
                 queue, box,
             ):

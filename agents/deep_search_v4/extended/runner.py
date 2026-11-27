@@ -1,4 +1,4 @@
-"""«بحث موسّع» — run a plan's searches in parallel (plan §4.5; build spec "B").
+"""«بحث شامل» — run a plan's searches in parallel (plan §4.5; build spec "B").
 
 Each request of the chosen option is one complete deep search through the production
 retrieval path (``build_retrieval_config`` → ``run_retrieval``: sector picker,
@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from agents.models import WorkspaceItemSnapshot
@@ -372,6 +372,7 @@ async def run_extended_searches(
     query: str,
     deps_factory: Callable[[int], "PlannerDeps"],
     emit_sse: Callable[[dict], None] | None = None,
+    on_report: Callable[[ExtendedSearchReport], Awaitable[None]] | None = None,
 ) -> list[ExtendedSearchReport]:
     """Run ``requests`` in parallel; one report per request, plan order.
 
@@ -382,7 +383,9 @@ async def run_extended_searches(
     slot of the combined stream), ``attached_items`` (the whole-file documents),
     ``_case_doc_caps``, ``_decision``. ``query`` is the message the searches run on,
     as the turn received it (encoded). ``emit_sse`` gets the combined progress stream
-    and the executors' topic lines.
+    and the executors' topic lines. ``on_report`` is awaited with each report the moment
+    its search ends (the wiring posts it to the workspace then — owner 2026-11-27); it
+    never fails the search.
     """
     reqs = list(requests)
     total = len(reqs)
@@ -433,10 +436,18 @@ async def run_extended_searches(
             return ExtendedSearchReport(
                 index=i, request=req, ok=False, error=f"{type(exc).__name__}: {exc}"[:500],
             )
-        return await _run_one(
+        report = await _run_one(
             i, req, deps=deps, items=items, brief=brief, query=query,
             query_id=base_qid + i, total=total, progress=progress,
         )
+        if on_report is not None and report.ok:
+            try:
+                await on_report(report)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - posting early is a bonus; the end posts it anyway
+                logger.warning("extended_search: on_report(%d) failed", i, exc_info=True)
+        return report
 
     reports = list(await asyncio.gather(*(_one(i, r) for i, r in enumerate(reqs, 1))))
     ok = sum(1 for r in reports if r.ok)

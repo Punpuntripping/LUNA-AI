@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 import { PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/Sidebar";
@@ -22,6 +22,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useIsMobile } from "@/hooks/use-media-query";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface ChatLayoutClientProps {
   children: React.ReactNode;
@@ -50,6 +51,48 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
   const showOverlay = isWorkspaceOpen && conversationId && isMobile;
 
   const closeWorkspace = useChatStore((s) => s.closeWorkspace);
+
+  // Full page (WorkspacePane «توسيع», and the «بحث شامل» merged answer): the
+  // opened item takes the whole page — the chat panel is hidden (kept mounted,
+  // so a streaming reply goes on) and the sidebar folds. Leaving full page
+  // gives the sidebar back if it was open before.
+  const isExpanded = useChatStore(
+    (s) =>
+      (conversationId
+        ? s.workspaceByConversation[conversationId]?.expanded
+        : false) ?? false,
+  );
+  const setWorkspaceExpanded = useChatStore((s) => s.setWorkspaceExpanded);
+  const fullPage = Boolean(showSplit && isExpanded);
+  const sidebarBeforeFullPage = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (fullPage) {
+      if (sidebarBeforeFullPage.current === null) {
+        sidebarBeforeFullPage.current = useSidebarStore.getState().isOpen;
+        setSidebarOpen(false);
+      }
+      return;
+    }
+    if (sidebarBeforeFullPage.current !== null) {
+      if (sidebarBeforeFullPage.current) setSidebarOpen(true);
+      sidebarBeforeFullPage.current = null;
+    }
+  }, [fullPage, setSidebarOpen]);
+
+  // Esc leaves full page — unless it belongs to something else: a dialog or
+  // menu open on top (Radix closes it on the same key), or typing.
+  useEffect(() => {
+    if (!fullPage || !conversationId) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (document.querySelector("[role='dialog'], [role='menu'], [role='listbox']")) return;
+      setWorkspaceExpanded(conversationId, false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [fullPage, conversationId, setWorkspaceExpanded]);
 
   /**
    * Dismissal contract for the full-viewport mobile overlay: Android back,
@@ -139,12 +182,20 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
             onLayout={handleLayout}
             className="flex-1"
           >
-            <ResizablePanel defaultSize={splitRatio} minSize={25} id="chat">
+            {/* Full page: the chat panel and the handle are display:none, so
+                the workspace panel (flex-grow) fills the row alone — the sizes
+                and the saved split ratio are untouched. */}
+            <ResizablePanel
+              defaultSize={splitRatio}
+              minSize={25}
+              id="chat"
+              className={cn(fullPage && "hidden")}
+            >
               <div className="flex h-full flex-col min-w-0 overflow-hidden">
                 {children}
               </div>
             </ResizablePanel>
-            <ResizableHandle withHandle />
+            <ResizableHandle withHandle className={cn(fullPage && "hidden")} />
             <ResizablePanel
               defaultSize={100 - splitRatio}
               minSize={25}

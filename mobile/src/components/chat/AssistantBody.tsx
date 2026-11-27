@@ -25,7 +25,7 @@ import { TemplatesUsedLine } from "./TemplatesUsedLine";
 // MessageBubble assistant branch). Settled extras: «القوالب المستخدمة»,
 // next-step chips (latest answer only), نسخ + «إعادة التوليد». An
 // `agent_question` turn renders as the framed «السؤال» callout instead — or,
-// paused with `pause_reason = "extended_plan"`, as the «بحث موسّع» plan card in
+// paused with `pause_reason = "extended_plan"`, as the «بحث شامل» plan card in
 // the same frame (a malformed card falls back to the row's text).
 // «افتح ال…» reopens the turn's agent output over the chat; referenced-item
 // chips arrive with the workspace (2b).

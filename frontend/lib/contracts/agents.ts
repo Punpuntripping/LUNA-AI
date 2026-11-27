@@ -50,7 +50,7 @@ export type WorkspaceItemSubtype =
   | 'memory_file'
   | 'legal_opinion'
   | 'legal_synthesis'
-  // «بحث موسّع»: the merged answer of an extended search (./extended-synthesis).
+  // «بحث شامل»: the merged answer of an extended search (./extended-synthesis).
   | 'extended_synthesis'
   | (string & {});
 

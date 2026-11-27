@@ -59,7 +59,7 @@ def planner_shaped_pause(sb, convo: str) -> str | None:
             user_id=USER_ID,
             case_id=None,
             agent_family="deep_search",
-            task_label="بحث معمّق",
+            task_label="بحث عميق",
             # A stub: this probe never actually resumes the planner, and a real
             # pydantic-ai history is not needed to occupy the slot.
             message_history=b'[{"parts":[],"kind":"request"}]',

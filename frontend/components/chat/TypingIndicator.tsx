@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
-import type { OcrStage } from "@/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EDITABLE CONFIG
@@ -22,19 +21,6 @@ const ROTATION_MS = 7000;
 
 /** Used before any agent family is known (classifier still deciding). */
 const DEFAULT_PHRASES = ["يفكّر", "يتفكّر", "يحلّل"];
-
-/**
- * While a step on this turn's files runs before the answer (``ocr_progress`` →
- * ``stage``; owner wording 2026-11-27). One phrase per step, in the order they
- * run; a step that does not run is never shown.
- */
-const OCR_STAGE_PHRASES: Record<OcrStage, string[]> = {
-  extracting: ["يستخرج المستندات"],
-  summarizing: ["يلخص المستندات"],
-  arranging: ["يرتب المستندات"],
-  organizing: ["ينظم المستندات"],
-  threads: ["يستخرج الخيوط"],
-};
 
 /** Used while a specific agent family is running. Keys match `agent_family`. */
 const AGENT_PHRASES: Record<string, string[]> = {
@@ -64,17 +50,9 @@ export function TypingIndicator({
   const runningAgentFamily = useChatStore(
     (s) => s.streams[conversationId]?.runningAgentFamily ?? null,
   );
-  const extracting = useChatStore(
-    (s) => s.streams[conversationId]?.extractingDocuments ?? false,
-  );
-  const stage = useChatStore(
-    (s) => s.streams[conversationId]?.extractingStage ?? null,
-  );
-  // The steps on the files run before the router picks a family, so they win
-  // while on. No stage (an older backend) = OCR.
-  const phrases = extracting
-    ? OCR_STAGE_PHRASES[stage ?? "extracting"] ?? OCR_STAGE_PHRASES.extracting
-    : getPhrases(runningAgentFamily);
+  // The steps on this turn's files have their own card (FilesProgress,
+  // picked by MessageList's ThinkingRow), so this line only names the family.
+  const phrases = getPhrases(runningAgentFamily);
 
   const [index, setIndex] = useState(0);
 

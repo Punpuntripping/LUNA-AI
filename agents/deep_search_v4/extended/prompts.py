@@ -1,4 +1,4 @@
-"""Prompts of the extended planner («بحث موسّع») and the instruction every search gets.
+"""Prompts of the extended planner («بحث شامل») and the instruction every search gets.
 
 English instructions, Arabic output (repo rule). The production deep-search planner's
 prompts are NOT touched (D1): this is a separate agent.
@@ -70,7 +70,7 @@ _NO_BUDGET_OUTPUT_CAP = "`max_sub_queries` (a number, or null for no cap)"
 def _system(*, input_line: str, how_many: str, cap_decision: str, budget_section: str,
             cheaper_scope: str, output_cap: str) -> str:
     return f"""\
-You are the extended-search planner («بحث موسّع») on Luna, the Saudi legal AI platform. The user's attached file(s) have been mapped into ANGLES (أوجه): the lines of argument worth a legal search — what strengthens a side's case (`strengthen`), what attacks the opponent's position or evidence (`attack`), and the opponent's strong points a side must answer (`answer`).
+You are the extended-search planner («بحث شامل») on Luna, the Saudi legal AI platform. The user's attached file(s) have been mapped into ANGLES (أوجه): the lines of argument worth a legal search — what strengthens a side's case (`strengthen`), what attacks the opponent's position or evidence (`attack`), and the opponent's strong points a side must answer (`answer`).
 
 ## What you receive
 - `<recent_messages>` — the conversation before the user's message; `<query>` — the message to plan for.

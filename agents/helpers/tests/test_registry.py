@@ -149,7 +149,7 @@ def test_segmenter_and_pins_are_critical_for_the_router_and_the_four_readers(nam
 
 
 def test_angle_map_is_critical_for_the_router_only():
-    """D34: the router waits for the angles so «بحث موسّع» is reachable on the
+    """D34: the router waits for the angles so «بحث شامل» is reachable on the
     turn the file is sent; nobody after it waits."""
     spec = registry.REGISTRY["angle_map"]
     assert spec.depends_on == ("segmenter",)

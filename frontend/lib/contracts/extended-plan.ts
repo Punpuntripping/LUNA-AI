@@ -1,4 +1,4 @@
-// «بحث موسّع» plan card (extended_search.md §4.4, D26/D27/D31/D32).
+// «بحث شامل» plan card (extended_search.md §4.4, D26/D27/D31/D32).
 //
 // When a deep-search turn plans more than one search, the backend pauses the
 // turn and saves an assistant row with `metadata.kind = "agent_question"`,
@@ -122,7 +122,7 @@ export function parseExtendedPlan(raw: unknown): ExtendedPlanCard | null {
 
 /** Fixed Arabic lines of the card (§4.4). */
 export const PLAN_CARD_AR = {
-  title: "بحث موسّع — الخطة المقترحة",
+  title: "بحث شامل — الخطة المقترحة",
   merge: "ثم أجمع النتائج في جواب واحد",
   hint: "أو اكتب طلبك في خانة الرسالة",
   expired: "انتهت صلاحية الخطة",

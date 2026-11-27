@@ -738,7 +738,7 @@ export const messagesApi = {
     signal?: AbortSignal,
     options?: {
       attachment_ids?: string[];
-      /** «بحث موسّع» plan-card button (SendMessagePayload.plan_choice). */
+      /** «بحث شامل» plan-card button (SendMessagePayload.plan_choice). */
       plan_choice?: PlanChoicePayload | null;
     }
   ): Promise<Response> => {

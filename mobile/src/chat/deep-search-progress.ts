@@ -15,7 +15,7 @@ export interface DeepSearchProgressState {
   queries: number;
   /** «بحث في …» topic lines seen so far (live query counter). */
   topicsSeen: number;
-  /** «بحث موسّع» only (`data.searches`): the run's parallel searches — how
+  /** «بحث شامل» only (`data.searches`): the run's parallel searches — how
    *  many in all and how many have finished. `null` on an ordinary deep
    *  search; kept when a later event omits it. */
   searches: { total: number; done: number } | null;
@@ -49,7 +49,7 @@ export const DEEP_SEARCH_STAGE_ORDER: Record<DeepSearchStage, number> = {
 };
 
 /**
- * «بحث موسّع» `data.searches` → progress state (web chat-store
+ * «بحث شامل» `data.searches` → progress state (web chat-store
  * `mergeSearches`): N parallel searches, M finished. `done` is monotonic and
  * never above `total`; an event without a valid block keeps the previous value.
  */
@@ -101,7 +101,7 @@ export function applyProgress(
   return { ...base, stage: nextStage, text, sources, queries, searches, log };
 }
 
-/** «بحث موسّع» parallel searches in the tracker header (web DeepSearchProgress
+/** «بحث شامل» parallel searches in the tracker header (web DeepSearchProgress
  *  `SEARCH_FORMS`, same Arabic agreement). */
 export const SEARCH_FORMS: ArabicPlural = {
   one: "بحث واحد",

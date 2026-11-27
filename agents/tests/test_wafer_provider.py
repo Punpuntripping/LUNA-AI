@@ -62,7 +62,7 @@ def test_aggregator_usage_bills_at_the_wafer_head() -> None:
 
 
 def test_extended_search_slots_follow_the_planner_and_aggregator_policies() -> None:
-    # «بحث موسّع»: the planner on V4.1 default (as tested 11-23), the merger = the aggregator's policy.
+    # «بحث شامل»: the planner on V4.1 default (as tested 11-23), the merger = the aggregator's policy.
     assert AGENT_MODELS["extended_planner"] == AGENT_MODELS["router"]
     assert AGENT_MODELS["extended_planner"].reasoning == "default"
     assert AGENT_MODELS["extended_merger"] == AGENT_MODELS["aggregator"]

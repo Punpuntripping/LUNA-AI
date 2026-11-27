@@ -197,7 +197,7 @@ class RouterDeps:
     # note. The router may then only talk — explore the request with the user —
     # and its validator refuses any dispatch (``orchestrator._route_after_handback``).
     planner_handback: str | None = None
-    # «بحث موسّع» (extended_search.md D34): what the router is told about it this
+    # «بحث شامل» (extended_search.md D34): what the router is told about it this
     # turn — available with the mapped files, or not with the reason. ``None`` =
     # the flag is off for this user: no section, and ``extended=true`` is refused.
     # Built by ``orchestrator._route`` (``extended.router_view``).
@@ -686,7 +686,7 @@ def _validate_and_resolve_dispatch(
 
 def _check_extended(ctx: RunContext[RouterDeps], value: DispatchAgent) -> None:
     """``extended=true`` (D34): deep_search only, and only when the section said
-    «بحث موسّع» is available. Refused once with the reason, then dropped to an
+    «بحث شامل» is available. Refused once with the reason, then dropped to an
     ordinary deep search. With no file attached, the mapped files are attached."""
     if value.agent_family != "deep_search":
         value.extended = False
@@ -695,7 +695,7 @@ def _check_extended(ctx: RunContext[RouterDeps], value: DispatchAgent) -> None:
     if view is None or not view.available:
         if view is not None and ctx.retry < 1:
             raise ModelRetry(
-                "«بحث موسّع» is not available this turn (the section «بحث موسّع» says "
+                "«بحث شامل» is not available this turn (the section «بحث شامل» says "
                 "why). Set extended=false for an ordinary deep search, or reply with "
                 "ChatResponse as that section says."
             )
@@ -869,7 +869,7 @@ def inject_planner_handback(ctx: RunContext[RouterDeps]) -> str:
 
 @router_agent.instructions
 def inject_extended_search(ctx: RunContext[RouterDeps]) -> str:
-    """«بحث موسّع» (extended_search.md D34): available with its files and angles, or
+    """«بحث شامل» (extended_search.md D34): available with its files and angles, or
     not with the reason. Empty while the flag is off for this user, so that prompt
     stays as it was. Registered last: it changes only when a file's angles land."""
     view = getattr(ctx.deps, "extended_view", None)
@@ -1061,7 +1061,7 @@ async def run_router(
         planner_handback: Set only when the deep_search planner handed this
             turn's request back as too general to search: its note. The router
             then explores the request in a ChatResponse and may not dispatch.
-        extended_view: «بحث موسّع» this turn (``extended.router_view``), or
+        extended_view: «بحث شامل» this turn (``extended.router_view``), or
             None while the flag is off for this user.
         attachment_agent_on: The attachment agent is on for this user
             (``attachment_agent_enabled``): the router gets

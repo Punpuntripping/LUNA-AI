@@ -1260,7 +1260,7 @@ def _select_forwarded_blocks(
 
 
 def _whole_file_caps(deps: Any) -> tuple[int, int] | None:
-    """«بحث موسّع» only: ``(per_doc_cap, total_cap)`` when the caller asked for
+    """«بحث شامل» only: ``(per_doc_cap, total_cap)`` when the caller asked for
     whole-file delivery, else ``None``.
 
     Set by ``agents/deep_search_v4/extended/runner.py`` on the ``PlannerDeps`` of
@@ -1317,7 +1317,7 @@ def _build_case_document_lists(
     copies (وضع السرية), so nothing here encodes or decodes. No forwardable
     document → ``({}, {})``.
 
-    Whole-file delivery («بحث موسّع», ``deps._case_doc_caps`` set): every attached
+    Whole-file delivery («بحث شامل», ``deps._case_doc_caps`` set): every attached
     document travels (no ``doc_type`` filter), through the plain builder at those
     caps; segmented section selection is not used.
     """
@@ -1416,7 +1416,7 @@ async def run_retrieval(
     # critical for both expanders and the aggregator, never for the planner —
     # this one wait (up to its 5-minute ceiling) covers all three, which start
     # after it. Off → ``None`` → the old first-12k builder, byte-identical.
-    # «بحث موسّع» (``deps._case_doc_caps``): every document reaches the search
+    # «بحث شامل» (``deps._case_doc_caps``): every document reaches the search
     # whole, with its code-written section markers — no section selection, no wait.
     case_document_sections: dict[str, Any] | None = None
     case_document_sections_telemetry: dict[str, Any] = {}

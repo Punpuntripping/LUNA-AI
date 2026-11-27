@@ -7,7 +7,7 @@ import { useTheme } from "@/theme/ThemeProvider";
 
 // `agent_question` turn: the agent paused to ask. Framed «السؤال» callout with
 // the agent's suggested replies as READ-ONLY chips — the user types the reply
-// in the composer (web MessageBubble.tsx agent-question branch). A «بحث موسّع»
+// in the composer (web MessageBubble.tsx agent-question branch). A «بحث شامل»
 // plan card brings its own title, so it renders here with `header={false}`
 // and no suggestions (AssistantBody).
 

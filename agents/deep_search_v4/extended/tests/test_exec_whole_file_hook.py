@@ -1,4 +1,4 @@
-"""The whole-file hook in ``deep_search_v4/orchestrator.py`` («بحث موسّع», Q11):
+"""The whole-file hook in ``deep_search_v4/orchestrator.py`` («بحث شامل», Q11):
 ``deps._case_doc_caps`` → every attached document whole (200k / 300k), no ``doc_type``
 filter, no segmented section selection, no segment wait. Unset → today's path."""
 from __future__ import annotations

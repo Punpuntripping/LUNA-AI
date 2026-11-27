@@ -23,7 +23,7 @@ import { AppText } from "@/components/AppText";
 import { Icon } from "@/components/Icon";
 import { useTheme } from "@/theme/ThemeProvider";
 
-// «بحث موسّع» plan card (extended_search.md §4.4) — port of the web's
+// «بحث شامل» plan card (extended_search.md §4.4) — port of the web's
 // PlanCard.tsx. Rendered inside the agent-question frame in place of the
 // «السؤال» header, the row's text and the suggestions (AssistantBody).
 //

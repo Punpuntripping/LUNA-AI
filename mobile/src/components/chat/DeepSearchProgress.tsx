@@ -20,10 +20,15 @@ import { PushReadyChip } from "./PushReadyChip";
 
 type RunningStage = Exclude<DeepSearchStage, "done">;
 
-const TITLE = "بحث معمّق";
+const TITLE = "بحث عميق";
+/** «بحث شامل»: a run with parallel searches (`data.searches`), web DeepSearchProgress. */
+const EXTENDED_TITLE = "بحث شامل";
 const NOTE_TITLE = "شكرًا لتجربتك ريحان";
 const NOTE_BODY =
-  "البحث المعمّق مصمَّم ليمرّ على كل المصادر ذات الصلة بسؤالك، وقد يستغرق من 3 إلى 5 دقائق. " +
+  "البحث العميق مصمَّم ليمرّ على كل المصادر ذات الصلة بسؤالك، وقد يستغرق من 3 إلى 5 دقائق. " +
+  "يمكنك تركه يعمل في الخلفية والانشغال بشيء آخر — ستجد الإجابة بانتظارك هنا.";
+const EXTENDED_NOTE_BODY =
+  "البحث الشامل يبحث في خيوط ملفك ببحوث متوازية ثم يدمجها في جواب واحد، وقد يستغرق من 5 إلى 10 دقائق. " +
   "يمكنك تركه يعمل في الخلفية والانشغال بشيء آخر — ستجد الإجابة بانتظارك هنا.";
 
 const STEPS: readonly { key: RunningStage; label: string }[] = [
@@ -112,6 +117,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({ conversatio
   const pct = Math.min(100, Math.max(0, barPercent(stage, Math.max(0, now - stageAt))));
   const quiet = QUIET_PHRASES[stage];
   const detail = progress.text ? stripTopic(progress.text) : quiet ? quiet[phrase % quiet.length] : null;
+  const title = progress.searches ? EXTENDED_TITLE : TITLE;
 
   return (
     <View style={styles.wrap} testID="deep-search-progress">
@@ -122,7 +128,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({ conversatio
             {NOTE_TITLE}
           </AppText>
           <AppText variant="xs" tone="muted">
-            {NOTE_BODY}
+            {progress.searches ? EXTENDED_NOTE_BODY : NOTE_BODY}
           </AppText>
           {/* Web DeepSearchNote: the push opt-in rides on the note while the run is in flight. */}
           {progress.stage !== "done" ? <PushReadyChip /> : null}
@@ -131,15 +137,15 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({ conversatio
 
       <View
         accessibilityRole="progressbar"
-        accessibilityLabel={`${TITLE} — ${STEPS[ORDER[stage]]?.label ?? ""}`}
+        accessibilityLabel={`${title} — ${STEPS[ORDER[stage]]?.label ?? ""}`}
         style={[styles.card, { borderColor: colours.border, backgroundColor: colours.surface1, borderRadius: radius["2xl"] }]}
       >
         <View style={styles.head}>
           <Icon name="deepSearch" size={18} colour={colours.primary} />
           <AppText variant="sm" weight={600} style={styles.flex}>
-            {TITLE}
+            {title}
           </AppText>
-          {/* «بحث موسّع»: «4 بحوث متوازية · اكتمل 1» before the stopwatch (web header). */}
+          {/* «بحث شامل»: «4 بحوث متوازية · اكتمل 1» before the stopwatch (web header). */}
           {progress.searches ? (
             <AppText variant="xs" numberOfLines={1} style={styles.searches}>
               {formatSearches(progress.searches)}
@@ -205,7 +211,7 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({ summa
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        accessibilityLabel={open ? "إخفاء خطوات البحث المعمّق" : "عرض خطوات البحث المعمّق"}
+        accessibilityLabel={open ? "إخفاء خطوات البحث العميق" : "عرض خطوات البحث العميق"}
         onPress={() => setOpen((o) => !o)}
         style={[styles.chip, { borderColor: colours.border, backgroundColor: colours.surface2, borderRadius: radius.full }]}
       >

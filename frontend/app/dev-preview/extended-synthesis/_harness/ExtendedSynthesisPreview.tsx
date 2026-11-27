@@ -17,7 +17,7 @@ import {
 } from "./fixture";
 
 /**
- * DEV ONLY — the REAL `WorkspacePane` showing the «بحث موسّع» merged item, on an
+ * DEV ONLY — the REAL `WorkspacePane` showing the «بحث شامل» merged item, on an
  * invented fixture (./fixture.ts), with no backend: while this page is mounted
  * `window.fetch` answers the pane's three calls (the conversation's item list,
  * one item, one item's references) and 404s every other API path, so nothing
@@ -113,7 +113,7 @@ export function ExtendedSynthesisPreview() {
           <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 text-sm">
             <span className="inline-flex items-center gap-1.5 font-semibold">
               <FlaskConical className="h-4 w-4 text-primary" aria-hidden="true" />
-              «بحث موسّع» في لوحة المخرجات — معاينة داخلية
+              «بحث شامل» في لوحة المخرجات — معاينة داخلية
             </span>
             <div className="flex items-center gap-1 rounded-lg border p-0.5" role="group" aria-label="العرض">
               {(Object.keys(WIDTHS) as Width[]).map((w) => (

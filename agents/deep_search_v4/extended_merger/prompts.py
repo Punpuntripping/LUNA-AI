@@ -1,4 +1,4 @@
-"""Prompt of the extended-search merger («بحث موسّع» — the report merger).
+"""Prompt of the extended-search merger («بحث شامل» — the report merger).
 
 Plan: ``.claude/plans/extended_search.md`` §2.4–2.5 and §2.7.3 (what was tested),
 §4.6 (the merger), §4.9 b (the angle line each search got) and §4.9 c (the
@@ -65,7 +65,7 @@ _M_REG, _M_CASE, _M_FULL = MODE_AR["reg_compliance_led"], MODE_AR["case_led"], M
 _TASK_AR = f"""
 ## This task: merge parallel research reports into ONE answer
 
-In this task the search results reach you through reports. The user's matter was researched as an extended search («بحث موسّع»): a planner read the angles (أوجه) of the user's file — the arguments that strengthen the user's position, the ones that attack the other side or the evidence serving it, and the other side's strong points the user must answer — and ran several searches at the same time, each on one or more of those angles. Each search read the user's whole file and every document's summary, and wrote its own report. You write the ONE answer the user reads first.
+In this task the search results reach you through reports. The user's matter was researched as an extended search («بحث شامل»): a planner read the angles (أوجه) of the user's file — the arguments that strengthen the user's position, the ones that attack the other side or the evidence serving it, and the other side's strong points the user must answer — and ran several searches at the same time, each on one or more of those angles. Each search read the user's whole file and every document's summary, and wrote its own report. You write the ONE answer the user reads first.
 
 Every report's citations were renumbered by code into ONE shared list, `<references>`: the same `[n]` means the same source in every report, and in your answer.
 

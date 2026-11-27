@@ -111,7 +111,7 @@ def test_the_card_text_is_the_mock_in_words():
     plan = the_plan([R1, R23])
     card = build_card(build_options(plan, planner_points=0.4), plan, run_id="run-1", points_left=18.7)
     assert card_text_ar(card) == "\n".join([
-        "بحث موسّع — الخطة المقترحة",
+        "بحث شامل — الخطة المقترحة",
         "1. استحقاق قيمة أمر التغيير والملحق — الأنظمة والأحكام",
         "2. جدول الدفعات والفواتير — الأنظمة",
         "3. مبلغ 43,700 دون أمر تغيير ثانٍ — الأنظمة",
@@ -182,7 +182,7 @@ def test_the_two_planner_prompt_variants():
     for p in (SYSTEM_PROMPT_BUDGET, SYSTEM_PROMPT_NO_BUDGET):
         assert STRENGTHS_WEAKNESSES in p
         assert "Never mention points, prices or the budget in any field" in p
-        assert "Fewer is better." in p and "«بحث موسّع»" in p
+        assert "Fewer is better." in p and "«بحث شامل»" in p
     assert "Plan inside it." in SYSTEM_PROMPT_BUDGET and "inside the same budget" in SYSTEM_PROMPT_BUDGET
     assert "null" not in SYSTEM_PROMPT_BUDGET.replace("`cheaper` null", "").replace("or null)", "")
     assert "no budget limit" in SYSTEM_PROMPT_NO_BUDGET and "null for no cap" in SYSTEM_PROMPT_NO_BUDGET

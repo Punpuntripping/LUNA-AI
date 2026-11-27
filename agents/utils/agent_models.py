@@ -348,7 +348,7 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # max_tokens; the shared OUTPUT_TOKENS_CAP still bounds the run.
     # See .claude/plans/relationship_map.md §4.1.
     "angle_mapper":               _WAFER_V41_DEFAULT,
-    # «بحث موسّع» (extended search, .claude/plans/extended_search.md). Layer-2
+    # «بحث شامل» (extended search, .claude/plans/extended_search.md). Layer-2
     # planner that reads the angle map and plans 1..N parallel searches inside a
     # budget mode picked by code (D20–D23) — V4.1 on Wafer, the model every
     # budget-planner run was tested on (D2, 2026-11-23). The merger (Layer-3)

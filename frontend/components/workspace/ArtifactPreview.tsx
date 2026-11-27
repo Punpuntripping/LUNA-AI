@@ -26,7 +26,7 @@ interface ArtifactPreviewProps {
   headerActions?: ReactNode;
   /**
    * Content rendered BEFORE the markdown body, inside the same scroll
-   * viewport. Used by AgentSearchViewer for the «بحث موسّع» merged answer's
+   * viewport. Used by AgentSearchViewer for the «بحث شامل» merged answer's
    * header + scoreboard (ExtendedSynthesisSections). Omitted → nothing.
    */
   header?: ReactNode;

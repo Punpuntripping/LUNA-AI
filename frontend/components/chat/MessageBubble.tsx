@@ -127,7 +127,7 @@ interface MessageBubbleProps {
    */
   nextSteps?: NextStep[];
   /**
-   * «بحث موسّع» plan-card button → sends the choice as a normal message
+   * «بحث شامل» plan-card button → sends the choice as a normal message
    * (ChatContainer → useSendMessage). Only the card row uses it; it is live
    * only while that row is the latest message (``isLatestAssistant``).
    */
@@ -168,7 +168,7 @@ export const MessageBubble = memo(function MessageBubble({
   const isAgentQuestion = metadataKind === "agent_question";
   const isAgentAnswer = metadataKind === "agent_answer";
   const agentSuggestions = isAgentQuestion ? message.metadata?.suggestions : undefined;
-  // «بحث موسّع» plan card (extended_search.md §4.4): an agent_question row
+  // «بحث شامل» plan card (extended_search.md §4.4): an agent_question row
   // paused with ``pause_reason = "extended_plan"``. A malformed card falls
   // back to the row's text (the same plan in words). Memoized on the raw value
   // so the card's props keep their identity while another message streams.
@@ -820,7 +820,7 @@ const DEFINITE_SUBTYPE: Record<string, string> = {
   memory_file: "الذاكرة",
   legal_opinion: "الرأي القانوني",
   legal_synthesis: "التحليل القانوني",
-  extended_synthesis: "البحث الموسّع",
+  extended_synthesis: "البحث الشامل",
 };
 
 const DEFINITE_KIND: Record<WorkspaceItemKind, string> = {

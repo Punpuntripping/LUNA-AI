@@ -53,12 +53,12 @@ import type { SSEDeepSearchGated, SSEQuotaExceeded } from "@/types";
  */
 const DEEP_SEARCH_GATE_COPY = {
   title: {
-    free_limit: "استخدمت البحث المعمّق المتاح في باقتك",
-    low_points: "رصيدك لا يكفي لبحث معمّق جديد",
+    free_limit: "استخدمت البحث العميق المتاح في باقتك",
+    low_points: "رصيدك لا يكفي لبحث عميق جديد",
   },
   /** Before «{resetText} — أو رقِّ باقتك الآن.» on the count refusal (the points
    *  refusal keeps the dialog's «تعود نقاطك»). */
-  countBack: "يتجدّد بحثك المعمّق",
+  countBack: "يتجدّد بحثك العميق",
 } as const;
 
 interface QuotaUpgradeDialogProps {

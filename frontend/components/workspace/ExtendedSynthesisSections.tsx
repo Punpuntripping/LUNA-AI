@@ -27,11 +27,11 @@ import {
 } from "@/lib/contracts";
 
 /**
- * «بحث موسّع» — the merged answer's own sections, around the ordinary
+ * «بحث شامل» — the merged answer's own sections, around the ordinary
  * `agent_search` body (AgentSearchViewer). The design is the owner-accepted
  * preview (merger_inputs_2026-11-24/build_merged_wi_page.py), built as drawn:
  *
- * - `ExtendedSynthesisLead` — above the answer: the «بحث موسّع» chip and the
+ * - `ExtendedSynthesisLead` — above the answer: the «بحث شامل» chip and the
  *   meta line, «نقاط القوة والضعف» (tally bar, legend, the two groups of
  *   collapsible angle cards), then the «الجواب» heading. The markdown body
  *   itself (citations, reference focus) stays ArtifactPreview's.

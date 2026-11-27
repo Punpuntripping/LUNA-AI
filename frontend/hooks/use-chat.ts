@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { messagesApi } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
+import { useSidebarStore } from "@/stores/sidebar-store";
 import { useEduStore } from "@/stores/edu-store";
 import { useInstallNudgeStore } from "@/stores/install-nudge-store";
 import { messageKeys } from "@/hooks/use-messages";
@@ -64,7 +65,7 @@ interface SendMessageParams {
   content: string;
   caseId?: string | null;
   /**
-   * «بحث موسّع» plan-card button: `content` is then the button's label. The
+   * «بحث شامل» plan-card button: `content` is then the button's label. The
    * send carries no composer attachments and, if refused, puts nothing back
    * in the composer (the card's buttons come back instead).
    */
@@ -341,6 +342,11 @@ export function useSendMessage(): UseSendMessageReturn {
       let analyticsRunToken = initialRunToken;
 
       let assistantMessageId: string | null = null;
+      // «بحث شامل»: its reports land one by one, each the moment its search
+      // ends. The first one opens; later ones only join the list, so the pane
+      // never jumps away from the report being read. The merged answer
+      // (subtype extended_synthesis) always opens, on full page.
+      let extendedReportOpened = false;
       // Layer 2: flips true once the backend confirms the run is committed
       // (message_start arrives → user row saved, placeholder created, slot
       // reserved). After that, a dropped stream must NOT re-POST — the run
@@ -897,10 +903,30 @@ export function useSendMessage(): UseSendMessageReturn {
               // «النصوص المثبّتة» is supporting material, written while the
               // search is still running: opening it would take the pane the
               // report is about to open in. It shows in the list and as a chip.
-              if (!isMobileViewport() && payload.kind !== "pinned_texts") {
-                useChatStore
-                  .getState()
-                  .openWorkspaceItem(conversationId, payload.item_id);
+              const chat = useChatStore.getState();
+              const shamilReport =
+                (chat.streams[conversationId]?.deepSearchProgress?.searches ?? null) !== null &&
+                payload.subtype !== "extended_synthesis";
+              const laterShamilReport = shamilReport && extendedReportOpened;
+              if (shamilReport) extendedReportOpened = true;
+              if (
+                !isMobileViewport() &&
+                payload.kind !== "pinned_texts" &&
+                !laterShamilReport
+              ) {
+                const paneWasOpen =
+                  chat.workspaceByConversation[conversationId]?.isOpen ?? false;
+                chat.openWorkspaceItem(conversationId, payload.item_id);
+                // The turn's first item opens the pane: fold the sidebar so
+                // the chat and the item share the page (owner 2026-11-27).
+                // Only for the conversation on screen — a run finishing in
+                // another conversation leaves the sidebar alone.
+                if (
+                  !paneWasOpen &&
+                  window.location.pathname === `/chat/${conversationId}`
+                ) {
+                  useSidebarStore.getState().setOpen(false);
+                }
               }
               break;
             }

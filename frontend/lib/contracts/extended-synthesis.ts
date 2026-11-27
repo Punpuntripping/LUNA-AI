@@ -1,4 +1,4 @@
-// «بحث موسّع» — the merged answer (the extended-search merger's workspace item).
+// «بحث شامل» — the merged answer (the extended-search merger's workspace item).
 //
 // Several searches run in parallel on the angles (أوجه) of the user's file; the
 // merger writes ONE merged answer and publishes it as an ordinary
@@ -253,13 +253,13 @@ function compact<T>(items: unknown[], parse: (raw: unknown, index: number) => T 
   return out;
 }
 
-/** True when a workspace item's `metadata` marks the merged «بحث موسّع» answer. */
+/** True when a workspace item's `metadata` marks the merged «بحث شامل» answer. */
 export function isExtendedSynthesis(metadata: unknown): boolean {
   return isObj(metadata) && metadata.subtype === EXTENDED_SYNTHESIS_SUBTYPE;
 }
 
 /**
- * Read an `agent_search` item's `metadata` as the merged «بحث موسّع» answer.
+ * Read an `agent_search` item's `metadata` as the merged «بحث شامل» answer.
  * Null unless `metadata.subtype === "extended_synthesis"` (the item then renders
  * as every other `agent_search` item). Never throws: a malformed key reads as
  * empty / null, a malformed entry inside a list is dropped, and a report
@@ -295,7 +295,7 @@ export function parseExtendedSynthesis(metadata: unknown): ExtendedSynthesis | n
 // ---------------------------------------------------------------------------
 
 export const EXTENDED_SYNTHESIS_AR = {
-  chip: "بحث موسّع",
+  chip: "بحث شامل",
   board: "نقاط القوة والضعف",
   boardAria: "توزيع حالات الأوجه",
   mine: "نقاط قوتك",

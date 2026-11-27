@@ -1,4 +1,4 @@
-"""The extended planner («بحث موسّع», plan §4.2) — one pydantic-ai run per eligible turn.
+"""The extended planner («بحث شامل», plan §4.2) — one pydantic-ai run per eligible turn.
 
 Slot ``extended_planner`` (V4.1 on Wafer, D2 — the model the 11-23 budget planner ran
 on). Input = ``view.render_planner_input`` (D28 + the budget block), instructions =

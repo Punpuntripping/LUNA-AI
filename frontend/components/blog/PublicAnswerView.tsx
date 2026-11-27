@@ -20,7 +20,7 @@ const SUBTYPE_LABEL: Record<string, string> = {
   memory_file: "ذاكرة",
   legal_opinion: "رأي قانوني",
   legal_synthesis: "تحليل قانوني",
-  extended_synthesis: "بحث موسّع",
+  extended_synthesis: "بحث شامل",
 };
 
 interface PublicAnswerViewProps {

@@ -39,7 +39,7 @@ interface PlanCardProps {
 }
 
 /**
- * «بحث موسّع» plan card (extended_search.md §4.4) — rendered by MessageBubble
+ * «بحث شامل» plan card (extended_search.md §4.4) — rendered by MessageBubble
  * inside the agent-question frame, in place of the row's text.
  *
  * Unlike the next-step chips (which paste), a button here SENDS: the stored

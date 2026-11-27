@@ -180,7 +180,7 @@ def build_pause_question_tag(row: dict) -> str:
         return ""
     family = str(metadata.get("agent_family") or "").strip()
     fam_part = f" (agent_family={family})" if family else ""
-    # approve_plan: the writer's plan; extended_plan: the «بحث موسّع» plan card.
+    # approve_plan: the writer's plan; extended_plan: the «بحث شامل» plan card.
     if metadata.get("pause_reason") in ("approve_plan", "extended_plan"):
         return f"〔[نظام] هذه خطة عرضها متخصصٌ{fam_part} أثناء مهمته〕"
     return f"〔[نظام] هذا سؤال طرحه متخصصٌ{fam_part} أثناء مهمته〕"

@@ -62,7 +62,7 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
     [sendMessage, conversationId, caseId]
   );
 
-  // «بحث موسّع» plan card: a button is a normal send whose text is the
+  // «بحث شامل» plan card: a button is a normal send whose text is the
   // button's label, plus the choice the backend resumes the paused run with.
   // Resolves when the send ends, so the card can release its local lock.
   const handlePlanChoice = useCallback(

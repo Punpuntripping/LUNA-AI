@@ -1,9 +1,12 @@
-"""«بحث موسّع» — publish the reports and the merged answer; write the chat summary (§4.7, D14).
+"""«بحث شامل» — publish the reports and the merged answer; write the chat summary (§4.7, D14).
 
 - Every usable report → its own ``agent_search`` workspace item through today's
   publisher (``publish_search_result``): title = the request's title, its own
   references, forensic rows (``retrieval_artifacts`` + ``reranker_runs``) from its own
-  URA — exactly what an ordinary deep search stores.
+  URA — exactly what an ordinary deep search stores. Posted the moment its search ends
+  (:func:`publish_report`, owner 2026-11-27: a ready report is not held for the
+  merger); :func:`publish_extended` then posts only what is left (a report whose early
+  post failed gets a second try) and the merged answer.
 - The merged answer → one more ``agent_search`` item through the merger's own publisher
   (``extended_merger.publisher``): ``metadata.subtype = "extended_synthesis"``; its
   ``content_md`` is the answer only; ``metadata`` carries the angle scoreboard, the
@@ -40,7 +43,7 @@ PUBLISH_FAILED_AR = (
     "الإجابة معروضة في المحادثة لكنها لن تظهر ضمن المستندات."
 )
 #: Title of the merged item when the wiring passes no ``task_label``.
-MERGED_TITLE_PREFIX_AR = "بحث موسّع"
+MERGED_TITLE_PREFIX_AR = "بحث شامل"
 MERGED_PROMPT_KEY = "extended_merger"
 _TITLE_MAX = 80
 
@@ -164,6 +167,49 @@ async def _publish_merged(
 # --------------------------------------------------------------------------- publish
 
 
+async def publish_report(
+    report: ExtendedSearchReport,
+    *,
+    supabase: Any,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    message_id: str | None,
+    query: str,
+    detail_level: str,
+) -> list[dict]:
+    """Post ONE usable report as its ``agent_search`` item, now — the moment its search
+    ends, while the others still run. Sets ``report.item_id`` and returns its
+    ``workspace_item_created`` events. A report that is not usable, or already posted,
+    returns ``[]``. Raises when the insert fails (:func:`publish_extended` tries it once
+    more at the end)."""
+    from agents.agent_search import SearchPublishDeps, SearchPublishInput, publish_search_result
+
+    if report.item_id or not report.ok or report.agg_output is None:
+        return []
+    out = await publish_search_result(
+        SearchPublishInput(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            message_id=message_id,
+            agg_output=report.agg_output,
+            original_query=query,
+            detail_level=detail_level,
+            ura=report.ura,
+            reg_rqrs=list(report.reg_rqrs or []),
+            comp_rqrs=[],
+            case_rqrs=list(report.case_rqrs or []),
+            per_executor_stats=dict(report.per_executor_stats or {}),
+            task_label=report.request.title,
+            describe_query=query,
+        ),
+        SearchPublishDeps(supabase=supabase, logger=logger),
+    )
+    report.item_id = out.item_id
+    return list(out.sse_events)
+
+
 async def publish_extended(
     reports: Sequence[ExtendedSearchReport],
     merged: MergedAnswer | None,
@@ -179,18 +225,18 @@ async def publish_extended(
     task_label: str | None = None,
     run_id: str | None = None,
 ) -> PublishedExtended:
-    """Publish every usable report, then (≥ 2 of them and ``merged`` given) the merged
-    answer with ``children``. Sets ``report.item_id``. ``sse_events`` lists the reports'
-    ``workspace_item_created`` first and the merged item's LAST, marked ``primary`` (see
-    below). Never raises — a failure is logged and turns into today's Arabic status line
-    at the end of ``sse_events``.
+    """Publish every usable report not posted yet (:func:`publish_report` posts them as
+    their searches end), then (≥ 2 of them and ``merged`` given) the merged answer with
+    ``children``. Sets ``report.item_id``. ``report_item_ids`` lists EVERY posted
+    report, early or now, in plan order; ``sse_events`` only what this call posted — the
+    reports' ``workspace_item_created`` first and the merged item's LAST, marked
+    ``primary`` (see below). Never raises — a failure is logged and turns into today's
+    Arabic status line at the end of ``sse_events``.
 
     ``query`` — the message the searches ran on (stored as ``describe_query``, as
     today's path does); ``task_label`` — the router's label, the merged item's title
-    (fallback «بحث موسّع: …»); ``run_id`` — the plan's run id (metadata only).
+    (fallback «بحث شامل: …»); ``run_id`` — the plan's run id (metadata only).
     """
-    from agents.agent_search import SearchPublishDeps, SearchPublishInput, publish_search_result
-
     usable = _usable(reports)
     report_events: list[dict] = []
     merged_events: list[dict] = []
@@ -198,34 +244,23 @@ async def publish_extended(
     failed = False
     t0 = time.perf_counter()
 
+    early = 0
     for report in usable:
+        if report.item_id:            # posted when its search ended — its event is out
+            early += 1
+            report_ids.append(report.item_id)
+            continue
         try:
-            out = await publish_search_result(
-                SearchPublishInput(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    message_id=message_id,
-                    agg_output=report.agg_output,
-                    original_query=query,
-                    detail_level=detail_level,
-                    ura=report.ura,
-                    reg_rqrs=list(report.reg_rqrs or []),
-                    comp_rqrs=[],
-                    case_rqrs=list(report.case_rqrs or []),
-                    per_executor_stats=dict(report.per_executor_stats or {}),
-                    task_label=report.request.title,
-                    describe_query=query,
-                ),
-                SearchPublishDeps(supabase=supabase, logger=logger),
-            )
+            report_events.extend(await publish_report(
+                report, supabase=supabase, user_id=user_id, conversation_id=conversation_id,
+                case_id=case_id, message_id=message_id, query=query, detail_level=detail_level,
+            ))
         except Exception as exc:  # noqa: BLE001 - one failed publish never stops the others
             failed = True
             logger.warning("extended_search: report %d publish failed: %s", report.index, exc, exc_info=True)
             continue
-        report.item_id = out.item_id
-        report_ids.append(out.item_id)
-        report_events.extend(out.sse_events)
+        if report.item_id:
+            report_ids.append(report.item_id)
 
     merged_id: str | None = None
     if merged is not None and len(usable) >= 2:
@@ -248,8 +283,8 @@ async def publish_extended(
     if failed:
         events.append({"type": "status", "text": PUBLISH_FAILED_AR})
     logger.info(
-        "extended_search: published %d/%d reports, merged=%s (%.1fs)",
-        len(report_ids), len(usable), merged_id or "-", time.perf_counter() - t0,
+        "extended_search: published %d/%d reports (%d as their searches ended), merged=%s (%.1fs)",
+        len(report_ids), len(usable), early, merged_id or "-", time.perf_counter() - t0,
     )
     return PublishedExtended(report_item_ids=report_ids, merged_item_id=merged_id, sse_events=events)
 

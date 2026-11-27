@@ -14,7 +14,7 @@
 segmenter, the citation pins and the angle map on the files of THIS message,
 before the pause check (``orchestrator._run_pre_router_helpers``), so every agent
 after it reads the sections, the pinned texts and the angles, and the router can
-offer «بحث موسّع». The readers after the router stay critical for the files the
+offer «بحث شامل». The readers after the router stay critical for the files the
 router did NOT wait on (a file from an earlier message, a case document, a
 library file never mapped): ``TurnHelpers.mark_waited`` records the router's
 files and ``ensure_ready`` never makes a later reader wait on them again, so a
@@ -371,7 +371,7 @@ ANGLE_MAP = HelperSpec(
     # Its input is the segmenter's sections; it starts when the segmenter ends.
     depends_on=("segmenter",),
     # The router waits for it on this message's files (owner 2026-11-27, D34 —
-    # replaces plan Q3's "nobody waits"), so «بحث موسّع» is reachable on the turn
+    # replaces plan Q3's "nobody waits"), so «بحث شامل» is reachable on the turn
     # the file is sent. Nobody after the router waits: the extended planner reads
     # the stored map and plans without angles when there is none.
     critical_for=frozenset({"router"}),

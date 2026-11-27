@@ -70,7 +70,7 @@ export function PushNotificationsSection() {
         الإشعارات
       </AppText>
       <AppText variant="sm" tone="muted">
-        ننبّهك على هذا الجهاز حين تجهز إجابة البحث المعمّق، دون أن يتضمن التنبيه أي نص من سؤالك أو الإجابة.
+        ننبّهك على هذا الجهاز حين تجهز إجابة البحث العميق، دون أن يتضمن التنبيه أي نص من سؤالك أو الإجابة.
       </AppText>
 
       {status && !status.supported ? (

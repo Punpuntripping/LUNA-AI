@@ -355,7 +355,7 @@ def test_copy_is_arabic_with_latin_digits(reason, plan):
         assert text.strip() and not ARABIC_INDIC.search(text)
         assert "{" not in text                              # every slot filled
     if reason == "free_limit":
-        assert "1 بحث معمّق كل 30 يوماً" in block.reply_ar
+        assert "1 بحث عميق كل 30 يوماً" in block.reply_ar
     assert ("الاشتراك" in block.reply_ar) is (plan == "free")
 
 
@@ -429,7 +429,7 @@ def env(monkeypatch):
         state["ds_calls"] += 1
         return orch._DeepSearchOutcome(
             kind="completed",
-            result=SpecialistResult(chat_summary="جواب البحث المعمّق", model_used="qwen"),
+            result=SpecialistResult(chat_summary="جواب البحث العميق", model_used="qwen"),
         )
 
     async def _block(_supabase, _user_id, gate):

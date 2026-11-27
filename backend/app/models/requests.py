@@ -176,7 +176,7 @@ class UpdateConversationRequest(BaseModel):
 # ── Messages ──────────────────────────────────────────
 
 class PlanChoice(BaseModel):
-    """A «بحث موسّع» plan-card button (frontend/lib/contracts/extended-plan.ts
+    """A «بحث شامل» plan-card button (frontend/lib/contracts/extended-plan.ts
     ``PlanChoicePayload``): the card's paused run + the option pressed."""
     run_id: str = Field(..., min_length=1, max_length=64)
     option: Literal["plan", "cheaper", "ordinary"]

@@ -1,4 +1,4 @@
-"""«بحث موسّع» — merge the searches' reports into ONE answer (plan §4.6, §4.9 c; D4, D14, D19).
+"""«بحث شامل» — merge the searches' reports into ONE answer (plan §4.6, §4.9 c; D4, D14, D19).
 
 The merger itself is ``agents/deep_search_v4/extended_merger`` (prompt ``merger-v1``):
 it reads every report with the planner's request and the angle cards behind it, the

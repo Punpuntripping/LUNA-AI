@@ -711,7 +711,7 @@ async def send_message_stream(
     Ownership is verified by the caller BEFORE this generator runs.
 
     ``plan_choice`` (``requests.PlanChoice`` or a ``{"run_id", "option"}`` dict): a
-    «بحث موسّع» plan-card button, handed to the orchestrator; ``None`` for a typed
+    «بحث شامل» plan-card button, handed to the orchestrator; ``None`` for a typed
     message (the orchestrator call is then exactly today's).
 
     1. Save user message + assistant placeholder in ONE atomic insert
@@ -1121,7 +1121,7 @@ async def send_message_stream(
                     assistant_message_id=assistant_msg_id,
                     codec=codec,
                     deep_search_gate=deep_search_gate,
-                    # «بحث موسّع» plan-card button only — a typed message passes
+                    # «بحث شامل» plan-card button only — a typed message passes
                     # nothing, so its call is exactly today's.
                     **({"plan_choice": _plan_choice_dict(plan_choice)} if plan_choice is not None else {}),
                 ):
@@ -1158,7 +1158,7 @@ async def send_message_stream(
                         # twice and we don't want duplicate uuids in the array.
                         if item_id and item_id not in captured_artifact_ids:
                             if event.get("primary"):
-                                # «بحث موسّع»: the merged answer is the turn's primary
+                                # «بحث شامل»: the merged answer is the turn's primary
                                 # item (its citation target) though it is created last.
                                 captured_artifact_ids.insert(0, item_id)
                             else:
@@ -1238,7 +1238,7 @@ async def send_message_stream(
                         # `status`: reranker internals AND every sub-query the
                         # expanders wrote («بحث في السوابق القضائية: …»). The
                         # sub-queries are the search logic itself — shown in the
-                        # «بحث معمق» window they let anyone reverse-engineer it
+                        # «بحث عميق» window they let anyone reverse-engineer it
                         # (owner, 2026-10-26). Progress reaches the client via
                         # `agent_progress` (static stage labels + counts) only.
                         pass
@@ -1257,7 +1257,7 @@ async def send_message_stream(
                             "text": event.get("text", ""),
                             "data": {
                                 k: raw_data[k]
-                                # `searches` = {total, done}: «بحث موسّع»'s parallel
+                                # `searches` = {total, done}: «بحث شامل»'s parallel
                                 # searches (absent on an ordinary deep search).
                                 for k in ("sources", "queries", "elapsed_s", "searches")
                                 if k in raw_data
@@ -1295,7 +1295,7 @@ async def send_message_stream(
                         # planner input and can carry fakes. Decode before it
                         # reaches the user's screen (store-real applies to the
                         # matching messages row too — decoded in _record_deferred).
-                        # «بحث موسّع» plan card: its text was decoded once already
+                        # «بحث شامل» plan card: its text was decoded once already
                         # (record_extended_pause stores and returns it real), and
                         # only this pause names its reason on the event — every
                         # other pause relays exactly today's payload.

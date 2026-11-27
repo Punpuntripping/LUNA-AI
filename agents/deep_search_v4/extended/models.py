@@ -1,4 +1,4 @@
-"""Shared data shapes of «بحث موسّع» — the contract between the build's parts.
+"""Shared data shapes of «بحث شامل» — the contract between the build's parts.
 
 Keep the field names stable: the planner side (budget / view / planner / card / brief),
 the execution side (runner / merger / publish), the orchestrator wiring and the web +

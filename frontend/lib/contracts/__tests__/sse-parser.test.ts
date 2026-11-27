@@ -147,7 +147,7 @@ test("deep_search_gated is a known event with its payload typed", () => {
     plan_id: "free",
     upgrade_options: ["basic", "pro", "max"],
     resets_at: "2026-11-19T09:00:00+00:00",
-    message_ar: "استخدمت البحث المعمّق المتاح في باقتك لهذه الفترة.",
+    message_ar: "استخدمت البحث العميق المتاح في باقتك لهذه الفترة.",
   };
   const out = collect([frame("deep_search_gated", payload)]);
   assert.equal(out.length, 1);

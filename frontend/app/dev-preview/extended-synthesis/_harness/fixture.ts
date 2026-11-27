@@ -1,7 +1,7 @@
 import type { Reference, WorkspaceItem } from "@/lib/contracts";
 
 /**
- * DEV ONLY — an INVENTED «بحث موسّع» conversation for the preview harness: one
+ * DEV ONLY — an INVENTED «بحث شامل» conversation for the preview harness: one
  * merged answer (`extended_synthesis`), two child reports (`legal_synthesis`)
  * and a sparse/malformed merged item to check the lenient parsing. Every name,
  * sentence and number here is made up; nothing comes from a real file.
@@ -150,7 +150,7 @@ export const PREVIEW_ITEMS: WorkspaceItem[] = [
   }),
   item({
     item_id: SPARSE_ID,
-    title: "بحث موسّع ببيانات ناقصة",
+    title: "بحث شامل ببيانات ناقصة",
     wi_seq: 5,
     content_md: "جواب قصير للمعاينة [1].",
     metadata: SPARSE_METADATA,

@@ -1,4 +1,4 @@
-"""«بحث موسّع» at the API edge (build spec C): ``SendMessageRequest.plan_choice``, the
+"""«بحث شامل» at the API edge (build spec C): ``SendMessageRequest.plan_choice``, the
 route handing it to ``send_message_stream``, ``message_service`` handing it to the
 orchestrator ONLY when set (a typed message calls ``handle_message`` exactly as
 before), and the SSE relay: ``agent_question.pause_reason`` and
@@ -163,7 +163,7 @@ def _decode_spy(monkeypatch) -> list[str]:
 
 def test_the_card_question_relays_its_pause_reason(monkeypatch):
     decoded = _decode_spy(monkeypatch)
-    card_text = "بحث موسّع — الخطة المقترحة"
+    card_text = "بحث شامل — الخطة المقترحة"
     events, _ = _stream(monkeypatch, [
         {"type": "agent_question", "run_id": "r1", "question": card_text,
          "pause_reason": "extended_plan", "suggestions": []},

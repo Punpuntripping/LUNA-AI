@@ -1,4 +1,4 @@
-"""The planning turn of «بحث موسّع» (build spec C; plan §4.1, §4.4, D6, D30).
+"""The planning turn of «بحث شامل» (build spec C; plan §4.1, §4.4, D6, D30).
 
 ``plan_extended_turn`` (flag → eligibility → view → planner → one search or a card),
 the card's records (pause row + card row), and the ``_run_deep_search`` / ``_dispatch``
@@ -196,7 +196,7 @@ def test_two_requests_record_the_card_and_pause(flag, seams):
     card = ExtendedPlanCard.model_validate(meta[CARD_METADATA_KEY])
     assert card.run_id == "run-new" and card.points_left == 18 and card.outcome is None
     assert row["question_text"] == planned.question
-    assert planned.question.startswith("بحث موسّع")
+    assert planned.question.startswith("بحث شامل")
 
 
 def test_a_failed_pause_insert_runs_todays_path(flag, seams):
@@ -340,7 +340,7 @@ def test_dispatch_turns_a_card_into_an_agent_question(monkeypatch, dispatch_env)
         return orch._DeepSearchOutcome(kind="extended_paused", question="CARD TEXT")
 
     monkeypatch.setattr(orch, "_run_deep_search", fake_ds)
-    # The router chose «بحث موسّع» (D34): only then may the planning turn run.
+    # The router chose «بحث شامل» (D34): only then may the planning turn run.
     events = _dispatch(F.FakeDB(), extended_allowed=True)
 
     turn = seen["extended"]

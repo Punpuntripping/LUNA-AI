@@ -89,8 +89,8 @@ class DispatchAgent(BaseModel):
     extended: bool = Field(
         default=False,
         description=(
-            "deep_search only: True to run «بحث موسّع» on the attached files — "
-            "only when the section «بحث موسّع» says it is available this turn. "
+            "deep_search only: True to run «بحث شامل» on the attached files — "
+            "only when the section «بحث شامل» says it is available this turn. "
             "False (the default) = an ordinary deep search."
         ),
     )

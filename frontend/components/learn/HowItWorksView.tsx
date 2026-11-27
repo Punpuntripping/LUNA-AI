@@ -205,7 +205,7 @@ export function HowItWorksView() {
         <div className="mx-auto max-w-5xl px-4 py-16 sm:py-20">
           <div className="mx-auto max-w-2xl text-center">
             <h2 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
-              البحث المعمّق: الأنظمة والأحكام
+              البحث العميق: الأنظمة والأحكام
             </h2>
             <p className="mt-3 text-base leading-relaxed text-muted-foreground">
               عندما يحتاج سؤالك إلى بحث، يتولاه أحد وكيلين بحسب ما تبحث عنه:

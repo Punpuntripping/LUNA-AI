@@ -1,6 +1,6 @@
-"""«بحث موسّع» as the router sees it (extended_search.md D34, owner 2026-11-27).
+"""«بحث شامل» as the router sees it (extended_search.md D34, owner 2026-11-27).
 
-The ROUTER chooses «بحث موسّع» now — ``DispatchAgent(extended=True)`` — instead of
+The ROUTER chooses «بحث شامل» now — ``DispatchAgent(extended=True)`` — instead of
 code deciding silently inside the deep-search turn (D30 revised). Before the
 router runs, code makes the same checks the planning turn makes
 (:func:`eligibility.check_eligibility`: the flag, the plan, the points, a fresh
@@ -30,30 +30,30 @@ logger = logging.getLogger(__name__)
 #: At most this many angle titles go to the router (it only needs the picture).
 MAX_ANGLE_TITLES = 12
 
-#: What the router tells a user who asks for «بحث موسّع» when it is not available.
+#: What the router tells a user who asks for «بحث شامل» when it is not available.
 UNAVAILABLE_AR: dict[str, str] = {
     _elig.REASON_PLAN: (
-        "البحث الموسّع متاح في باقات «الاحترافية» و«الاحترافية بلس» و«القصوى»."
+        "البحث الشامل متاح في باقات «الاحترافية» و«الاحترافية بلس» و«القصوى»."
     ),
     _elig.REASON_LOW_POINTS: (
-        "رصيدك المتبقي من النقاط لا يكفي لبحث موسّع الآن، ويتجدّد مع بداية الفترة القادمة."
+        "رصيدك المتبقي من النقاط لا يكفي لبحث شامل الآن، ويتجدّد مع بداية الفترة القادمة."
     ),
     _elig.REASON_NO_ATTACHMENTS: (
-        "البحث الموسّع يدرس ملفاً مرفقاً من عدة أوجه، فأرفق الملف الذي تريد دراسته."
+        "البحث الشامل يدرس ملفاً مرفقاً من عدة أوجه، فأرفق الملف الذي تريد دراسته."
     ),
     _elig.REASON_NO_MAP: (
-        "لم تُستخرج خيوط هذا الملف، فلا يتاح له بحث موسّع الآن."
+        "لم تُستخرج خيوط هذا الملف، فلا يتاح له بحث شامل الآن."
     ),
     _elig.REASON_FEW_ANGLES: (
         "هذا الملف يدور حول مسألة واحدة، فيكفيه البحث العادي."
     ),
 }
-UNAVAILABLE_DEFAULT_AR = "البحث الموسّع غير متاح الآن."
+UNAVAILABLE_DEFAULT_AR = "البحث الشامل غير متاح الآن."
 
 
 @dataclass
 class RouterExtendedView:
-    """What the router is told about «بحث موسّع» this turn."""
+    """What the router is told about «بحث شامل» this turn."""
 
     available: bool
     #: ``eligibility`` reason (logging; ``eligible`` when available).
@@ -88,7 +88,7 @@ def router_extended_view(
     user_id: str,
     workspace_item_summaries: Sequence[Mapping[str, Any]],
 ) -> RouterExtendedView | None:
-    """The router's «بحث موسّع» section for this turn, or ``None`` (flag off).
+    """The router's «بحث شامل» section for this turn, or ``None`` (flag off).
 
     ``workspace_item_summaries`` — the router context's item dicts (``item_id``,
     ``wi_seq``, ``kind``, ``title``); the attachments among them are the files the
@@ -146,8 +146,8 @@ def render_router_section(view: RouterExtendedView | None) -> str:
         return ""
     if not view.available:
         return (
-            "\n## «بحث موسّع» — not available this turn\n\n"
-            "Never set `extended=true` this turn. If the user asks for «بحث موسّع» "
+            "\n## «بحث شامل» — not available this turn\n\n"
+            "Never set `extended=true` this turn. If the user asks for «بحث شامل» "
             "by name, reply with `ChatResponse`: tell them in one sentence, in these "
             f"words, «{view.unavailable_ar}» and offer an ordinary deep search "
             "instead. Any other request: route it as usual.\n"
@@ -156,16 +156,17 @@ def render_router_section(view: RouterExtendedView | None) -> str:
     angles = "\n".join(f"  {n}. {title}" for n, title in enumerate(view.angle_titles, start=1))
     aliases = ", ".join(f'"{alias}"' for alias, _, _ in view.files)
     return (
-        "\n## «بحث موسّع» — available this turn\n\n"
+        "\n## «بحث شامل» — available this turn\n\n"
         f"These files have been read into their angles («الخيوط» — the separate legal "
         f"questions the file raises): {files}\n"
         + (f"Angles:\n{angles}\n" if angles else "")
-        + "\n«بحث موسّع» studies those files from several angles at once: its own "
+        + "\n«بحث شامل» studies those files from several angles at once: its own "
         "planner splits the work into two or more searches, shows the user a plan "
         "card with its cost in points and an «بحث عادي» button, and nothing runs "
         "until the user clicks. Choose it with "
         f'`DispatchAgent(agent_family="deep_search", extended=true, attached_wis=[{aliases}])` when:\n'
-        "- the user asks for it by name («بحث موسّع»، «البحث الموسع»، «ابحث بحثاً موسّعاً»), or\n"
+        "- the user asks for it by name («بحث شامل»، «البحث الشامل»، «ابحث بحثاً شاملاً» — "
+        "or its old name «بحث موسّع»), or\n"
         "- the user asks to research the file as a whole, across several of its points "
         "(«ادرس القضية من كل جوانبها»، «ابحث لي في كل نقاط الدفاع في المذكرة»), or\n"
         f"- your last reply is a plan card («{CARD_TITLE_AR}») and the user's message "

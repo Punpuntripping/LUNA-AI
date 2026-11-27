@@ -55,7 +55,7 @@ export async function openMessageStream(
   const body = JSON.stringify({
     content: payload.content,
     ...(payload.attachment_ids?.length ? { attachment_ids: payload.attachment_ids } : {}),
-    // «بحث موسّع» plan-card button: resumes the paused run with that option.
+    // «بحث شامل» plan-card button: resumes the paused run with that option.
     ...(payload.plan_choice ? { plan_choice: payload.plan_choice } : {}),
   });
 

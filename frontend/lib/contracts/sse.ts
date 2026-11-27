@@ -215,7 +215,7 @@ export interface SSEAgentProgressData {
   confidence?: number;
   elapsed_s?: number;
   /**
-   * «بحث موسّع» only: the parallel searches of the run — how many in all and
+   * «بحث شامل» only: the parallel searches of the run — how many in all and
    * how many have finished. Absent on an ordinary deep search.
    */
   searches?: { total: number; done: number };
@@ -284,7 +284,7 @@ export interface SSEAgentQuestion {
   question: string;
   suggestions?: string[];
   /**
-   * Present only on a «بحث موسّع» plan card's pause (the card itself rides the
+   * Present only on a «بحث شامل» plan card's pause (the card itself rides the
    * saved row's `metadata.extended_plan`); absent on every other pause.
    */
   pause_reason?: 'extended_plan';

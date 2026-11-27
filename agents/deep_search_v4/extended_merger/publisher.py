@@ -1,4 +1,4 @@
-"""Publish the extended-search merger's answer («بحث موسّع») as ONE workspace item.
+"""Publish the extended-search merger's answer («بحث شامل») as ONE workspace item.
 
 The sibling of ``agents/agent_search/publisher.py`` — an adapter, not an LLM.
 Plan: ``.claude/plans/extended_search.md`` §4.7, D14.
@@ -48,7 +48,7 @@ from backend.app.services.workspace_service import create_workspace_item
 _KIND = "agent_search"
 _CREATED_BY = "agent"
 _AGENT_FAMILY = "deep_search"
-_FALLBACK_TITLE = "بحث موسّع"
+_FALLBACK_TITLE = "بحث شامل"
 _TITLE_MAX = 80
 
 # The aggregator's cited-count scan (``aggregator/artifact_builder.py``):
@@ -62,7 +62,7 @@ def _decode(text: Any) -> str:
 
 
 def _build_title(input: MergedPublishInput) -> str:
-    """Router label → the user's query → «بحث موسّع». Decoded BEFORE the cut,
+    """Router label → the user's query → «بحث شامل». Decoded BEFORE the cut,
     so a fake is never sliced in half and left undecodable."""
     for candidate in (input.task_label, input.original_query):
         text = _decode((candidate or "").strip()).strip()

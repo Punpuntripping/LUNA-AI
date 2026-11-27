@@ -1,4 +1,4 @@
-"""Contracts of the extended-search merger («بحث موسّع» — the report merger).
+"""Contracts of the extended-search merger («بحث شامل» — the report merger).
 
 Plan: ``.claude/plans/extended_search.md`` §4.6 (the merger), §4.7 (publishing),
 §4.9 c (strengths and weaknesses), D4 / D14 / D19.

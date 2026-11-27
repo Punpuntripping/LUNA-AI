@@ -272,7 +272,7 @@ function PushNotificationsSection({ open }: { open: boolean }) {
     <div className="flex flex-col gap-3" data-testid="push-settings">
       <h3 className="text-sm font-semibold text-foreground">الإشعارات</h3>
       <p className="text-sm text-muted-foreground">
-        ننبّهك على هذا الجهاز حين تجهز إجابة البحث المعمّق، دون أن يتضمن
+        ننبّهك على هذا الجهاز حين تجهز إجابة البحث العميق، دون أن يتضمن
         التنبيه أي نص من سؤالك أو الإجابة.
       </p>
 

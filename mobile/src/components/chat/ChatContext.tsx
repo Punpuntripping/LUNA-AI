@@ -26,7 +26,7 @@ export interface ChatRowActions {
   openCitation: (artifactId: string, n: number) => void;
   /** «افتح ال…» — reopen an agent output over the chat (the ArtifactSheet). */
   openArtifact: (itemId: string) => void;
-  /** «بحث موسّع» plan-card button: SENDS `label` as a normal message carrying
+  /** «بحث شامل» plan-card button: SENDS `label` as a normal message carrying
    *  the choice (web ChatContainer `handlePlanChoice`). Resolves when that send
    *  ends, so the card can release its local lock. Never rejects. */
   choosePlan: (choice: PlanChoicePayload, label: string) => Promise<void>;

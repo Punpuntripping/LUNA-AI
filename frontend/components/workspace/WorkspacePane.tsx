@@ -1,10 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { X, Loader2, ArrowRight } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { X, Loader2, ArrowRight, Maximize2, Minimize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
+import { useSidebarStore } from "@/stores/sidebar-store";
+import { useIsMobile } from "@/hooks/use-media-query";
+import { isExtendedSynthesis } from "@/lib/contracts/extended-synthesis";
 import {
   useWorkspaceItem,
   useConversationWorkspace,
@@ -66,6 +70,11 @@ interface WorkspacePaneProps {
  * (``GET /files/{id}``: summary + sections); without text — or if that request
  * fails — it falls back to ``AttachmentRenderer`` exactly as before. Flag off:
  * none of this renders.
+ *
+ * Full page (desktop): an opened item can fill the whole page — the chat is
+ * hidden and the sidebar folds (``ChatLayoutClient``). «توسيع» / «تصغير» in the
+ * header toggles it; the «بحث شامل» merged answer opens on full page by itself
+ * (owner 2026-11-27). Back to the list or closing the pane ends it.
  */
 export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const openItemId = useChatStore(
@@ -78,6 +87,11 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const closeWorkspaceItem = useChatStore((s) => s.closeWorkspaceItem);
   const openWorkspaceItem = useChatStore((s) => s.openWorkspaceItem);
   const clearFocusedReference = useChatStore((s) => s.clearFocusedReference);
+  const expanded = useChatStore(
+    (s) => s.workspaceByConversation[conversationId]?.expanded ?? false,
+  );
+  const setWorkspaceExpanded = useChatStore((s) => s.setWorkspaceExpanded);
+  const isMobile = useIsMobile();
 
   // Always loaded so the list mode renders without an extra fetch on close.
   const { data: listData, isLoading: listLoading } =
@@ -93,6 +107,22 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const isDemo = isDemoConversation(convData?.conversation);
 
   const inDetailMode = openItemId !== null;
+
+  // «بحث شامل»: the merged answer opens on full page — once per opening, so
+  // «تصغير» sticks until the user leaves the item and opens it again.
+  const autoExpandedFor = useRef<string | null>(null);
+  const loadedItem = item && item.item_id === openItemId ? item : null;
+  useEffect(() => {
+    if (openItemId === null) {
+      autoExpandedFor.current = null;
+      return;
+    }
+    if (isMobile || !loadedItem || autoExpandedFor.current === openItemId) return;
+    autoExpandedFor.current = openItemId;
+    if (isExtendedSynthesis(loadedItem.metadata)) {
+      setWorkspaceExpanded(conversationId, true);
+    }
+  }, [openItemId, loadedItem, isMobile, conversationId, setWorkspaceExpanded]);
   // On for THIS user only (build flag + GET /files/status); loading or a
   // failed status call keeps the pane exactly as it was.
   const { enabled: filesOn, pinnedTexts: pinnedInFiles } = useFilesStatus();
@@ -167,6 +197,9 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
         inDetailMode={inDetailMode}
         onBack={() => closeWorkspaceItem(conversationId)}
         onClose={() => closeWorkspace(conversationId)}
+        // Phones: the pane is already a full-screen overlay.
+        expanded={!isMobile && inDetailMode ? expanded : null}
+        onToggleExpanded={() => setWorkspaceExpanded(conversationId, !expanded)}
         title={filesOn ? FILES_COPY.paneTitle : "العناصر"}
         closeLabel={filesOn ? "إغلاق لوحة المخرجات" : "إغلاق لوحة العناصر"}
       />
@@ -231,13 +264,23 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
             ) : itemError || !item ? (
               <ErrorState />
             ) : (
-              <KindRouter
-                item={item}
-                focusedReferenceN={focusedReferenceN}
-                onFlashDone={() => clearFocusedReference(conversationId)}
-                isDemo={isDemo}
-                filesOn={filesOn}
-              />
+              // Full page: a reading column, not lines across the whole
+              // screen. The wrapper stays in both modes so toggling never
+              // remounts the viewer (an editor keeps its state).
+              <div
+                className={cn(
+                  "flex w-full min-h-0 flex-1 flex-col",
+                  expanded && !isMobile && "mx-auto max-w-4xl",
+                )}
+              >
+                <KindRouter
+                  item={item}
+                  focusedReferenceN={focusedReferenceN}
+                  onFlashDone={() => clearFocusedReference(conversationId)}
+                  isDemo={isDemo}
+                  filesOn={filesOn}
+                />
+              </div>
             )}
           </div>
 
@@ -269,6 +312,8 @@ function PaneHeader({
   inDetailMode,
   onBack,
   onClose,
+  expanded,
+  onToggleExpanded,
   title,
   closeLabel,
 }: {
@@ -276,12 +321,23 @@ function PaneHeader({
   inDetailMode: boolean;
   onBack: () => void;
   onClose: () => void;
+  /** Full page state of the opened item; null = no button (list, phones). */
+  expanded: boolean | null;
+  onToggleExpanded: () => void;
   /** List-mode title: «العناصر», or «المخرجات» when the feature is on. */
   title: string;
   closeLabel: string;
 }) {
+  // On full page the folded sidebar's floating toggle (ChatLayoutClient,
+  // `top-3 start-3`) sits over this header's start: keep the back arrow clear.
+  const sidebarOpen = useSidebarStore((s) => s.isOpen);
   return (
-    <div className="flex items-center gap-1 border-b px-2 py-2.5">
+    <div
+      className={cn(
+        "flex items-center gap-1 border-b px-2 py-2.5",
+        expanded && !sidebarOpen && "ps-14",
+      )}
+    >
       {inDetailMode && (
         <Button
           variant="ghost"
@@ -307,6 +363,23 @@ function PaneHeader({
           `wi-badge` anchor is still emitted. */}
       {inDetailMode && (
         <WiBadge seq={item?.wi_seq} className="me-1" dataTour="wi-badge" />
+      )}
+      {expanded !== null && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 shrink-0 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
+          onClick={onToggleExpanded}
+          aria-pressed={expanded}
+          title={expanded ? "إظهار المحادثة بجانب العنصر" : "عرض العنصر على الصفحة كاملة"}
+        >
+          {expanded ? (
+            <Minimize2 className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+          {expanded ? "تصغير" : "توسيع"}
+        </Button>
       )}
       <Button
         variant="ghost"

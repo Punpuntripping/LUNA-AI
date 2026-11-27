@@ -185,7 +185,7 @@ def _factory(made: list):
     return deps_factory
 
 
-def _run(requests, fake, monkeypatch, *, deps_factory=None, emitted=None, made=None):
+def _run(requests, fake, monkeypatch, *, deps_factory=None, emitted=None, made=None, on_report=None):
     monkeypatch.setattr(orch, "run_retrieval", fake)
     monkeypatch.setattr(runner, "_brief", lambda req, plan, view: req.title)
     made = made if made is not None else []
@@ -193,7 +193,33 @@ def _run(requests, fake, monkeypatch, *, deps_factory=None, emitted=None, made=N
     return asyncio.run(run_extended_searches(
         requests, plan=make_plan(requests), view=make_view(), query="سؤال المستخدم",
         deps_factory=deps_factory or _factory(made), emit_sse=emitted.append,
+        on_report=on_report,
     ))
+
+
+def test_each_usable_report_is_handed_over_the_moment_its_search_ends(monkeypatch, persisted):
+    """on_report (the wiring posts the report to the workspace) runs per usable report,
+    before the run's last progress event — not after every search has ended."""
+    reqs = [make_request("ب1"), make_request("ب2"), make_request("ب3")]
+    emitted: list[dict] = []
+    handed: list[tuple[int, int]] = []
+
+    async def on_report(report):
+        handed.append((report.index, len(emitted)))
+
+    reports = _run(reqs, _FakeRetrieval(3, fail={"ب2"}), monkeypatch, emitted=emitted, on_report=on_report)
+    assert sorted(i for i, _ in handed) == [1, 3]                  # the failed search hands nothing
+    assert all(at < len(emitted) for _, at in handed)              # before the all-done event
+    assert [r.ok for r in reports] == [True, False, True]
+
+
+def test_a_failing_on_report_never_fails_the_search(monkeypatch, persisted):
+    async def on_report(report):
+        raise RuntimeError("insert failed")
+
+    reports = _run([make_request("ب1"), make_request("ب2")], _FakeRetrieval(2), monkeypatch,
+                   on_report=on_report)
+    assert all(r.ok for r in reports) and all(r.item_id is None for r in reports)
 
 
 def test_searches_run_in_parallel_each_on_its_own_deps(monkeypatch, persisted):

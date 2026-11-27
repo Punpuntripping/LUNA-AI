@@ -3,7 +3,7 @@
 The executor loops narrate onto `status`: reranker internals (keep/drop counts,
 thresholds, rounds, channel taxonomy) AND every sub-query the expanders wrote
 («جاري البحث في السوابق القضائية: …», «جاري البحث في الأنظمة واللوائح: …»).
-The sub-queries used to be whitelisted into the «بحث معمق» window; they are the
+The sub-queries used to be whitelisted into the «بحث عميق» window; they are the
 search logic itself, so since 2026-10-26 the relay drops every `status` line —
 nothing for the client to read, in the UI or in the network tab. Progress still
 reaches the client through `agent_progress` (static stage labels + counts).
