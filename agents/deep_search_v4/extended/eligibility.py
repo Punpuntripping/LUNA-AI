@@ -57,7 +57,13 @@ def _not(reason: str, **kw: Any) -> Eligibility:
 
 def _best_fresh_map(supabase: Any, item_ids: Sequence[str]) -> tuple[dict | None, int]:
     """The fresh map holding the most of ``item_ids`` (first found wins a tie), and how
-    many it holds. An item already inside a found map is not looked up again."""
+    many it holds. An item already inside a found map is not looked up again.
+
+    An item with no map of its own — a «الملفات» copy — carries its file's map from
+    the conversation it was made in, whole (owner 2026-11-27,
+    ``angle_mapper.library``), its members pointed at this turn's copies of the
+    same files (:func:`~agents.memory.angle_mapper.library.localize_angle_map`)."""
+    from agents.memory.angle_mapper.library import load_carried_angle_map, localize_angle_map
     from agents.memory.angle_mapper.store import load_fresh_angle_map_for_item
 
     found: dict[str, tuple[dict, set[str]]] = {}
@@ -67,7 +73,10 @@ def _best_fresh_map(supabase: Any, item_ids: Sequence[str]) -> tuple[dict | None
             continue
         stored = load_fresh_angle_map_for_item(supabase, item_id)
         if not stored:
-            continue
+            stored = load_carried_angle_map(supabase, item_id)
+            if not stored:
+                continue
+            stored = localize_angle_map(supabase, stored, item_ids)
         map_id = str((stored.get("map") or {}).get("map_id") or "")
         members = {str(i.get("item_id") or "") for i in stored.get("items") or []}
         mine = members & set(item_ids)

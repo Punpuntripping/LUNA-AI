@@ -379,11 +379,71 @@ def _fresh_members(
     return fresh
 
 
+def _carried_map_files(
+    supabase: SupabaseClient, user_id: str, conversation_id: str, own: set[str]
+) -> dict[str, set[str]]:
+    """``{map_id: {file_id, …}}`` — the maps this conversation's «الملفات» copies
+    carry (owner 2026-11-27, ``agents/memory/angle_mapper/library.py``): maps of
+    the caller's OTHER live items of the same files, minus the conversation's own
+    maps (``own``), with the files that bring each one. Needs the files read switch
+    (``file_id``) and ``LIBRARY_FILE_MAPS_*`` on for the caller. Fail-soft: ``{}``
+    (the conversation's own maps still list)."""
+    try:
+        from agents.utils.angle_map_flags import library_file_maps_enabled
+
+        if not library_file_maps_enabled(user_id):
+            return {}
+        cols = files_store.with_file_id("item_id", user_id=user_id, supabase=supabase)
+        if "file_id" not in cols:
+            return {}
+        here = _data(
+            supabase.table(ITEMS_TABLE)
+            .select(cols)
+            .eq("conversation_id", conversation_id)
+            .eq("user_id", user_id)
+            .eq("kind", "attachment")
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        here_ids = {str(r["item_id"]) for r in here}
+        files = list(dict.fromkeys(str(r["file_id"]) for r in here if r.get("file_id")))
+        if not files:
+            return {}
+        file_of: dict[str, str] = {}
+        for batch in _batches(files):
+            for r in _data(
+                supabase.table(ITEMS_TABLE)
+                .select("item_id, file_id")
+                .in_("file_id", batch)
+                .eq("user_id", user_id)
+                .is_("deleted_at", "null")
+                .execute()
+            ):
+                if str(r["item_id"]) not in here_ids:
+                    file_of[str(r["item_id"])] = str(r["file_id"])
+        if not file_of:
+            return {}
+        out: dict[str, set[str]] = {}
+        for link in _rows_in(supabase, MAP_ITEMS_TABLE, "map_id, item_id", "item_id", list(file_of)):
+            mid = str(link["map_id"])
+            if mid not in own:
+                out.setdefault(mid, set()).add(file_of[str(link["item_id"])])
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("angle_maps: carried maps read failed (%s)", type(exc).__name__)
+        return {}
+
+
 def list_angle_maps(
     supabase: SupabaseClient, user_id: str, conversation_id: Optional[str] = None
 ) -> list[dict]:
     """``AngleMapSummary`` rows of the caller's fresh maps, newest first (at most
-    ``LIST_CAP``), optionally of one conversation. A failed read is a 500."""
+    ``LIST_CAP``), optionally of one conversation. A failed read is a 500.
+
+    For one conversation, the maps its «الملفات» copies carry are listed too —
+    whole, even when they hold other files, the newest fresh one per file, and
+    still listed when the conversation they were made in is deleted
+    (:func:`_carried_map_files`)."""
     try:
         q = (
             supabase.table(MAPS_TABLE)
@@ -393,6 +453,17 @@ def list_angle_maps(
         if conversation_id:
             q = q.eq("conversation_id", conversation_id)
         heads = _data(q.order("created_at", desc=True).limit(LIST_CAP).execute())
+        carried: dict[str, set[str]] = {}
+        if conversation_id:
+            carried = _carried_map_files(supabase, user_id, conversation_id, {str(h["map_id"]) for h in heads})
+            if carried:
+                more = _rows_in(
+                    supabase, MAPS_TABLE, "map_id, conversation_id, message_id, created_at, user_id",
+                    "map_id", list(carried),
+                )
+                heads = heads + [h for h in more if str(h.get("user_id") or "") == str(user_id)]
+                heads.sort(key=lambda h: str(h.get("created_at") or ""), reverse=True)
+                heads = heads[:LIST_CAP]
         if not heads:
             return []
         map_ids = [str(h["map_id"]) for h in heads]
@@ -426,13 +497,18 @@ def list_angle_maps(
         c[k] += 1
 
     out = []
+    files_shown: set[str] = set()
     for h in heads:
         mid = str(h["map_id"])
         mine = sorted(members.get(mid) or [], key=lambda i: _int_or_none(i.get("doc_index")) or 0)
         if not mine or any(str(i["item_id"]) not in fresh for i in mine):
             continue   # a member gone, changed or segmented again: stale
         conv = convs.get(str(h.get("conversation_id") or ""))
-        if h.get("conversation_id") and (conv is None or conv["deleted"]):
+        if mid in carried:
+            if carried[mid] <= files_shown:
+                continue   # a newer fresh map already brings these files
+            files_shown |= carried[mid]
+        elif h.get("conversation_id") and (conv is None or conv["deleted"]):
             continue
         c = counts.get(mid) or {"strengthen": 0, "attack": 0, "answer": 0}
         out.append({

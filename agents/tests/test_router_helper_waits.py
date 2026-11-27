@@ -159,10 +159,19 @@ class _Waits:
         self.ended[helper] = time.monotonic()
 
 
-def _pre_router(monkeypatch, waits: _Waits, *, attachments: list[str], unread: bool) -> tuple:
+def _pre_router(
+    monkeypatch, waits: _Waits, *, attachments: list[str], unread: bool, to_map: tuple[str, ...] = (),
+) -> tuple:
+    """``to_map`` — the «الملفات» copies ``library_items_to_map`` picks for a new map."""
+    from agents.memory.angle_mapper import library
+
     async def fake_ocr(_ctx: Any) -> SimpleNamespace:
         return SimpleNamespace(filled_item_ids=[], failed=0)
 
+    async def pick(_sb: Any, item_ids: Any, *, user_id: str) -> list[str]:
+        return [i for i in item_ids if i in to_map]
+
+    monkeypatch.setattr(library, "library_items_to_map", pick)
     monkeypatch.setattr(helper_frame, "ensure_ready", waits)
     monkeypatch.setattr(orch, "_wait_in_flight", waits.in_flight)
     monkeypatch.setattr(orch, "has_unread_attachments", lambda *_a: unread)
@@ -206,6 +215,39 @@ def test_the_router_waits_for_the_file_helpers_in_order(monkeypatch, quick_stage
     for helper in ("segmenter", "citation_pins", "angle_map"):
         assert turn.waited_for(helper, "f1") and turn.waited_for(helper, "f2")
     assert turn.message_item_ids == ["f1", "f2"]
+
+
+def test_a_library_file_with_no_map_is_mapped_and_waited_for(monkeypatch, quick_stages):
+    """Owner 2026-11-27: a «الملفات» copy whose file has no map anywhere, on Pro /
+    Pro Plus / Max, is mapped — started here through the frame and waited for; the
+    message's other files are only waited for."""
+    waits = _Waits(angle_map=0.05)
+    events, turn = _pre_router(monkeypatch, waits, attachments=["f1", "lib"], unread=False, to_map=("lib",))
+
+    angle = sorted((c, ids) for h, c, ids, _ in waits.calls if h == "angle_map")
+    assert angle == [("in_flight", ("f1",)), ("router", ("lib",))]
+    stages = [e.get("stage") for e in events if e["type"] == "ocr_progress" and e["phase"] == "extracting"]
+    assert stages == ["threads"]
+    assert turn.waited_for("angle_map", "f1") and turn.waited_for("angle_map", "lib")
+
+
+def test_no_library_file_to_map_starts_nothing(monkeypatch, quick_stages):
+    waits = _Waits()
+    _pre_router(monkeypatch, waits, attachments=["f1", "lib"], unread=False, to_map=())
+    assert [(c, ids) for h, c, ids, _ in waits.calls if h == "angle_map"] == [("in_flight", ("f1", "lib"))]
+
+
+def test_a_failing_library_check_falls_back_to_waiting(monkeypatch):
+    """``library_items_to_map`` never raises: a failed read inside it = nothing
+    started, the files still waited for."""
+    from agents.memory.angle_mapper import library
+
+    def boom(*_a: Any) -> list[str]:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(library, "_enabled", lambda _user: True)
+    monkeypatch.setattr(library, "items_to_map", boom)
+    assert asyncio.run(library.library_items_to_map(object(), ["lib"], user_id=USER)) == []
 
 
 def test_a_message_without_files_waits_for_nothing_and_shows_nothing(monkeypatch, quick_stages):

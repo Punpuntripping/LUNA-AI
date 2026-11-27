@@ -157,6 +157,12 @@ def _load_angle_map(supabase: Any, map_id: str) -> dict:
     return _load_map(supabase, map_id)
 
 
+def _localize(supabase: Any, angle_map: dict, item_ids: list[str]) -> dict:
+    from agents.memory.angle_mapper.library import localize_angle_map
+
+    return localize_angle_map(supabase, angle_map, item_ids) or angle_map
+
+
 async def _searches(requests: Sequence[ExtendedRequest], **kw: Any) -> list:
     from .runner import run_extended_searches
 
@@ -1083,6 +1089,9 @@ async def _run_option(
         angle_map = await asyncio.to_thread(_load_angle_map, supabase, pause.map_id)
         if not angle_map:
             raise LookupError("angle map gone")
+        # A map a «الملفات» copy carried: its members back on this conversation's
+        # copies, as when the card was planned (eligibility._best_fresh_map).
+        angle_map = await asyncio.to_thread(_localize, supabase, angle_map, list(pause.attached_item_ids))
         view = await asyncio.to_thread(_planner_view, supabase, angle_map, user_id=user_id)
     except Exception as exc:  # noqa: BLE001 - the map changed since the card
         logger.warning("extended_search: plan %s cannot run — map %s (%s)", run_id, pause.map_id, exc)

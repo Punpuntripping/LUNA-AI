@@ -31,4 +31,20 @@ def angle_map_enabled(user_id: Any) -> bool:
         return False
 
 
-__all__ = ["angle_map_enabled"]
+def library_file_maps_enabled(user_id: Any) -> bool:
+    """``LIBRARY_FILE_MAPS_ENABLED`` and (no ``LIBRARY_FILE_MAPS_USERS`` allowlist,
+    or ``user_id`` is on it): «الملفات» copies carry their file's map, and one with
+    no map is mapped (``agents/memory/angle_mapper/library.py``). Never raises; off
+    on error (off = a copy has no map, as before)."""
+    try:
+        settings = get_settings()
+        return _on_for(
+            getattr(settings, "LIBRARY_FILE_MAPS_ENABLED", False),
+            getattr(settings, "LIBRARY_FILE_MAPS_USERS", None),
+            user_id,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+__all__ = ["angle_map_enabled", "library_file_maps_enabled"]

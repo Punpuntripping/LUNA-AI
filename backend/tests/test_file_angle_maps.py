@@ -175,6 +175,84 @@ def test_list_of_one_conversation():
     assert ams.list_angle_maps(_world(), USER, CONV_GONE) == []
 
 
+CONV_NEW = "aaaaaaaa-0000-0000-0000-000000000009"
+COPY_A1 = "bbbbbbbb-0000-0000-0000-0000000001a1"
+COPY_GONE = "bbbbbbbb-0000-0000-0000-0000000001e1"
+
+
+def _with_copies(monkeypatch) -> FakeSupabase:
+    """«الملفات» copies in CONV_NEW: of ITEM_A1's file (MAP_A, with ITEM_A2 — another
+    file) and of ITEM_GONE_CONV's file (MAP_GONE_CONV, its conversation deleted).
+    ``file_id`` selected as with the files read switch on."""
+    from agents.utils import angle_map_flags
+
+    monkeypatch.setattr(files_store, "with_file_id", lambda cols, **_k: f"{cols}, file_id")
+    monkeypatch.setattr(angle_map_flags, "library_file_maps_enabled", lambda _user: True)
+    sb = _world()
+    rows = {r["item_id"]: r for r in sb.tables["workspace_items"]}
+    rows[ITEM_A1]["file_id"] = "file-a1"
+    rows[ITEM_A2]["file_id"] = "file-a2"
+    rows[ITEM_GONE_CONV]["file_id"] = "file-gone"
+    copy_a1 = _item(COPY_A1, CONV_NEW, title="لائحة دعوى")
+    copy_a1["file_id"] = "file-a1"
+    copy_gone = _item(COPY_GONE, CONV_NEW, title="في محادثة محذوفة", wi=2)
+    copy_gone["file_id"] = "file-gone"
+    sb.tables["workspace_items"] += [copy_a1, copy_gone]
+    sb.tables["conversations"].append(
+        {"conversation_id": CONV_NEW, "user_id": USER, "title_ar": "محادثة جديدة", "deleted_at": None})
+    return sb
+
+
+def test_list_of_a_conversation_shows_the_maps_its_library_copies_carry(monkeypatch):
+    """Owner 2026-11-27: a «الملفات» copy brings its file's map whole — even with
+    other files, even when the conversation it was made in is deleted."""
+    maps = ams.list_angle_maps(_with_copies(monkeypatch), USER, CONV_NEW)
+    assert [m["map_id"] for m in maps] == [MAP_A, MAP_GONE_CONV]
+    assert [d["item_id"] for d in maps[0]["documents"]] == [ITEM_A1, ITEM_A2]
+    assert maps[0]["conversation_title"] == "استئناف حكم"
+
+
+def test_switch_off_lists_no_carried_map(monkeypatch):
+    from agents.utils import angle_map_flags
+
+    sb = _with_copies(monkeypatch)
+    monkeypatch.setattr(angle_map_flags, "library_file_maps_enabled", lambda _user: False)
+    assert ams.list_angle_maps(sb, USER, CONV_NEW) == []
+
+
+def test_carried_maps_change_nothing_elsewhere(monkeypatch):
+    sb = _with_copies(monkeypatch)
+    assert [m["map_id"] for m in ams.list_angle_maps(sb, USER, CONV_A)] == [MAP_A]
+    assert [m["map_id"] for m in ams.list_angle_maps(sb, USER)] == [MAP_B, MAP_A]
+    assert ams.list_angle_maps(sb, OTHER_USER, CONV_NEW) == []
+
+
+def test_a_stale_carried_map_is_not_listed_and_a_deleted_original_item_carries_nothing(monkeypatch):
+    sb = _with_copies(monkeypatch)
+    monkeypatch.setattr(ams, "segment_headers",
+                        lambda _sb, ids, user_id=None: {i: _header(i) for i in ids if i != ITEM_A2})
+    assert [m["map_id"] for m in ams.list_angle_maps(sb, USER, CONV_NEW)] == [MAP_GONE_CONV]
+    for r in sb.tables["workspace_items"]:
+        if r["item_id"] == ITEM_GONE_CONV:
+            r["deleted_at"] = "2026-11-26T00:00:00+00:00"
+    assert ams.list_angle_maps(sb, USER, CONV_NEW) == []
+
+
+def test_the_newest_fresh_carried_map_per_file(monkeypatch):
+    sb = _with_copies(monkeypatch)
+    # file-a1 was also sent alone in CONV_B later → a newer map of it alone.
+    later = _item("bbbbbbbb-0000-0000-0000-0000000002a1", CONV_B, title="لائحة دعوى", wi=3)
+    later["file_id"] = "file-a1"
+    sb.tables["workspace_items"].append(later)
+    sb.tables["attachment_angle_maps"].append({
+        "map_id": "cccccccc-0000-0000-0000-0000000000aa", "user_id": USER, "conversation_id": CONV_B,
+        "message_id": None, "created_at": "2026-11-26T10:00:00+00:00"})
+    sb.tables["attachment_angle_map_items"].append(
+        _member("cccccccc-0000-0000-0000-0000000000aa", later["item_id"], 1))
+    maps = ams.list_angle_maps(sb, USER, CONV_NEW)
+    assert [m["map_id"] for m in maps] == ["cccccccc-0000-0000-0000-0000000000aa", MAP_GONE_CONV]
+
+
 def test_list_a_member_with_no_segment_map_now_is_stale(monkeypatch):
     monkeypatch.setattr(ams, "segment_headers",
                         lambda _sb, ids, user_id=None: {i: _header(i) for i in ids if i != ITEM_A2})

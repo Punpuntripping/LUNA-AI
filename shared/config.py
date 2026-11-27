@@ -545,6 +545,14 @@ class Settings(BaseSettings):
     # see them yet. Also needs MY_FILES on. Env var name == field name.
     ANGLE_MAP_UI_ENABLED: bool = False
     ANGLE_MAP_UI_USERS: Optional[str] = None
+    # «الملفات» copies and angle maps (owner 2026-11-27,
+    # agents/memory/angle_mapper/library.py): a file attached from «الملفات»
+    # carries its file's map whole (the pane's «الخيوط» list and «بحث موسّع»),
+    # and one with no map anywhere is mapped on Pro / Pro Plus / Max. Off: a copy
+    # has no map, as before. *_USERS: comma-separated users.user_id; empty =
+    # everyone. Env var name == field name (no validation_alias).
+    LIBRARY_FILE_MAPS_ENABLED: bool = False
+    LIBRARY_FILE_MAPS_USERS: Optional[str] = None
 
     # ── «بحث موسّع» (extended search) — .claude/plans/extended_search.md §4.8 ─
     # On: an eligible deep-search turn (Pro / Pro Plus / Max, a fresh angle map

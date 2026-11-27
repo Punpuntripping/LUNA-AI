@@ -196,3 +196,44 @@ def test_a_failing_database_is_no_map_not_an_exception(flag_on):
     db.fail = {"attachment_angle_map_items", "attachment_angle_maps"}
     out = check_eligibility(db, user_id=F.USER, gate=gate("pro", 15.0), attached_item_ids=IDS)
     assert (out.eligible, out.reason) == (False, EL.REASON_NO_MAP)
+
+
+# ── «الملفات» copies carry their file's map (owner 2026-11-27) ───────────────
+
+
+def _carried_case(monkeypatch, own: dict | None = None) -> None:
+    from agents.memory.angle_mapper import library as lib
+    from agents.memory.angle_mapper import store as store_mod
+
+    carried = {
+        "map": {"map_id": "M1", "user_id": F.USER},
+        "items": [{"item_id": "H", "doc_index": 1}, {"item_id": "X1", "doc_index": 2}],
+        "angles": [{"seq": n, "title": f"وجه {n}"} for n in (1, 2, 3)],
+    }
+    monkeypatch.setattr(store_mod, "load_fresh_angle_map_for_item", lambda _sb, i: (own or {}).get(i))
+    monkeypatch.setattr(lib, "load_carried_angle_map", lambda _sb, i: carried if i == "C" else None)
+
+    def localize(_sb, stored, ids):
+        assert list(ids) == ["C", "U"]
+        return {**stored, "items": [{"item_id": "C", "doc_index": 1}, {"item_id": "X1", "doc_index": 2}]}
+
+    monkeypatch.setattr(lib, "localize_angle_map", localize)
+
+
+def test_a_library_copy_carries_its_files_map_pointed_at_this_conversation(flag_on, monkeypatch):
+    _carried_case(monkeypatch)
+    got = check_eligibility(object(), user_id=F.USER, gate=gate("pro", 40.0), attached_item_ids=["C", "U"])
+    assert got.eligible and got.reason == EL.REASON_OK
+    assert got.angle_map["map"]["map_id"] == "M1"
+    # The copy here, the map's other file as the map's own (it travels whole).
+    assert [i["item_id"] for i in got.angle_map["items"]] == ["C", "X1"]
+    assert got.covered == 1
+
+
+def test_the_turns_own_map_covering_more_wins_over_a_carried_one(flag_on, monkeypatch):
+    own = {"map": {"map_id": "M5", "user_id": F.USER},
+           "items": [{"item_id": "C", "doc_index": 1}, {"item_id": "U", "doc_index": 2}],
+           "angles": [{"seq": 1, "title": "أ"}, {"seq": 2, "title": "ب"}]}
+    _carried_case(monkeypatch, own={"C": own, "U": own})
+    got = check_eligibility(object(), user_id=F.USER, gate=gate("pro", 40.0), attached_item_ids=["C", "U"])
+    assert got.angle_map["map"]["map_id"] == "M5" and got.covered == 2

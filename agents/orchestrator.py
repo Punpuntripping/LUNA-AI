@@ -3235,10 +3235,9 @@ async def _wait_attachment_helpers(
     ``not_applicable`` at once. The files are then marked as waited for, so no
     agent after the router waits on them again. Never raises.
 
-    The angle map is only WAITED for, never started here: it keeps starting
-    where it did before — when a segmenter run ends — so a «الملفات» file with
-    stored sections gets no new mapper call (owner 2026-11-27: a library file
-    carries its existing map; ``project_library_file_angle_map_reuse``)."""
+    The angle map is WAITED for, and started here only for a «الملفات» copy that
+    needs one (:func:`_wait_angle_maps`); otherwise it starts where it did before
+    — when a segmenter run ends."""
     from agents.helpers import ensure_ready
 
     def wait(helper: str) -> "Any":
@@ -3255,13 +3254,43 @@ async def _wait_attachment_helpers(
             yield ev
         turn.mark_waited("segmenter", item_ids)
         turn.mark_waited("citation_pins", item_ids)
-        async for ev in _wait_with_stage(_wait_in_flight("angle_map", item_ids), "threads"):
+        async for ev in _wait_with_stage(_wait_angle_maps(turn, item_ids), "threads"):
             yield ev
         turn.mark_waited("angle_map", item_ids)
     finally:
         for task in (segmenter, pins):
             if not task.done():
                 task.cancel()
+
+
+async def _wait_angle_maps(turn: "helper_frame.TurnHelpers", item_ids: list[str]) -> None:
+    """The angle-map part of the router's wait (owner 2026-11-27,
+    ``agents/memory/angle_mapper/library.py``).
+
+    * A «الملفات» copy whose file has a fresh map anywhere carries it: nothing to
+      start or wait for.
+    * A «الملفات» copy whose file has no map anywhere, on Pro / Pro Plus / Max: its
+      map is STARTED and waited for here (``ensure_ready`` → the helper frame →
+      the unchanged runner, which maps the message's files and charges it like
+      any map). Whether the file qualifies is the helper's own ``applies_to``.
+    * Every other file (a new upload, or a copy on another plan): its runs already
+      going are only waited for — a new upload's map starts when its segmenter
+      ends — and nothing is started (``_wait_in_flight``).
+
+    Each up to the helper's ceiling; never cancels a run. Never raises."""
+    from agents.memory.angle_mapper.library import library_items_to_map
+
+    to_map = await library_items_to_map(turn.supabase, item_ids, user_id=turn.user_id)
+    picked = set(to_map)
+    waits = [_wait_in_flight("angle_map", [i for i in item_ids if i not in picked])]
+    if to_map:
+        from agents.helpers import ensure_ready
+
+        logger.info("angle_map: starting the map of %d library file(s)", len(to_map))
+        waits.append(ensure_ready(
+            "angle_map", to_map, consumer="router", supabase=turn.supabase, user_id=turn.user_id,
+        ))
+    await asyncio.gather(*waits)
 
 
 async def _wait_in_flight(helper: str, item_ids: list[str]) -> None:
