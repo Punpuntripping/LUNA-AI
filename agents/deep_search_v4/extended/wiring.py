@@ -242,6 +242,8 @@ class ExtendedTurn:
     run_id: str
     user_message_id: str | None = None
     task_label: str = ""
+    #: The one planner (ONE_PLANNER_ENABLED): the router's ``extended`` — a hint only.
+    hint: bool = False
 
 
 @dataclass
@@ -492,6 +494,87 @@ async def plan_extended_turn(input: Any, supabase: Any, *, turn: ExtendedTurn) -
         )
         logger.info(
             "extended_search: plan card run_id=%s searches=%d options=%s",
+            turn.run_id, len(plan.requests), [o.id for o in options],
+        )
+        return PlannedTurn(question=question)
+
+
+async def record_plan_card(
+    supabase: Any,
+    *,
+    input: Any,
+    turn: ExtendedTurn,
+    plan: ExtendedPlan,
+    offer: Any,
+    planner_points: float,
+    describe_query: str,
+) -> PlannedTurn | None:
+    """The ONE planner's «بحث شامل» plan → its card (.claude/plans/one_planner.md).
+
+    ``plan`` — DECODED (``offer.decode_offer_plan``); ``offer`` — the turn's
+    ``ExtendedOffer`` (available: view, mode, points, item ids); ``describe_query`` —
+    what the searches run on (the message, or the earlier turns' words + the message,
+    or on a resume the original + question + reply — never reworded). The same card
+    and pause the separate extended planner records (:func:`plan_extended_turn`).
+
+    ``None`` = no card (the workspace filled since the offer, the card failed to build
+    or to save) — the caller runs one search instead. Never raises except on
+    cancellation.
+    """
+    with _logfire.span(
+        "deep_search.extended.card",
+        conversation_id=getattr(input, "conversation_id", None),
+        searches=len(plan.requests),
+        one_planner=True,
+    ) as span:
+        orch = _orch()
+        try:
+            count = await asyncio.to_thread(orch._count_artifact_kinds, supabase, input.conversation_id)
+        except Exception:  # noqa: BLE001 - the offer already checked the room
+            count = 0
+        new_items = len(plan.requests) + 1
+        if count + new_items > orch._WORKSPACE_CAP:
+            _set(span, result="workspace_full", workspace_count=count)
+            logger.info(
+                "one_planner: no card — the workspace holds %d of %d and the plan adds %d",
+                count, orch._WORKSPACE_CAP, new_items,
+            )
+            return None
+        try:
+            options, card, text = _card_parts(
+                plan, planner_points=planner_points, run_id=turn.run_id, points_left=offer.points_left,
+            )
+            pause = ExtendedPlanPause(
+                run_id=turn.run_id,
+                map_id=str(offer.view.map_id),
+                budget_mode=str(getattr(offer.mode, "label", "none")),
+                points_left=offer.points_left,
+                describe_query=describe_query,
+                user_message_id=turn.user_message_id,
+                attached_item_ids=list(offer.item_ids),
+                task_label=turn.task_label or "",
+                plan=ExtendedPlan.model_validate(plan.model_dump()),
+                options=list(options),
+                planner_points=planner_points,
+                created_at=_now_iso(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("one_planner: card build failed (%s)", exc, exc_info=True)
+            _set(span, result="card_failed")
+            return None
+        question = record_extended_pause(supabase, input=input, turn=turn, pause=pause, card=card, text=text)
+        if question is None:
+            _set(span, result="record_failed")
+            return None
+        _set(
+            span,
+            result="card",
+            options=",".join(o.id for o in options),
+            estimates=",".join(f"{o.id}:{round(o.estimate_points, 1)}" for o in options),
+            planner_points=round(planner_points, 3),
+        )
+        logger.info(
+            "one_planner: plan card run_id=%s searches=%d options=%s",
             turn.run_id, len(plan.requests), [o.id for o in options],
         )
         return PlannedTurn(question=question)
@@ -1049,6 +1132,9 @@ async def _run_option(
                 analyzer_handoff=reply.analyzer.get("handoff"),
                 analyzer_checked=bool(reply.analyzer.get("checked")),
                 extended_allowed=False,
+                # The one planner (ONE_PLANNER_ENABLED): «بحث عادي» is one search —
+                # the planner runs without the «بحث شامل» option.
+                extended_off=True,
             ):
                 if decided:
                     yield ev

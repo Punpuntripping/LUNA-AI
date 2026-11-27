@@ -176,6 +176,130 @@ def system_prompt(mode: BudgetMode) -> str:
     return SYSTEM_PROMPT_NO_BUDGET if mode.no_budget else SYSTEM_PROMPT_BUDGET
 
 
+# --------------------------------------------------------------------------- the ONE planner's «بحث شامل» section
+
+# .claude/plans/one_planner.md (owner 2026-11-27): the deep-search planner IS the
+# extended planner. With ONE_PLANNER_ENABLED on, the decider's static prompt is
+# unchanged and one of the two sections below is added to its dynamic instructions —
+# only for a user with «بحث شامل» (EXTENDED_SEARCH_*). The planning rules are the
+# extended planner's (as tested 11-23), headings one level down; what it no longer
+# needs (the conversation, the message, the "you do not see the file" line) is gone.
+
+ONE_PLANNER_HINT_YES = (
+    "- **The router read the user's message as asking for «بحث شامل»** (by name, or to "
+    "study the file as a whole across several of its points). Take it as the user's wish: "
+    "plan it unless the angles the answer depends on turn on one legal question."
+)
+ONE_PLANNER_HINT_NO = (
+    "- The router did not read the message as asking for «بحث شامل». Plan it only when "
+    "the user's request clearly spans several of the file's legal questions; a question "
+    "about one point of the file, or one that does not need the file, is one search."
+)
+
+#: The names a user may ask for it by (the router's list).
+_ASKED_BY_NAME = "«بحث شامل»، «البحث الشامل»، «ابحث بحثاً شاملاً» — or its old name «بحث موسّع»"
+
+
+def _one_planner_available(*, hint: bool, budget_section: str, cheaper_scope: str, output_cap: str,
+                           cap_decision: str, how_many: str, card_edit: str) -> str:
+    hint_line = ONE_PLANNER_HINT_YES if hint else ONE_PLANNER_HINT_NO
+    # The card-edit rule (fix/extended-planner-card-edit, 2026-11-27): a typed change
+    # to a plan card reaches THIS planner now; one search left in it is a decision.
+    card_edit = card_edit.replace("## When the user changes the plan card", "### When the user changes the plan card", 1)
+    strengths = STRENGTHS_WEAKNESSES.replace("## Strengths and weaknesses", "### Strengths and weaknesses", 1)
+    budget = budget_section.replace("## The budget", "### The budget", 1)
+    return f"""\
+## «بحث شامل» — several searches at once (available this turn)
+
+The attached file(s) have been mapped into ANGLES (أوجه — the user sees them as «الخيوط»): the lines of argument worth a legal search — what strengthens a side's case (`strengthen`), what attacks the opponent's position or evidence (`attack`), and the opponent's strong points a side must answer (`answer`). They are in `<extended_search>` below, with the budget and the mapped documents (each `<document>` names its `wi` alias in `<attached_items>`).
+
+This turn your run has three possible endings, not two:
+- `ask_user` — as always;
+- a `PlannerDecision` — ONE search (the user sees it as «بحث عميق»);
+- an `ExtendedSearchPlan` — «بحث شامل»: two or more searches run at the same time. Each is a complete deep search: it runs on the user's message exactly as written, reads the whole file and every document's summary itself, gets the angles you assign it and your `focus`, and ends in its own report. A final step merges the reports into one answer. The user first sees the plan as a card with its cost in points and an «بحث عادي» button; nothing runs until they press a button.
+
+### When to plan «بحث شامل»
+{hint_line}
+- Plan it when the answer the user wants depends on angles that turn on **at least two different legal questions**. When they do not, the answer is ONE search — a `PlannerDecision`. An `ExtendedSearchPlan` always has two or more requests.
+- **The user asked for «بحث شامل» by name** ({_ASKED_BY_NAME}) — now, or in their reply to your question — **and you judge one search enough:** never run the one search silently. Call `ask_user`: say in one or two Arabic sentences why one search covers it (e.g. the file turns on one legal question), and offer to run «بحث عميق» now. This holds after an `ask_user` reply too. Ask about it once: on the user's answer, plan from it — one search when they agree, the hand-back (`aborted`) when they decline.
+- Everything else in your instructions still holds before a plan: `ask_user` when a sharper plan depends on the user's answer (their side, their aim), the hand-back for a general request. After an `ask_user` reply you may answer with a `PlannerDecision` OR an `ExtendedSearchPlan`.
+- The plan card is itself a confirmation: a long message needs no review of your understanding before an `ExtendedSearchPlan`.
+- `request_quotes`: the decision's rule, word for word.
+
+### How to plan it — three decisions
+1. **How many searches**, and which angles each carries. {how_many}
+2. **The mode of each search** — which side(s) it searches.
+{cap_decision}
+
+- **Start from the user.** From the message and the conversation: what they want (an answer, a memo, an objection, an assessment of a draft…) and which side they act for. The angles' sides were decided at upload; the user's words may settle or correct them — your `client_side` wins.
+- **Pick the angles the answer depends on**, for the user's side. Leave the rest out — `left_out`, with the reason.
+- **Merge angles that turn on the same legal question** — the same rule decides them, the same defence answers them, the same evidence rule weighs them. **Split only when the legal questions differ** so much that one search would crowd out the other.
+- **Fewer is better.** Never one request per angle by default.
+- A request may carry no angle only when the question needs a search no angle covers — then name the sections it turns on in `sections`.
+- Use only angle ids and section refs that exist in `<extended_search>`.
+
+### Mode — per request
+- `reg_compliance_led` (default): the controlling rule — regulations, their articles, circulars, procedure before a court or a government body.
+- `case_led`: how courts ruled on similar facts — the centre of gravity is precedent.
+- `full`: the request genuinely needs the rule AND the precedent together, and dropping either leaves a real gap. It searches both sides, so it costs about twice a one-sided search. Not "just in case" — but a user who asks for both sides on a search has given the reason.
+
+{budget}
+
+### The cheaper option
+After the plan, offer ONE cheaper option in `cheaper` — the cut that loses least:
+- merge two searches whose legal questions are close;
+- drop the search built on the weakest angle(s);
+- make a `full` search one-sided;
+- lower a cap.
+A merge saves only when the merged search runs fewer sub-queries than the two did. `note`: one Arabic sentence the user reads, in the first person, with no points or prices, saying what changes and what is lost — e.g. «أقدر أدمج البحث 2 مع 3 في بحث واحد، مع تغطية أخف لمسألة …». {cheaper_scope} Leave `cheaper` null when every cut would drop something the user asked for.
+
+{card_edit}
+- A user's version left with ONE search is a `PlannerDecision` (that search's mode).
+
+### The focus — per request
+Arabic, at most ~800 characters: the side the search serves, the legal question(s) it must answer (its angles' questions joined into one coherent line), and the sections it must read closely (by ref). Do not restate facts — the search reads the file itself. Do not reword the user's message — it travels word for word.
+
+{strengths}
+
+### Never (in a plan)
+- Never mention points, prices or the budget in any field — code prices the plan.
+
+### Output — `ExtendedSearchPlan`
+`understanding` (2–3 Arabic sentences: what the user wants and their side), `client_side` (claimant | respondent | prosecution | victim | intervenor | contract_party | unknown), `requests` (two or more; each: `title` — a short Arabic line the user reads on the plan card, at most ~70 characters, without the sides (code adds them); `angles`; `sections`; `mode`; {output_cap}; `focus`; `why`), `cheaper` ({{`note`, `requests`}} or null), `left_out` (angle + why), `rationale` (how you grouped, and why this many searches, these modes and these caps), `request_quotes`. All prose in Arabic.
+"""
+
+
+def one_planner_available_section(mode: BudgetMode, *, hint: bool) -> str:
+    """The one planner's «بحث شامل» rules when the turn qualifies (the data block is
+    appended by the caller)."""
+    if mode.no_budget:
+        return _one_planner_available(
+            hint=hint, budget_section=_NO_BUDGET_SECTION, cheaper_scope=_NO_BUDGET_CHEAPER_SCOPE,
+            output_cap=_NO_BUDGET_OUTPUT_CAP, cap_decision=_NO_BUDGET_CAP_DECISION,
+            how_many="Two or more, run at the same time.", card_edit=_NO_BUDGET_CARD_EDIT,
+        )
+    return _one_planner_available(
+        hint=hint, budget_section=_BUDGET_SECTION, cheaper_scope=_BUDGET_CHEAPER_SCOPE,
+        output_cap=_BUDGET_OUTPUT_CAP, cap_decision=_BUDGET_CAP_DECISION,
+        how_many="Two or more (at most the budget's number), run at the same time.", card_edit=_BUDGET_CARD_EDIT,
+    )
+
+
+def one_planner_unavailable_section(reason_ar: str, *, hint: bool) -> str:
+    """The one planner's «بحث شامل» section when the turn does not qualify (owner
+    2026-11-27: say so, offer «بحث عميق»). ``reason_ar`` — the words for the user."""
+    hint_line = (
+        "The router read the user's message as asking for «بحث شامل».\n"
+        if hint else ""
+    )
+    return f"""\
+## «بحث شامل» — not available this turn
+
+«بحث شامل» (several searches at once over the attached file's angles, «الخيوط») cannot run this turn. The reason, in the words to give the user: «{reason_ar}»
+{hint_line}If the user asks for «بحث شامل» by name ({_ASKED_BY_NAME}) — now, or in their reply to your question — never run an ordinary search silently: call `ask_user`, tell them in one sentence why it is not available (the words above) and offer to run «بحث عميق» now. This holds after an `ask_user` reply too. Ask about it once: on the user's answer, plan from it — one search when they agree, the hand-back (`aborted`) when they decline. Any other request: plan as usual.
+"""
+
+
 #: Sent back with a ``ModelRetry`` when the plan breaks the mode's limits or names an
 #: id that does not exist (as tested).
 RETRY_PREFIX = "Outside the budget or unknown ids — fix and answer again: "
@@ -201,11 +325,15 @@ How to use the analysis above (instruction for this search):
 
 
 __all__ = [
+    "ONE_PLANNER_HINT_NO",
+    "ONE_PLANNER_HINT_YES",
     "RETRY_PREFIX",
     "SALVAGE_RETRY",
     "SEARCH_INSTRUCTION",
     "STRENGTHS_WEAKNESSES",
     "SYSTEM_PROMPT_BUDGET",
     "SYSTEM_PROMPT_NO_BUDGET",
+    "one_planner_available_section",
+    "one_planner_unavailable_section",
     "system_prompt",
 ]

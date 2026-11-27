@@ -21,10 +21,13 @@ responder writes Arabic prose — distinct slots allow separate tiers later.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
+from typing import Any
 
-from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, ModelRetry, RunContext
+from pydantic import ValidationError
+from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, ModelRetry, RunContext, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.models import next_step_errors, salvage_next_steps
@@ -105,12 +108,76 @@ _REVIEW_RETRIES = 2
 # Times a decision with an unmatched ``request_quotes`` passage is sent back
 # before the passage is dropped. Same reasoning as above.
 _QUOTE_RETRIES = 2
+# Times a «بحث شامل» plan that breaks its offer is sent back (one planner only).
+_PLAN_RETRIES = 3
+# The one planner's per-response output limit: Wafer's maximum, as the extended
+# planner ran (a plan with its cheaper option is long). The run still stays under
+# the shared OUTPUT_TOKENS_CAP — never a per-agent cap.
+ONE_PLANNER_MAX_TOKENS = 65_536
+
+_ONE_PLANNER_SALVAGE_RETRY = (
+    "Answer with a tool call only: `ask_user` to ask the user, or the final output as a "
+    "single valid JSON object conforming to its schema — no text outside it. All prose "
+    "values in Arabic."
+)
+
+
+def _is_extended_plan(value: Any) -> bool:
+    """The one planner's «بحث شامل» output (lazy import: today's decider never loads it)."""
+    try:
+        from agents.deep_search_v4.extended.models import ExtendedPlan
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(value, ExtendedPlan)
+
+
+def _decision_of_single_plan(plan: Any) -> PlannerDecision:
+    """A one-search «بحث شامل» plan, run as the one search it is (the decision's mode;
+    the request's focus goes nowhere — the search reads the file itself)."""
+    req = plan.requests[0]
+    return PlannerDecision(
+        mode=req.mode,
+        support=False,
+        rationale=(plan.rationale or req.why or "one_planner: one-search plan")[:600],
+        request_quotes=list(getattr(plan, "request_quotes", []) or []),
+    )
+
+
+def _one_planner_salvager(offer_on: bool):
+    """``TextOutput`` coercer for a plain-text JSON answer: a «بحث شامل» plan when the
+    object has ``requests`` (and the offer is on), else a :class:`PlannerDecision`."""
+    from agents.utils.structured_output import _extract_json_object
+
+    def _coerce(text: str) -> Any:
+        blob = _extract_json_object(text)
+        if blob is None:
+            raise ModelRetry(_ONE_PLANNER_SALVAGE_RETRY)
+        try:
+            data = json.loads(blob)
+        except json.JSONDecodeError as exc:
+            raise ModelRetry(f"{_ONE_PLANNER_SALVAGE_RETRY} (JSON parse error: {exc})") from exc
+        if not isinstance(data, dict):
+            raise ModelRetry(_ONE_PLANNER_SALVAGE_RETRY)
+        if offer_on and "requests" in data:
+            from agents.deep_search_v4.extended.models import ExtendedSearchPlan as cls
+        else:
+            cls = PlannerDecision
+        try:
+            out = cls.model_validate(data)
+        except ValidationError as exc:
+            raise ModelRetry(f"{_ONE_PLANNER_SALVAGE_RETRY} ({exc.error_count()} schema error(s))") from exc
+        logger.info("one_planner: salvaged %s from plain-text emission", cls.__name__)
+        return out
+
+    return _coerce
 
 
 def create_planner_decider(
     model_override: ModelPolicy | str | None = None,
     *,
     completion_search: bool = False,
+    one_planner: bool = False,
+    extended: Any = None,
 ) -> Agent[PlannerDeps, PlannerDecision | DeferredToolRequests]:
     """Build the phase-1 decider agent.
 
@@ -127,8 +194,15 @@ def create_planner_decider(
 
     ``model_override`` is an optional tier override token / :class:`ModelPolicy`
     for the ``planner_decider`` slot (tier stays fixed).
+
+    ``one_planner`` (ONE_PLANNER_ENABLED, .claude/plans/one_planner.md): the same
+    agent on V4.1 (slot ``deep_planner``), the ONLY deep-search planner. With
+    ``extended`` (an ``extended.offer.ExtendedOffer``) it is also told about «بحث
+    شامل», and when the offer is available it may end the run in an
+    :class:`~agents.deep_search_v4.extended.models.ExtendedSearchPlan` — two or more
+    searches, shown to the user as a plan card. Both off → today's decider, exactly.
     """
-    model = get_agent_model("planner_decider", model_override)
+    model = get_agent_model("deep_planner" if one_planner else "planner_decider", model_override)
 
     # Completion Search (completion_search.md §4.4): the prompt and the tool change
     # TOGETHER. If the prompt cannot be built, this decider keeps `fetch_article`
@@ -141,14 +215,31 @@ def create_planner_decider(
             logger.error("planner: complete_search prompt could not be built — keeping fetch_article", exc_info=True)
             completion_search = False
 
+    # The one planner (ONE_PLANNER_ENABLED): «بحث شامل» is an output only when the
+    # turn's offer is available; V4.1 sometimes finalises in plain text, so it gets
+    # the JSON salvager every V4.1 structured agent carries.
+    offer_on = bool(one_planner and extended is not None and getattr(extended, "available", False))
+    one_planner_kw: dict[str, Any] = {}
+    if one_planner:
+        from agents.deep_search_v4.extended.models import ExtendedSearchPlan
+
+        finals: list[Any] = [PlannerDecision, ExtendedSearchPlan] if offer_on else [PlannerDecision]
+        output_type: list[Any] = [
+            *finals, DeferredToolRequests, TextOutput(_one_planner_salvager(offer_on)),
+        ]
+        one_planner_kw["model_settings"] = {"max_tokens": ONE_PLANNER_MAX_TOKENS}
+    else:
+        output_type = [PlannerDecision, DeferredToolRequests]
+
     agent: Agent[PlannerDeps, PlannerDecision | DeferredToolRequests] = Agent(
         model,
         name="planner_decider",
         deps_type=PlannerDeps,
-        output_type=[PlannerDecision, DeferredToolRequests],
+        output_type=output_type,
         instructions=system_prompt,
         retries=2,
         output_retries=4,
+        **one_planner_kw,
     )
 
     @agent.instructions
@@ -161,6 +252,13 @@ def create_planner_decider(
         """Require the understanding review on a long message."""
         return LONG_MESSAGE_REVIEW_RULE if ctx.deps.review_required else ""
 
+    if one_planner and extended is not None:
+        @agent.instructions
+        def _extended_offer(ctx: RunContext[PlannerDeps]) -> str:
+            """«بحث شامل» this turn — available (rules + encoded data) or not (the reason
+            and "say so, offer «بحث عميق»"). Rendered once, when the offer was prepared."""
+            return str(getattr(extended, "instructions", "") or "")
+
     @agent.output_validator
     def _hold_decision_for_review(
         ctx: RunContext[PlannerDeps],
@@ -172,7 +270,9 @@ def create_planner_decider(
         ``ask_user`` call without running output validators. The review is worth
         a retry, never the turn, so after ``_REVIEW_RETRIES`` the decision stands.
         """
-        if not ctx.deps.review_required:
+        if not ctx.deps.review_required or _is_extended_plan(value):
+            # The one planner's «بحث شامل» plan is shown as a card the user approves —
+            # the card is the review (.claude/plans/one_planner.md C1).
             return value
         if ctx.retry < _REVIEW_RETRIES:
             raise ModelRetry(
@@ -198,7 +298,7 @@ def create_planner_decider(
         while retries last; after that the unmatched passages are dropped and the
         decision stands — a quote is never worth the turn.
         """
-        if not isinstance(value, PlannerDecision) or not value.request_quotes:
+        if not (isinstance(value, PlannerDecision) or _is_extended_plan(value)) or not value.request_quotes:
             return value
         quotes = [q for q in value.request_quotes if str(q or "").strip()]
         _found, missing = locate_request_quotes(quotes, ctx.deps.recent_messages)
@@ -229,6 +329,32 @@ def create_planner_decider(
             )
         value.request_quotes = kept
         return value
+
+    if offer_on:
+        @agent.output_validator
+        def _check_extended_plan(
+            ctx: RunContext[PlannerDeps],
+            value: PlannerDecision | DeferredToolRequests,
+        ) -> PlannerDecision | DeferredToolRequests:
+            """A «بحث شامل» plan must fit the offer: two or more searches, the budget
+            mode's limits, existing angle ids / section refs, the workspace's room.
+            Sent back while retries last. A one-search plan that survives them runs as
+            the one search it is; any other broken plan fails the run (the runner
+            falls back to its default decision — an ordinary search)."""
+            if not _is_extended_plan(value):
+                return value
+            from agents.deep_search_v4.extended.offer import offer_plan_problems
+            from agents.deep_search_v4.extended.prompts import RETRY_PREFIX
+
+            bad = offer_plan_problems(value, extended)
+            if not bad:
+                return value
+            if ctx.retry < _PLAN_RETRIES:
+                raise ModelRetry(RETRY_PREFIX + "; ".join(bad))
+            if len(value.requests) == 1:
+                logger.warning("one_planner: a one-search plan after %d retries — run as one search", _PLAN_RETRIES)
+                return _decision_of_single_plan(value)
+            raise ModelRetry(RETRY_PREFIX + "; ".join(bad))
 
     @agent.tool_plain
     async def ask_user(question: str) -> str:  # noqa: RUF029

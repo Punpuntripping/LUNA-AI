@@ -32,7 +32,7 @@ OPENROUTER = "or-deepseek-v4-flash"
 SYNTHESIS = ("aggregator", "agent_writer")
 WAFER_HEADED = (
     "router", "reg_compliance_expander", "case_search_expander", "artifact_analyzer", *SYNTHESIS,
-    "extended_planner", "extended_merger",
+    "extended_planner", "extended_merger", "deep_planner",
 )
 
 
@@ -66,6 +66,12 @@ def test_extended_search_slots_follow_the_planner_and_aggregator_policies() -> N
     assert AGENT_MODELS["extended_planner"] == AGENT_MODELS["router"]
     assert AGENT_MODELS["extended_planner"].reasoning == "default"
     assert AGENT_MODELS["extended_merger"] == AGENT_MODELS["aggregator"]
+
+
+def test_the_one_planner_runs_on_the_extended_planners_policy() -> None:
+    # .claude/plans/one_planner.md (owner 2026-11-27): "one agent only, using v4.1".
+    assert AGENT_MODELS["deep_planner"] == AGENT_MODELS["extended_planner"]
+    assert AGENT_MODELS["deep_planner"].reasoning == "default"
 
 
 def test_reasoning_levels_are_unchanged_by_the_move() -> None:

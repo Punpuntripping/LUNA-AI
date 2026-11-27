@@ -31,6 +31,7 @@ from shared.observability import get_logfire
 from .agent import (
     PLANNER_DECIDER_LIMITS,
     PLANNER_RESPONDER_LIMITS,
+    _is_extended_plan,
     create_planner_decider,
     create_planner_responder,
 )
@@ -87,7 +88,7 @@ class PlannerTurnResult:
     before ``handle_planner_turn`` is called.
     """
 
-    kind: Literal["completed", "paused", "reverted", "handback"]
+    kind: Literal["completed", "paused", "reverted", "handback", "extended"]
     # completed
     response: PlannerResponse | None = None
     decision: PlannerDecision | None = None
@@ -106,9 +107,12 @@ class PlannerTurnResult:
     # schema = its cached prefix) stays byte-identical. None on the old path.
     follow_up_question: str | None = None
     question_basis: str | None = None
-    # paused
+    # paused (and extended: the run that planned it, for the card's planner cost)
     planner_result: Any = None
     deferred: "DeferredToolRequests | None" = None
+    # extended — the one planner planned «بحث شامل» (ONE_PLANNER_ENABLED): the plan
+    # as the model wrote it (ENCODED); the orchestrator decodes it into a card.
+    extended_plan: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +140,22 @@ def _default_decision(reason: str) -> PlannerDecision:
 EDITORIAL_PAUSE_REASON = "editorial_pause_no_user"
 
 
-def _emit_planner_ledger(*results: Any) -> None:
+def _decider_slot(deps: Any) -> str:
+    """The slot the decider ran on: the one planner's V4.1 slot, or today's."""
+    return "deep_planner" if getattr(deps, "one_planner", False) else "planner_decider"
+
+
+def _emit_decider_and_responder(deps: Any, decider_result: Any, responder_result: Any) -> None:
+    """Today: one combined row (both on the decider's model). The one planner runs on
+    V4.1 and the responder on its own slot — one row each, each at its own price."""
+    if getattr(deps, "one_planner", False):
+        _emit_planner_ledger(decider_result, slot="deep_planner")
+        _emit_planner_ledger(responder_result, slot="planner_responder")
+    else:
+        _emit_planner_ledger(decider_result, responder_result)
+
+
+def _emit_planner_ledger(*results: Any, slot: str = "planner_decider") -> None:
     """Emit ONE ``deep_search.planner`` cost-ledger row summing the given
     decider/responder ``AgentRunResult``s. Runs inside the dispatch capture
     scope; no-op outside it. Both planner sub-agents share a tier/model, so a
@@ -158,7 +177,7 @@ def _emit_planner_ledger(*results: Any) -> None:
             ca += int(getattr(u, "cache_read_tokens", 0) or 0)
         if not ti and not to:
             return
-        model = resolve_chain(AGENT_MODELS["planner_decider"])[0]
+        model = resolve_chain(AGENT_MODELS[slot])[0]
         record_call(
             agent="deep_search.planner", model=model, agent_family="deep_search",
             tokens_in=ti, tokens_out=to, tokens_reasoning=re_, tokens_cached=ca,
@@ -465,7 +484,16 @@ async def _run_planner_turn(
         try:
             # The extra argument is passed only when Completion Search is on for
             # this user, so with the flag off this is today's call, unchanged.
-            if getattr(deps, "completion_search", False):
+            if getattr(deps, "one_planner", False):
+                # The one planner on V4.1 (ONE_PLANNER_ENABLED): may also end in a
+                # «بحث شامل» plan when the turn's offer is available.
+                decider = create_planner_decider(
+                    model_override=deps.model_override,
+                    completion_search=bool(getattr(deps, "completion_search", False)),
+                    one_planner=True,
+                    extended=getattr(deps, "extended_offer", None),
+                )
+            elif getattr(deps, "completion_search", False):
                 decider = create_planner_decider(
                     model_override=deps.model_override, completion_search=True,
                 )
@@ -496,7 +524,7 @@ async def _run_planner_turn(
                 # Bill the decider call that asked the question. (The orchestrator
                 # also emits on the pause path for the resume-decider case; this
                 # covers the fresh phase-1 pause. Same label → sums in SQL.)
-                _emit_planner_ledger(result)
+                _emit_planner_ledger(result, slot=_decider_slot(deps))
                 if pinned is None or not pinned.headless:
                     logger.info("planner: phase-1 paused via ask_user")
                     return PlannerTurnResult(
@@ -547,6 +575,28 @@ async def _run_planner_turn(
                         })
                 except Exception:
                     pass
+            elif _is_extended_plan(output):
+                # The one planner planned «بحث شامل» (.claude/plans/one_planner.md):
+                # nothing runs here — the orchestrator turns the plan into a card and
+                # the turn pauses on it. Articles fetched this phase are not flushed:
+                # the plan's searches run later, on deps of their own.
+                _emit_planner_ledger(result, slot=_decider_slot(deps))
+                logger.info(
+                    "planner: one planner planned «بحث شامل» (%d searches)",
+                    len(getattr(output, "requests", []) or []),
+                )
+                try:
+                    _span = _logfire.current_span()
+                    if _span is not None:
+                        _span.set_attributes({
+                            "planner.extended": True,
+                            "planner.extended_searches": len(getattr(output, "requests", []) or []),
+                        })
+                except Exception:
+                    pass
+                return PlannerTurnResult(
+                    kind="extended", planner_result=result, extended_plan=output,
+                )
             else:
                 # PlannerDecision in hand.
                 decision = output
@@ -556,7 +606,7 @@ async def _run_planner_turn(
                 # request that was not searched.
                 if getattr(decision, "aborted", False):
                     if getattr(deps, "handback_allowed", False):
-                        _emit_planner_ledger(result)
+                        _emit_planner_ledger(result, slot=_decider_slot(deps))
                         logger.info(
                             "planner: request handed back to the router as too general"
                         )
@@ -581,7 +631,7 @@ async def _run_planner_turn(
                 # articles accumulated by fetch_article during this decider phase.
                 flush_statute_package(deps)
                 if may_revert(decision, deps, pinned):
-                    _emit_planner_ledger(result)
+                    _emit_planner_ledger(result, slot=_decider_slot(deps))
                     logger.info("planner: answer already held, reverting to the analyzer")
                     return PlannerTurnResult(kind="reverted", decision=decision)
                 _decided_payload = {
@@ -768,7 +818,7 @@ async def _run_planner_turn(
         # One combined planner ledger row: decider (this call's fresh phase 1)
         # + responder. On resume, _decider_result is None (the resume decider
         # ran in the orchestrator and is billed there) → responder only.
-        _emit_planner_ledger(_decider_result, result)
+        _emit_decider_and_responder(deps, _decider_result, result)
         emit(deps, {
             "event": EVENT_RESPONDED,
             # Phase E (§3.8): publish-gate fields replace the dropped
@@ -806,7 +856,7 @@ async def _run_planner_turn(
             exc, exc_info=True,
         )
         # Responder failed, but the decider ran — still bill it.
-        _emit_planner_ledger(_decider_result)
+        _emit_planner_ledger(_decider_result, slot=_decider_slot(deps))
         emit(deps, {"event": EVENT_ERROR, "phase": "respond", "error": str(exc)})
         response = (
             _response_from_artifact(agg_output)
@@ -850,7 +900,7 @@ async def _phase3_unified(
     except Exception as exc:  # noqa: BLE001 — run_responder never raises; belt-and-braces
         logger.error("planner: unified responder wiring raised (%s)", exc, exc_info=True)
         unified = None
-    _emit_planner_ledger(decider_result)
+    _emit_planner_ledger(decider_result, slot=_decider_slot(deps))
     if unified is None:
         degraded = True
         logger.error("planner: unified responder failed; response from artifact")

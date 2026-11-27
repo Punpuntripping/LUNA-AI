@@ -189,6 +189,14 @@ class PlannerDeps:
     _turn_pins: dict = field(default_factory=dict)
     _pending_pins: dict = field(default_factory=dict)
 
+    # --- The one planner (.claude/plans/one_planner.md, ONE_PLANNER_ENABLED) ---
+    # ``one_planner``: the decider runs on V4.1 (slot ``deep_planner``) and is the
+    # only planner. ``extended_offer``: what it is told about «بحث شامل» this turn
+    # (``extended.offer.ExtendedOffer``; ``None`` = nothing — off for this user, or
+    # a run that must stay one search, e.g. the plan card's «بحث عادي»).
+    one_planner: bool = False
+    extended_offer: Any | None = None
+
     # --- read-back slots (populated by run_retrieval from FullLoopDeps) ----
     _per_executor_stats: dict[str, dict] = field(default_factory=dict)
     _ura: "UnifiedRetrievalArtifact | None" = None
@@ -250,9 +258,11 @@ def build_planner_deps(
     without changes.
     """
     from agents.utils.citation_pin_flags import completion_search_enabled
+    from agents.utils.one_planner_flags import one_planner_enabled
 
     return PlannerDeps(
         completion_search=completion_search_enabled(user_id),
+        one_planner=one_planner_enabled(user_id),
         supabase=supabase,
         embedding_fn=embedding_fn,
         http_client=http_client,

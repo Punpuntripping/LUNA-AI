@@ -271,8 +271,21 @@ def render_planner_input(
         f'  <message role="{E(role)}">{E(content)}</message>'
         for role, content in recent_pairs(recent_messages, query=query)
     ) or "  (none)"
-    lines = [f"<recent_messages>\n{rec}\n</recent_messages>", "", budget_block(mode), "", "<documents>"]
-    lines += [f'  <document id="{d.id}" doc_type="{E(d.doc_type)}">{E(d.title)}</document>' for d in view.documents]
+    lines = [f"<recent_messages>\n{rec}\n</recent_messages>", "", budget_block(mode), ""]
+    lines += _documents_and_angles(view)
+    lines += ["", f"<query>{E(query or '')}</query>"]
+    return "\n".join(lines)
+
+
+def _documents_and_angles(view: PlannerView, wi_of: Mapping[str, str] | None = None) -> list[str]:
+    """The ``<documents>`` and ``<angles>`` blocks (as tested 2026-11-23). ``wi_of`` —
+    item_id → "WI-n": when given, each document also names its alias (the one planner
+    reads the same files in ``<attached_items>``)."""
+    lines = ["<documents>"]
+    for d in view.documents:
+        wi = (wi_of or {}).get(str(d.item_id))
+        wi_attr = f' wi="{E(wi)}"' if wi else ""
+        lines.append(f'  <document id="{d.id}"{wi_attr} doc_type="{E(d.doc_type)}">{E(d.title)}</document>')
     lines += ["</documents>", "", "<angles>"]
     for a in view.angles:
         secs = "؛ ".join(f"{s.ref} ({s.label}: {E(s.owner)} — {E(s.what)})" for s in a.sections)
@@ -286,8 +299,18 @@ def render_planner_input(
             f"    <sections>{secs}</sections>",
             "  </angle>",
         ]
-    lines += ["</angles>", "", f"<query>{E(query or '')}</query>"]
-    return "\n".join(lines)
+    lines.append("</angles>")
+    return lines
+
+
+def render_extended_block(
+    view: PlannerView, mode: BudgetMode, *, wi_of: Mapping[str, str] | None = None,
+) -> str:
+    """The one planner's «بحث شامل» data (.claude/plans/one_planner.md): the budget
+    block, the documents (with their WI aliases) and the angles — the blocks the
+    extended planner reads, minus the conversation and the message (the one planner
+    has those in its own blocks)."""
+    return "\n".join([budget_block(mode), "", *_documents_and_angles(view, wi_of)])
 
 
 __all__ = [
@@ -300,5 +323,6 @@ __all__ = [
     "marker_line",
     "owner_of",
     "recent_pairs",
+    "render_extended_block",
     "render_planner_input",
 ]

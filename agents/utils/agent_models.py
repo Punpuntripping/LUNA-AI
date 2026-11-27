@@ -354,6 +354,10 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # budget-planner run was tested on (D2, 2026-11-23). The merger (Layer-3)
     # turns the N reports into one answer — the aggregator's policy (§4.6).
     "extended_planner":           _WAFER_V41_DEFAULT,
+    # The ONE deep-search planner (.claude/plans/one_planner.md, owner 2026-11-27):
+    # the decider and the «بحث شامل» planner in one agent, on V4.1 — used instead of
+    # ``planner_decider`` while ONE_PLANNER_ENABLED is on for the user.
+    "deep_planner":               _WAFER_V41_DEFAULT,
     "extended_merger":            _WAFER_V41_MAX,
     # Tier_2 DeepSeek-primary — Layer-4 librarian that verdicts workspace_items
     # against a caller's query. Two LLM calls max per analyze() invocation

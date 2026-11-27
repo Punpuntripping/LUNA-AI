@@ -921,7 +921,7 @@ def _load_prior_search_summaries(
     return summaries
 
 
-def _feed_resume_decider(planner_result: Any) -> None:
+def _feed_resume_decider(planner_result: Any, slot: str = "planner_decider") -> None:
     """Emit one ``deep_search.planner`` ledger row for the RESUME decider.
 
     Every other deep_search stage now self-emits at its own boundary (executors,
@@ -938,7 +938,8 @@ def _feed_resume_decider(planner_result: Any) -> None:
             return
         details = getattr(usage, "details", None) or {}
         from agents.utils.agent_models import AGENT_MODELS, resolve_chain
-        model = resolve_chain(AGENT_MODELS["planner_decider"])[0] if "planner_decider" in AGENT_MODELS else None
+        # ``slot``: the one planner (ONE_PLANNER_ENABLED) bills at its V4.1 slot.
+        model = resolve_chain(AGENT_MODELS[slot])[0] if slot in AGENT_MODELS else None
         record_call(
             agent="deep_search.planner",
             model=model,
@@ -1572,6 +1573,21 @@ async def _resume_major_agent_inner(
         # prior_searches were already encoded/persisted inside their loaders.
         _resume_attached_items = _encode_attached_for_planner(_resume_attached_items)
 
+        # The one planner (ONE_PLANNER_ENABLED, one_planner.md): the reply comes back
+        # to the planner that asked, so «بحث شامل» must be offered here too — this is
+        # where «ابغى بحث شامل» in answer to its question lands (convo fa4fd43c,
+        # 2026-11-27). Built before the persist below (its data block is encoded).
+        _resume_offer = None
+        if _one_planner_on(user_id):
+            _resume_offer = await _resume_extended_offer(
+                supabase,
+                pending=pending,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                reply_item_ids=[str(s.item_id) for s in _resume_attached_items if getattr(s, "item_id", None)],
+                wi_alias_map=_resume_alias_map,
+            )
+
         async with _httpx.AsyncClient(timeout=30.0) as _resume_http:
             # Flush any attached-item fakes minted just above before the resume
             # decider LLM reads them. Delta-only + no-op when disabled / no codec.
@@ -1603,11 +1619,20 @@ async def _resume_major_agent_inner(
 
             # Same tool set as the fresh leg. The argument is passed only when
             # Completion Search is on for this user: off = today's call, unchanged.
-            planner_decider = (
-                create_planner_decider(completion_search=True)
-                if getattr(_resume_deps, "completion_search", False)
-                else create_planner_decider()
-            )
+            if getattr(_resume_deps, "one_planner", False):
+                # The one planner on V4.1, with the turn's «بحث شامل» offer.
+                _resume_deps.extended_offer = _resume_offer
+                planner_decider = create_planner_decider(
+                    completion_search=bool(getattr(_resume_deps, "completion_search", False)),
+                    one_planner=True,
+                    extended=_resume_offer,
+                )
+            else:
+                planner_decider = (
+                    create_planner_decider(completion_search=True)
+                    if getattr(_resume_deps, "completion_search", False)
+                    else create_planner_decider()
+                )
             planner_result = await planner_decider.run(
                 "",  # user_prompt unused on resume — history provides full context
                 message_history=history,
@@ -1619,7 +1644,10 @@ async def _resume_major_agent_inner(
             # The resume decider runs raw (not run_tracked) and outside
             # handle_planner_turn's stats, so feed its cost to the ledger
             # (run_id already bound by the wrapper).
-            _feed_resume_decider(planner_result)
+            _feed_resume_decider(
+                planner_result,
+                slot="deep_planner" if getattr(_resume_deps, "one_planner", False) else "planner_decider",
+            )
     except Exception as exc:
         logger.error(
             "_resume_major_agent: planner resume failed for run_id=%s: %s",
@@ -1657,12 +1685,65 @@ async def _resume_major_agent_inner(
             # pause carries the same label forward (router did not re-run here).
             task_label=(pending.get("task_label") if pending else None),
             analyzer=_resume_analyzer or None,
+            extended=(_offer_pause_payload(_resume_deps) if getattr(_resume_deps, "one_planner", False) else None),
         )
         # Close out the previous run row (it's superseded by the new one).
         _resolve_pause_loud(supabase, run_id, where="ds_chained_pause_supersede")
         yield {"type": "agent_question", "run_id": new_run_id or "", "question": new_question}
         yield {"type": "done", "usage": _zero_usage("paused")}
         return
+
+    # ── The one planner planned «بحث شامل» — a plan card, under a new run id ──
+    from agents.deep_search_v4.planner.agent import _is_extended_plan
+
+    if _is_extended_plan(planner_output):
+        from agents.deep_search_v4.extended.wiring import ExtendedTurn as _ExtendedTurn
+        from agents.deep_search_v4.planner.prompts import compose_resumed_query as _compose_resumed
+
+        _card_task_label = (pending.get("task_label") if pending else None) or ""
+        try:
+            _card_query = _compose_resumed(planner_result.all_messages()) or user_reply
+        except Exception:  # noqa: BLE001 - never lose the card over the query text
+            _card_query = user_reply
+        _card_run_id = str(uuid.uuid4())
+        planned = await _one_planner_card(
+            supabase,
+            input=MajorAgentInput(
+                describe_query=_card_query,
+                task_label=_card_task_label or "متابعة المحادثة",
+                attached_items=[],
+                recent_messages=_resume_recent_messages,
+                target_item_id=None,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                case_id=case_id,
+                analyzer_handoff=_resume_analyzer.get("handoff"),
+                analyzer_checked=_resume_checked,
+            ),
+            turn=_ExtendedTurn(
+                run_id=_card_run_id, user_message_id=user_message_id, task_label=_card_task_label,
+            ),
+            offer=_resume_offer,
+            raw_plan=planner_output,
+            planner_result=planner_result,
+            recent_messages=_resume_recent_messages,
+            query=_card_query,
+        )
+        if planned is not None:
+            # Same events as a chained ask_user pause (and as the fresh card).
+            _resolve_pause_loud(supabase, run_id, where="ds_extended_card_supersede")
+            yield {
+                "type": "agent_question",
+                "run_id": _card_run_id,
+                "question": planned.question,
+                "pause_reason": _EXTENDED_PAUSE_REASON,
+            }
+            yield {"type": "done", "usage": _zero_usage("paused")}
+            return
+        # No card (the workspace filled meanwhile, a failed write): run the plan as
+        # one search covering what it planned.
+        logger.info("_resume_major_agent: one planner's plan got no card run_id=%s — one search", run_id)
+        planner_output = _single_search_of_plan(planner_output)
 
     # ── PlannerDecision.aborted — give up on deep_search, re-route fresh ────
     if isinstance(planner_output, PlannerDecision) and planner_output.aborted:
@@ -2345,8 +2426,13 @@ def _record_deferred(
     pause_reason: str = "clarify",
     run_id: str | None = None,
     analyzer: dict | None = None,
+    extended: dict | None = None,
 ) -> tuple[str, str | None]:
     """Persist pause state for a DeferredToolRequests planner output.
+
+    ``extended`` (the one planner, ONE_PLANNER_ENABLED): what the resume leg needs
+    to offer «بحث شامل» again — ``ExtendedOffer.pause_payload()`` or ``{"off":
+    True}`` for a run that must stay one search. ``None`` → no key (today).
 
     Inserts the paused_runs row (migration 060) and the agent_question message
     row. Returns (question_text, run_id).  Both are best-effort; run_id may be
@@ -2377,6 +2463,20 @@ def _record_deferred(
     )
     now = _now_utc()
 
+    deferred_payload = {
+        "tool_call_id": pending_call.tool_call_id,
+        "tool_name": pending_call.tool_name,
+        "args": pending_args,
+        "partial_output": None,
+        # Deps do not survive a pause. Losing this state across one is
+        # what got the old item_analyzer removed (2026-06-08).
+        "analyzer": analyzer,
+    }
+    if extended is not None:
+        from agents.deep_search_v4.extended.offer import PAUSE_KEY as _OFFER_PAUSE_KEY
+
+        deferred_payload[_OFFER_PAUSE_KEY] = extended
+
     run_id = record_pause(
         supabase,
         PauseRecord(
@@ -2387,15 +2487,7 @@ def _record_deferred(
             task_label=task_label,
             pause_reason=pause_reason,
             message_history=planner_result.all_messages_json(),
-            deferred_payload={
-                "tool_call_id": pending_call.tool_call_id,
-                "tool_name": pending_call.tool_name,
-                "args": pending_args,
-                "partial_output": None,
-                # Deps do not survive a pause. Losing this state across one is
-                # what got the old item_analyzer removed (2026-06-08).
-                "analyzer": analyzer,
-            },
+            deferred_payload=deferred_payload,
             question_text=question,
             asked_at=now,
             expires_at=now + timedelta(hours=24),
@@ -3329,6 +3421,17 @@ def _ocr_notices(stats: "Any", *, failed: bool, timed_out: bool = False) -> list
     return notices
 
 
+def _one_planner_on(user_id: str | None) -> bool:
+    """The ONE deep-search planner on V4.1 for this user (ONE_PLANNER_ENABLED,
+    .claude/plans/one_planner.md). Never raises; off on error."""
+    try:
+        from agents.utils.one_planner_flags import one_planner_enabled
+
+        return one_planner_enabled(user_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _router_extended_view(
     supabase: SupabaseClient, user_id: str, workspace_item_summaries: list[dict]
 ) -> "Any":
@@ -4045,6 +4148,7 @@ async def _dispatch(
     analyzer_checked: bool = False,
     allow_handback: bool = False,
     extended_allowed: bool = False,
+    extended_off: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -4053,6 +4157,11 @@ async def _dispatch(
     (``DispatchAgent.extended``, D34 — owner 2026-11-27, replacing D30's silent
     code decision on every deep-search turn). Every other caller — the analyzer's
     "insufficient", the plan card's «بحث عادي» (D31) — runs today's deep search.
+
+    With the ONE planner on for the user (ONE_PLANNER_ENABLED, one_planner.md) the
+    router's choice is a HINT (owner O1): every deep_search dispatch offers «بحث
+    شامل» to the planner, which decides — except ``extended_off`` (the plan card's
+    «بحث عادي»), which stays one search.
 
     ``allow_handback`` (set by ``_route`` only): the deep_search planner may
     hand a request it finds too general to search back to the router, which
@@ -4253,12 +4362,23 @@ async def _dispatch(
                 # to record a plan card under this run's id (None = never).
                 from agents.deep_search_v4.extended.wiring import ExtendedTurn
 
-                _extended_turn = (
-                    ExtendedTurn(
-                        run_id=run_id, user_message_id=user_message_id, task_label=task_label,
+                if _one_planner_on(user_id):
+                    # One planner: «بحث شامل» is offered to the planner on every
+                    # dispatch; the router's choice is only a hint (owner O1).
+                    _extended_turn = (
+                        ExtendedTurn(
+                            run_id=run_id, user_message_id=user_message_id, task_label=task_label,
+                            hint=bool(extended_allowed),
+                        )
+                        if pinned_plan is None and not extended_off else None
                     )
-                    if extended_allowed and pinned_plan is None else None
-                )
+                else:
+                    _extended_turn = (
+                        ExtendedTurn(
+                            run_id=run_id, user_message_id=user_message_id, task_label=task_label,
+                        )
+                        if extended_allowed and pinned_plan is None else None
+                    )
                 # put_nowait: the sink is a SYNC callback (planner/logger.emit
                 # calls it inline) and the queue is unbounded → never blocks,
                 # never raises QueueFull.
@@ -4338,6 +4458,7 @@ async def _dispatch(
                         task_label=task_label,
                         run_id=run_id,
                         analyzer={"handoff": analyzer_handoff, "checked": analyzer_checked},
+                        extended=ds_outcome.extended_payload,
                     )
                     raise _SkipRunRecord()
                 run_result = ds_outcome.result
@@ -4805,6 +4926,117 @@ class _DeepSearchOutcome:
     deferred: Any = None
     handback_note: str = ""
     question: str | None = None
+    # paused, one planner only: what the resume leg needs to offer «بحث شامل»
+    # again (``_record_deferred(extended=)``). None = today (no key).
+    extended_payload: dict | None = None
+
+
+def _offer_pause_payload(deps: Any) -> dict:
+    """The one planner's clarify pause: what its resume leg needs to offer «بحث شامل»
+    again — the offer's inputs, or ``{"off": True}`` when this run had none (off for
+    the user, or a run that must stay one search)."""
+    offer = getattr(deps, "extended_offer", None)
+    try:
+        return offer.pause_payload() if offer is not None else {"off": True}
+    except Exception:  # noqa: BLE001
+        return {"off": True}
+
+
+async def _resume_extended_offer(
+    supabase: SupabaseClient,
+    *,
+    pending: dict | None,
+    user_id: str,
+    conversation_id: str,
+    reply_item_ids: list[str],
+    wi_alias_map: dict[int, str],
+) -> Any | None:
+    """The one planner's «بحث شامل» offer on a resume leg (``offer.resume_offer_inputs``):
+    the paused run's files + hint, plus the reply's files (none at all → the
+    conversation's files, inside ``prepare_offer``). ``None`` = no offer. Never raises."""
+    try:
+        from agents.deep_search_v4.extended.offer import PAUSE_KEY, prepare_offer, resume_offer_inputs
+
+        payload = ((pending or {}).get("deferred_payload") or {}).get(PAUSE_KEY)
+        inputs = resume_offer_inputs(payload, reply_item_ids=reply_item_ids)
+        if inputs is None:
+            return None
+        item_ids, hint = inputs
+        return await asyncio.to_thread(
+            prepare_offer,
+            supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            item_ids=item_ids,
+            hint=hint,
+            wi_alias_map=wi_alias_map,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - no offer = the planner plans as usual
+        logger.warning("one_planner: resume offer failed", exc_info=True)
+        return None
+
+
+def _single_search_of_plan(plan: Any) -> Any:
+    """A «بحث شامل» plan that got no card, run as ONE search: its one mode when all its
+    searches share it, else ``full`` (the plan wanted both sides somewhere)."""
+    from agents.deep_search_v4.planner import PlannerDecision
+
+    modes = {getattr(r, "mode", "reg_compliance_led") for r in getattr(plan, "requests", []) or []}
+    mode = modes.pop() if len(modes) == 1 else "full"
+    return PlannerDecision(
+        mode=mode,
+        support=False,
+        rationale=("one_planner: plan without a card — one search. " + (getattr(plan, "rationale", "") or ""))[:600],
+        request_quotes=list(getattr(plan, "request_quotes", []) or []),
+    )
+
+
+async def _one_planner_card(
+    supabase: SupabaseClient,
+    *,
+    input: Any,
+    turn: Any,
+    offer: Any,
+    raw_plan: Any,
+    planner_result: Any,
+    recent_messages: Any,
+    query: str,
+) -> Any | None:
+    """The one planner's «بحث شامل» plan → its card (``wiring.record_plan_card``).
+
+    ``raw_plan`` — the plan as the planner wrote it (encoded); decoded here.
+    ``query`` — the message the searches run on (on a resume: the original +
+    question + reply); the plan's ``request_quotes`` put the earlier turns' words
+    before it, as a decision's do. ``None`` = no card — the caller runs one search.
+    """
+    if turn is None or offer is None or not getattr(offer, "available", False) or raw_plan is None:
+        return None
+    try:
+        from agents.deep_search_v4.extended.offer import decode_offer_plan, planner_points
+        from agents.deep_search_v4.extended.wiring import record_plan_card
+        from agents.deep_search_v4.planner.prompts import compose_request_query
+
+        plan = decode_offer_plan(raw_plan)
+        describe_query = (
+            compose_request_query(list(plan.request_quotes), list(recent_messages or []), query)
+            if plan.request_quotes else query
+        )
+        return await record_plan_card(
+            supabase,
+            input=input,
+            turn=turn,
+            plan=plan,
+            offer=offer,
+            planner_points=planner_points(planner_result),
+            describe_query=describe_query,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - never lose the turn over the card
+        logger.warning("one_planner: plan card failed (%s) — one search", type(exc).__name__, exc_info=True)
+        return None
 
 
 async def _completion_pins_after_resume(resume_deps: Any, planner_result: Any) -> tuple[list[dict], list[dict]]:
@@ -4887,10 +5119,13 @@ async def _run_deep_search(
     ``kind="extended_paused"`` comes back; anything else (one search, not eligible, a
     failure) → today's turn below, exactly, with ``decision`` still ``None`` (D6).
     """
+    # The ONE planner (ONE_PLANNER_ENABLED, one_planner.md): no separate extended
+    # planner — the deep-search planner itself is offered «بحث شامل» below.
+    one_planner = _one_planner_on(getattr(input, "user_id", None))
     # «بحث شامل» (extended_search.md §4.1, D30): an eligible fresh turn asks the
     # angle-aware planner first. Any failure, "not eligible" or a one-search plan →
     # today's path.
-    if extended is not None and decision is None and pinned_plan is None:
+    if not one_planner and extended is not None and decision is None and pinned_plan is None:
         from agents.deep_search_v4.extended.wiring import plan_extended_turn
 
         planned = await plan_extended_turn(input, supabase, turn=extended)
@@ -5018,6 +5253,23 @@ async def _run_deep_search(
             and not deps.after_handback
         )
 
+        # The one planner: what it is told about «بحث شامل» this turn (available /
+        # not, with the reason). Built BEFORE the persist below — its data block is
+        # encoded with the turn codec. None = off for this user, or a run that must
+        # stay one search («بحث عادي», a pin, a resume's phases 2–3).
+        if one_planner and extended is not None and decision is None and pinned_plan is None:
+            from agents.deep_search_v4.extended.offer import prepare_offer
+
+            deps.extended_offer = await asyncio.to_thread(
+                prepare_offer,
+                supabase,
+                user_id=input.user_id,
+                conversation_id=input.conversation_id,
+                item_ids=[str(s.item_id) for s in input.attached_items if getattr(s, "item_id", None)],
+                hint=bool(getattr(extended, "hint", False)),
+                wi_alias_map=wi_alias_map,
+            )
+
         # Flush the attached-item fakes minted just above BEFORE the decider LLM
         # reads them (a fresh-process resume reloads the codec from DB). Delta-only
         # + no-op when masking is disabled / no turn codec is active.
@@ -5034,6 +5286,27 @@ async def _run_deep_search(
         turn = await handle_planner_turn(
             input.describe_query, deps, decision=decision, pinned=pinned_plan,
         )
+
+        if turn.kind == "extended":
+            # The one planner planned «بحث شامل»: record the card and pause on it.
+            planned = await _one_planner_card(
+                supabase,
+                input=input,
+                turn=extended,
+                offer=deps.extended_offer,
+                raw_plan=turn.extended_plan,
+                planner_result=turn.planner_result,
+                recent_messages=deps.recent_messages,
+                query=input.describe_query,
+            )
+            if planned is not None:
+                return _DeepSearchOutcome(kind="extended_paused", question=planned.question)
+            # No card (the workspace filled meanwhile, a failed write) → one search:
+            # the planner again, without «بحث شامل».
+            deps.extended_offer = None
+            turn = await handle_planner_turn(
+                input.describe_query, deps, decision=decision, pinned=pinned_plan,
+            )
 
         # Pipeline-accumulated SSE events (planner + executor progress).
         sse_events.extend(deps._events)
@@ -5056,6 +5329,7 @@ async def _run_deep_search(
                 kind="paused",
                 planner_result=turn.planner_result,
                 deferred=turn.deferred,
+                extended_payload=_offer_pause_payload(deps) if one_planner else None,
             )
 
         # ── completed — Phase E publish-gate branch (§6.3) ─────────────────

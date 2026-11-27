@@ -157,6 +157,21 @@ class ExtendedPlan(BaseModel):
     rationale: str = ""
 
 
+class ExtendedSearchPlan(ExtendedPlan):
+    """«بحث شامل» — two or more searches run at the same time, shown to the user as a
+    plan card first. Only when the angles the answer depends on turn on at least two
+    different legal questions; one search is a ``PlannerDecision``."""
+
+    request_quotes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Same rule as the decision's `request_quotes`: only when the latest message "
+            "cannot be searched on its own, the passages of earlier messages that carry "
+            "the request, each copied character for character. Empty otherwise."
+        ),
+    )
+
+
 # --------------------------------------------------------------------------- the plan card (mirror of extended-plan.ts)
 
 
@@ -271,6 +286,7 @@ __all__ = [
     "ExtendedPlanCard",
     "ExtendedPlanPause",
     "ExtendedRequest",
+    "ExtendedSearchPlan",
     "ExtendedSearchReport",
     "LeftOut",
     "MergedAnswer",

@@ -563,6 +563,16 @@ class Settings(BaseSettings):
     EXTENDED_SEARCH_ENABLED: bool = False
     EXTENDED_SEARCH_USERS: Optional[str] = None
 
+    # ── One deep-search planner on V4.1 — .claude/plans/one_planner.md ──────
+    # On: the deep-search planner runs on V4.1 (slot ``deep_planner``) and is the
+    # ONLY planner — it asks, plans one search, or plans «بحث شامل» (when the
+    # turn qualifies; the router's ``extended`` is a hint). Off: today's two
+    # planners (Flash decider + the separate extended planner), byte-identical.
+    # *_USERS: comma-separated users.user_id; empty = everyone. Env var name ==
+    # field name (no validation_alias).
+    ONE_PLANNER_ENABLED: bool = False
+    ONE_PLANNER_USERS: Optional[str] = None
+
     # ── The router waits for the file helpers — extended_search.md D34/D35 ───
     # On: before routing, the turn waits for the segmenter + citation pins, then
     # the angle map, on the message's files (each ≤ 300 s), and the waiting line

@@ -57,6 +57,7 @@ NO_ATTACHMENT_CONTENT: dict[str, str] = {
     "agents/base/context.py": "never an attachment",
     "agents/memory/artifact_analyzer/context.py": "never an attachment",
     "agents/memory/angle_mapper/reanalysis.py": "pointers only: the other items of a file (item_id, file_id)",
+    "agents/deep_search_v4/extended/offer.py": "pointers only: the conversation's attachment item_ids (one planner)",
     "agents/memory/convo_memory_writer/runner.py": "lists pointers (titles)",
     "agents/router/router.py": "lists pointers (list_workspace_items tool)",
     "agents/tool_repository/completion_search_tool.py": "the pinned_texts card only (its entries)",
