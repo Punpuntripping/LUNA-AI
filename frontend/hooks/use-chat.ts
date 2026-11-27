@@ -10,6 +10,7 @@ import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import { isMobileViewport } from "@/hooks/use-media-query";
 import { parseNextSteps } from "@/lib/next-steps";
+import { CHAT_SHARE_FOR_OUTPUTS, opensWithNarrowChat } from "@/lib/workspace-split";
 import { parseTemplatesUsed } from "@/lib/templates-used";
 import type { PlanChoicePayload } from "@/lib/contracts/extended-plan";
 // Chat-depth analytics (product_analytics §3b). Every call below is
@@ -916,6 +917,12 @@ export function useSendMessage(): UseSendMessageReturn {
               ) {
                 const paneWasOpen =
                   chat.workspaceByConversation[conversationId]?.isOpen ?? false;
+                // A legal analysis, «بحث شامل» or writer output gets the room:
+                // chat at 25% (owner 2026-11-27). Before the open, so a pane
+                // that mounts now starts at that split.
+                if (opensWithNarrowChat(payload.kind, payload.subtype)) {
+                  chat.requestChatShare(CHAT_SHARE_FOR_OUTPUTS);
+                }
                 chat.openWorkspaceItem(conversationId, payload.item_id);
                 // The turn's first item opens the pane: fold the sidebar so
                 // the chat and the item share the page (owner 2026-11-27).

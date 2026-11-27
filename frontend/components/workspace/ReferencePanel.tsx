@@ -74,8 +74,23 @@ import {
 } from "@/lib/contracts/reference-labels";
 import { wiPreviewHiddenRefsLine } from "@/lib/contracts/wi-preview";
 
+/**
+ * «المراجع» as wrapping cards (owner 2026-11-27: one card per line wastes the
+ * page): each card is at least ~190px wide and the row holds as many as fit, AT
+ * MOST four — four on the full-page reading column, one in a narrow pane. Pure
+ * CSS, no measuring: `auto-fill` with a minimum of max(190px, a quarter of the
+ * row), so a wide row can never fit a fifth.
+ */
+const REF_GRID =
+  "grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(100%,max(190px,calc((100%_-_1.5rem)/4))),1fr))]";
+
 interface ReferencePanelProps {
   references: Reference[];
+  /**
+   * ``"grid"``: wrapping cards, up to four per row (the workspace viewers).
+   * ``"list"`` (default): one card per line (the public blog / answer pages).
+   */
+  layout?: "list" | "grid";
   /**
    * The workspace item these references belong to — the in-app address for the
    * metered source reveal (access-tiers Phase C, §6.2), scoped to
@@ -256,7 +271,9 @@ export function ReferencePanel({
   canOpenSourceWi,
   hiddenCount,
   paidLockedCount,
+  layout = "list",
 }: ReferencePanelProps) {
+  const listClass = layout === "grid" ? REF_GRID : "flex flex-col gap-2";
   // The open reference is tracked by ``n``, not by the object: the dialog now
   // owns a fetch keyed on (itemId, n), and holding a stale Reference across a
   // list refresh would point that fetch at the wrong citation.
@@ -325,7 +342,7 @@ export function ReferencePanel({
     return (
       <div dir="rtl" className="mt-6 border-t pt-4" aria-busy="true">
         <h3 className="mb-3 text-sm font-semibold text-foreground">المراجع</h3>
-        <ul className="flex flex-col gap-2">
+        <ul className={listClass}>
           {[0, 1, 2].map((i) => (
             <li
               key={i}
@@ -371,7 +388,7 @@ export function ReferencePanel({
         </h3>
         <BalanceChip balance={balance ?? null} />
       </div>
-      <ul className="flex flex-col gap-2">
+      <ul className={listClass}>
         {ordered.map((ref) => (
           <ReferenceCard
             key={`${ref.n}-${ref.ref_id}`}

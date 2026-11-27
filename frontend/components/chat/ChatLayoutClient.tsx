@@ -13,6 +13,7 @@ import { AnnouncementPopup } from "@/components/announcements/AnnouncementPopup"
 import TourOverlay from "@/components/tour/TourOverlay";
 import { EduLessonHost } from "@/components/edu/EduLessonHost";
 import { InstallNudgeCard } from "@/components/install/InstallNudgeCard";
+import type { ImperativePanelHandle } from "react-resizable-panels";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -39,6 +40,14 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
   );
   const splitRatio = useChatStore((s) => s.splitRatio);
   const setSplitRatio = useChatStore((s) => s.setSplitRatio);
+  // `requestChatShare` (a legal analysis / «بحث شامل» / writer output opening)
+  // resizes an already-open split; a pane that opens now mounts at splitRatio.
+  const splitRequestSeq = useChatStore((s) => s.splitRequestSeq);
+  const chatPanelRef = useRef<ImperativePanelHandle>(null);
+  useEffect(() => {
+    if (splitRequestSeq === 0) return;
+    chatPanelRef.current?.resize(useChatStore.getState().splitRatio);
+  }, [splitRequestSeq]);
   const isSidebarOpen = useSidebarStore((s) => s.isOpen);
   const setSidebarOpen = useSidebarStore((s) => s.setOpen);
   const isMobile = useIsMobile();
@@ -186,6 +195,7 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
                 the workspace panel (flex-grow) fills the row alone — the sizes
                 and the saved split ratio are untouched. */}
             <ResizablePanel
+              ref={chatPanelRef}
               defaultSize={splitRatio}
               minSize={25}
               id="chat"

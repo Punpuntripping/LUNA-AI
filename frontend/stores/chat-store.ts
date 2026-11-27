@@ -252,11 +252,13 @@ interface WorkspaceUiState {
    */
   highlightedItemId: string | null;
   /**
-   * The opened item fills the whole page: the chat is hidden and the sidebar
-   * folds (desktop only — on a phone the pane is already a full-screen
-   * overlay). Set by the pane's «توسيع» button, and by the pane itself when
-   * it opens the «بحث شامل» merged answer. Leaving the item (back to the
-   * list, closing the pane) drops it.
+   * The pane fills the whole page: the chat is hidden and the sidebar folds
+   * (desktop only — on a phone the pane is already a full-screen overlay). A
+   * pane-wide mode: it stays while the user moves between the list and an
+   * opened item, and ends on «تصغير» / Esc or when the pane closes. Set by the
+   * pane's «توسيع» button (an opened item, or the «الملفات» tab — «الملفات» and
+   * «الخيوط»), and by the pane itself when it opens the «بحث شامل» merged
+   * answer.
    */
   expanded: boolean;
 }
@@ -448,6 +450,11 @@ interface ChatState {
   templatesUsedByMessage: Record<string, TemplateUsed[]>;
   // Global layout preference (persisted to localStorage) — NOT per-conversation.
   splitRatio: number;
+  /**
+   * Bumped by ``requestChatShare``: tells an already-open split to resize to
+   * ``splitRatio`` now (a closed pane simply opens at ``splitRatio``).
+   */
+  splitRequestSeq: number;
   /** Per-send SSE reconnect budget (each send counts its own attempts). */
   maxReconnectAttempts: number;
   /**
@@ -585,9 +592,12 @@ interface ChatState {
   closeWorkspaceItem: (conversationId: string) => void;
   closeWorkspace: (conversationId: string) => void;
   toggleWorkspace: (conversationId: string) => void;
-  /** Full page on/off for the opened item (no-op unless an item is open). */
+  /** Full page on/off for the pane (no-op while the pane is closed). */
   setWorkspaceExpanded: (conversationId: string, expanded: boolean) => void;
   setSplitRatio: (ratio: number) => void;
+  /** Put the chat at ``ratio``% of the split now (saved like a drag) — 25 when
+   *  a legal analysis / «بحث شامل» / writer output opens (lib/workspace-split). */
+  requestChatShare: (ratio: number) => void;
   startAgentRun: (
     conversationId: string,
     agentFamily: string,
@@ -717,6 +727,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   nextStepsByMessage: {},
   templatesUsedByMessage: {},
   splitRatio: loadInitialSplitRatio(),
+  splitRequestSeq: 0,
   maxReconnectAttempts: 5,
   noticeByConversation: {},
   deepSearchSummaries: {},
@@ -990,9 +1001,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // Preserve an active highlight so a chip click that targets a
             // card in the list view can keep ringing it after the pane opens.
             highlightedItemId: cur.highlightedItemId,
-            // An item auto-opened while another one is on full page stays
-            // on full page (the chat is hidden — the user is reading here).
-            expanded: cur.isOpen && cur.openItemId !== null && cur.expanded,
+            // Full page is pane-wide: an item opened while on it stays on it.
+            expanded: cur.isOpen && cur.expanded,
           },
         },
       };
@@ -1009,7 +1019,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             openItemId: itemId,
             focusedReferenceN: n,
             highlightedItemId: cur.highlightedItemId,
-            expanded: cur.isOpen && cur.openItemId !== null && cur.expanded,
+            expanded: cur.isOpen && cur.expanded,
           },
         },
       };
@@ -1055,21 +1065,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })),
 
   highlightWorkspaceItem: (conversationId, itemId) => {
-    set((state) => ({
-      workspaceByConversation: {
-        ...state.workspaceByConversation,
-        [conversationId]: {
-          // Force the pane open + drop back to list mode so the highlighted
-          // card is visible. If the user already had a different item open
-          // in detail mode, navigating to the list lets the ring be seen.
-          isOpen: true,
-          openItemId: null,
-          focusedReferenceN: null,
-          highlightedItemId: itemId,
-          expanded: false,
+    set((state) => {
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: {
+            // Force the pane open + drop back to list mode so the highlighted
+            // card is visible. If the user already had a different item open
+            // in detail mode, navigating to the list lets the ring be seen.
+            isOpen: true,
+            openItemId: null,
+            focusedReferenceN: null,
+            highlightedItemId: itemId,
+            expanded: cur.isOpen && cur.expanded,
+          },
         },
-      },
-    }));
+      };
+    });
     // Auto-clear after the ring animation budget so re-clicking the same
     // chip re-fires the highlight. Guarded against double-set: if the user
     // clicks a different chip mid-flight, only the matching id is cleared.
@@ -1103,13 +1116,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         workspaceByConversation: {
           ...state.workspaceByConversation,
-          // Full page belongs to an opened item: the list goes back beside
-          // the chat.
+          // Full page is pane-wide: back to the list keeps it.
           [conversationId]: {
             ...cur,
             openItemId: null,
             focusedReferenceN: null,
-            expanded: false,
           },
         },
       };
@@ -1132,7 +1143,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setWorkspaceExpanded: (conversationId, expanded) =>
     set((state) => {
       const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
-      const next = expanded && cur.isOpen && cur.openItemId !== null;
+      const next = expanded && cur.isOpen;
       if (cur.expanded === next) return state;
       return {
         workspaceByConversation: {
@@ -1163,6 +1174,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const clamped = Math.max(0, Math.min(100, ratio));
     persistSplitRatio(clamped);
     set({ splitRatio: clamped });
+  },
+
+  requestChatShare: (ratio) => {
+    const clamped = Math.max(0, Math.min(100, ratio));
+    persistSplitRatio(clamped);
+    set((s) => ({ splitRatio: clamped, splitRequestSeq: s.splitRequestSeq + 1 }));
   },
 
   setExtractingDocuments: (conversationId, extracting, stage) =>

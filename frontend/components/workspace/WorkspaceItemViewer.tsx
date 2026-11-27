@@ -265,6 +265,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
                 {item.kind === "agent_search" && (
                   <ReferencePanel
                     references={references}
+                    layout="grid"
                     // Access-tiers Phase C: enables the on-demand source reveal.
                     itemId={item.item_id}
                     isLoading={isLoadingReferences}

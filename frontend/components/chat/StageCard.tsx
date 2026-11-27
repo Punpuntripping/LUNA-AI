@@ -21,14 +21,15 @@ export const TICK_MS = 250;
 /** How long each rotating header phrase stays before the next (ms). */
 export const PHRASE_ROTATION_MS = 7000;
 
-/** Room kept beside a narrow cell's label for the ✓ a finished stage shows. */
+/** Room kept beside a cell's label for the ✓ a finished stage shows. */
 const CHECK_RESERVE_PX = 18;
 
 export interface StageCell {
   key: string;
   /** Full name — shown whenever it fits; always the screen-reader name. */
   label: string;
-  /** One-word fallback when the three-per-row cells are too narrow (phones). */
+  /** One-word fallback, used by EVERY cell once any full name does not fit
+   *  (phones, a 25% chat column). */
   short: string;
   /** Grid columns out of 6: 2 = three cells per row, 3 = two per row. */
   span: 2 | 3;
@@ -72,10 +73,11 @@ export function usePhraseIndex(resetKey: string | null, count: number): number {
 }
 
 /**
- * Narrow cells (three per row) show their full names when every one fits,
- * otherwise one word each (phones). Measured against a hidden full-name copy,
- * so the decision never depends on which label is currently showing — no
- * flip-flop. Re-checked on resize and when the web font finishes loading.
+ * Cells show their full names when every one fits, otherwise ALL cells show one
+ * word each (phones, a 25% chat column) — mixed long and short names read
+ * badly. Measured against a hidden full-name copy in each cell, so the decision
+ * never depends on which label is currently showing — no flip-flop. Re-checked
+ * on resize and when the web font finishes loading.
  *
  * Takes the grid ELEMENT (from a callback ref), not a ref object: the grid may
  * mount after the card, and the effect must re-run then to attach its observer.
@@ -88,7 +90,7 @@ function useTightCells(grid: HTMLOListElement | null): boolean {
 
     const check = () => {
       let next = false;
-      grid.querySelectorAll<HTMLElement>("[data-narrow]").forEach((cell) => {
+      grid.querySelectorAll<HTMLElement>("[data-cell]").forEach((cell) => {
         const probe = cell.querySelector<HTMLElement>("[data-probe]");
         if (!probe) return;
         const style = window.getComputedStyle(cell);
@@ -233,12 +235,12 @@ export function StageCard({
       <ol ref={setGrid} className="grid grid-cols-6 gap-px border-t border-border bg-border">
         {cells.map((cell) => {
           const narrow = cell.span === 2;
-          const showShort = narrow && tight;
+          const showShort = tight;
           return (
             <li
               key={cell.key}
               title={cell.label}
-              data-narrow={narrow ? "" : undefined}
+              data-cell=""
               className={cn(
                 "relative flex min-h-7 min-w-0 items-center gap-1.5 overflow-hidden bg-card px-2.5 py-0.5 leading-5",
                 narrow ? "col-span-2" : "col-span-3",
@@ -271,15 +273,13 @@ export function StageCard({
               )}
 
               {/* Hidden full-name copy that useTightCells measures. */}
-              {narrow && (
-                <span
-                  data-probe=""
-                  aria-hidden="true"
-                  className="invisible absolute whitespace-nowrap font-bold"
-                >
-                  {cell.label}
-                </span>
-              )}
+              <span
+                data-probe=""
+                aria-hidden="true"
+                className="invisible absolute whitespace-nowrap font-bold"
+              >
+                {cell.label}
+              </span>
 
               <span
                 className={cn(
@@ -301,7 +301,9 @@ export function StageCard({
                 )}
               </span>
 
-              {cell.status === "done" && (
+              {/* One-word mode drops the ✓ — a finished cell's bar is already
+                  full, and the room goes to the label. */}
+              {cell.status === "done" && !showShort && (
                 <Check className="relative h-3 w-3 shrink-0 text-primary" aria-hidden="true" />
               )}
             </li>

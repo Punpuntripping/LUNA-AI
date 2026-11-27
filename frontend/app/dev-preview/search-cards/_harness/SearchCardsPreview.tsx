@@ -5,6 +5,7 @@ import { useTheme } from "next-themes";
 import { Moon, Sun } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import { isExtendedSynthesis } from "@/lib/contracts/extended-synthesis";
+import { CHAT_SHARE_FOR_OUTPUTS } from "@/lib/workspace-split";
 import { useChatStore, type StreamState } from "@/stores/chat-store";
 import { ChatLayoutClient } from "@/components/chat/ChatLayoutClient";
 import { DeepSearchProgress } from "@/components/chat/DeepSearchProgress";
@@ -34,18 +35,32 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** An invented attachment so the «الملفات» tab has a card (no real file). */
+const PREVIEW_FILE = {
+  ...PREVIEW_ITEMS[0],
+  item_id: "preview-file-1",
+  kind: "attachment" as const,
+  title: "عقد التوريد (معاينة).pdf",
+  wi_seq: 1,
+  content_md: "نص المرفق في المعاينة.",
+  metadata: {},
+};
+const LIST_ITEMS = [PREVIEW_FILE, ...PREVIEW_ITEMS];
+
 function answer(path: string, method: string): Response {
   const notFound = json({ detail: "غير متاح في المعاينة" }, 404);
   if (method !== "GET") return notFound;
   const clean = path.split("?")[0];
+  // «الملفات» on (the build flag must be on too: NEXT_PUBLIC_MY_FILES_ENABLED).
+  if (clean === "/files/status") return json({ enabled: true });
   if (clean === `/conversations/${PREVIEW_CONVERSATION_ID}/workspace`) {
-    return json({ items: PREVIEW_ITEMS, total: PREVIEW_ITEMS.length });
+    return json({ items: LIST_ITEMS, total: LIST_ITEMS.length });
   }
   const refs = /^\/workspace\/([^/]+)\/references$/.exec(clean);
   if (refs) return json({ references: PREVIEW_REFERENCES[refs[1]] ?? [] });
   const one = /^\/workspace\/([^/]+)$/.exec(clean);
   if (one) {
-    const found = PREVIEW_ITEMS.find((i) => i.item_id === one[1]);
+    const found = LIST_ITEMS.find((i) => i.item_id === one[1]);
     return found ? json(found) : notFound;
   }
   return notFound;
@@ -216,6 +231,13 @@ export function SearchCardsPreview() {
   const { resolvedTheme, setTheme } = useTheme();
   const open = () =>
     useChatStore.getState().openWorkspaceItem(PREVIEW_CONVERSATION_ID, MERGED_ID);
+  // What use-chat does when a new legal analysis arrives: chat to 25%, open it.
+  const newAnalysis = () => {
+    const other = PREVIEW_ITEMS.find((i) => !isExtendedSynthesis(i.metadata));
+    if (!other) return;
+    useChatStore.getState().requestChatShare(CHAT_SHARE_FOR_OUTPUTS);
+    useChatStore.getState().openWorkspaceItem(PREVIEW_CONVERSATION_ID, other.item_id);
+  };
   const report = () => {
     const other = PREVIEW_ITEMS.find((i) => !isExtendedSynthesis(i.metadata));
     if (other) useChatStore.getState().openWorkspaceItem(PREVIEW_CONVERSATION_ID, other.item_id);
@@ -231,6 +253,9 @@ export function SearchCardsPreview() {
           </button>
           <button type="button" onClick={report} className="rounded-md border px-2 py-1 hover:bg-muted">
             افتح تقريراً عادياً
+          </button>
+          <button type="button" onClick={newAnalysis} className="rounded-md border px-2 py-1 hover:bg-muted">
+            تحليل جديد (المحادثة 25%)
           </button>
           <button type="button" onClick={seedStreams} className="rounded-md border px-2 py-1 hover:bg-muted">
             إعادة البطاقات

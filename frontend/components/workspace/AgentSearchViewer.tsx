@@ -189,6 +189,7 @@ export function AgentSearchViewer({
             )}
             <ReferencePanel
               references={references}
+              layout="grid"
               // Access-tiers Phase C: source bodies no longer ride the list.
               // The panel needs the WI id to fetch ONE source on demand from
               // ``/workspace/{item_id}/references/{n}/source``; without it no

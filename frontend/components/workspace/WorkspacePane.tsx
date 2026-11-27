@@ -71,10 +71,12 @@ interface WorkspacePaneProps {
  * fails — it falls back to ``AttachmentRenderer`` exactly as before. Flag off:
  * none of this renders.
  *
- * Full page (desktop): an opened item can fill the whole page — the chat is
- * hidden and the sidebar folds (``ChatLayoutClient``). «توسيع» / «تصغير» in the
- * header toggles it; the «بحث شامل» merged answer opens on full page by itself
- * (owner 2026-11-27). Back to the list or closing the pane ends it.
+ * Full page (desktop): the pane can fill the whole page — the chat is hidden
+ * and the sidebar folds (``ChatLayoutClient``). «توسيع» in the header, on an
+ * opened item or on the «الملفات» tab («الملفات» and «الخيوط»); «تصغير» (or
+ * Esc) wherever it is on. Pane-wide: moving between the list and an item keeps
+ * it; closing the pane ends it. The «بحث شامل» merged answer opens on full page
+ * by itself (owner 2026-11-27).
  */
 export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const openItemId = useChatStore(
@@ -107,6 +109,8 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   const isDemo = isDemoConversation(convData?.conversation);
 
   const inDetailMode = openItemId !== null;
+  // Full page on a list view: centre it (see FULL_LIST_COLUMN).
+  const fullList = expanded && !isMobile && !inDetailMode;
 
   // «بحث شامل»: the merged answer opens on full page — once per opening, so
   // «تصغير» sticks until the user leaves the item and opens it again.
@@ -197,8 +201,13 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
         inDetailMode={inDetailMode}
         onBack={() => closeWorkspaceItem(conversationId)}
         onClose={() => closeWorkspace(conversationId)}
-        // Phones: the pane is already a full-screen overlay.
-        expanded={!isMobile && inDetailMode ? expanded : null}
+        // Phones: the pane is already a full-screen overlay. «توسيع» on an
+        // opened item and on the «الملفات» tab; «تصغير» wherever it is on.
+        expanded={
+          !isMobile && (expanded || inDetailMode || (filesOn && tab === "files"))
+            ? expanded
+            : null
+        }
         onToggleExpanded={() => setWorkspaceExpanded(conversationId, !expanded)}
         title={filesOn ? FILES_COPY.paneTitle : "العناصر"}
         closeLabel={filesOn ? "إغلاق لوحة المخرجات" : "إغلاق لوحة العناصر"}
@@ -211,7 +220,7 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
           className="flex min-h-0 flex-1 flex-col"
         >
           <div className="shrink-0 border-b px-2 py-1.5">
-            <TabsList className="grid h-9 w-full grid-cols-2">
+            <TabsList className={cn("grid h-9 w-full grid-cols-2", fullList && "mx-auto max-w-md")}>
               <TabsTrigger value="items" className="h-7 gap-1.5">
                 {FILES_COPY.paneItemsTab}
                 <TabCount n={otherItems?.length} />
@@ -223,14 +232,20 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
             </TabsList>
           </div>
           <div className="flex flex-1 flex-col min-h-0 overflow-y-auto">
-            <TabsContent value="items" className="mt-0 data-[state=inactive]:hidden">
+            <TabsContent
+              value="items"
+              className={cn("mt-0 data-[state=inactive]:hidden", fullList && FULL_LIST_COLUMN)}
+            >
               <WorkspaceList
                 items={otherItems}
                 isLoading={listLoading}
                 onItemClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
               />
             </TabsContent>
-            <TabsContent value="files" className="mt-0 data-[state=inactive]:hidden">
+            <TabsContent
+              value="files"
+              className={cn("mt-0 data-[state=inactive]:hidden", fullList && FULL_LIST_COLUMN)}
+            >
               {/* «الأوجه» first when the conversation has maps (angle_map_ui.md rev 3). */}
               <PaneFilesTab conversationId={conversationId}>
                 <PaneFileList
@@ -254,11 +269,13 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
         <>
           <div className="flex flex-1 flex-col min-h-0 overflow-y-auto">
             {!inDetailMode ? (
-              <WorkspaceList
-                items={listData?.items}
-                isLoading={listLoading}
-                onItemClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
-              />
+              <div className={cn(fullList && FULL_LIST_COLUMN)}>
+                <WorkspaceList
+                  items={listData?.items}
+                  isLoading={listLoading}
+                  onItemClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
+                />
+              </div>
             ) : itemLoading ? (
               <LoadingState />
             ) : itemError || !item ? (
@@ -301,6 +318,11 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
 }
 
 type PaneTab = "items" | "files";
+
+/** The list views on full page («الملفات», «الخيوط», the items): a wide column,
+ *  not cards stretched across the whole screen (the angle map's documents keep
+ *  their side-by-side room). */
+const FULL_LIST_COLUMN = "mx-auto w-full max-w-6xl";
 
 function TabCount({ n }: { n: number | undefined }) {
   if (n === undefined) return null;

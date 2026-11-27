@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { ApiClientError } from "@/lib/api";
 import { useSendMessage } from "@/hooks/use-chat";
 import { useChatStore } from "@/stores/chat-store";
+import { useSidebarStore } from "@/stores/sidebar-store";
 import { useConversationDetail } from "@/hooks/use-conversations";
 import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { MessageList } from "@/components/chat/MessageList";
@@ -40,6 +41,10 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
     (s) => s.workspaceByConversation[conversationId]?.isOpen ?? false,
   );
   const toggleWorkspace = useChatStore((s) => s.toggleWorkspace);
+  // Desktop, sidebar folded: ChatLayoutClient's floating «فتح الشريط الجانبي»
+  // sits at `top-3 start-3`, over this header's start. It folds by itself now
+  // when a turn's first item opens the pane, so keep the title + menu clear.
+  const isSidebarOpen = useSidebarStore((s) => s.isOpen);
 
   const { data: convData, error: convError } = useConversationDetail(conversationId);
   const conversation = convData?.conversation;
@@ -135,7 +140,10 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         // `max-md:ps-12` clears the fixed hamburger the sidebar parks at
         // `top-3 start-3` on a phone — without it «المحادثة» and its ⋯ menu
         // render underneath the button and are unreachable.
-        className="flex items-center justify-between border-b px-4 py-2 shrink-0 max-md:ps-12"
+        className={cn(
+          "flex items-center justify-between border-b px-4 py-2 shrink-0 max-md:ps-12",
+          !isSidebarOpen && "md:ps-14",
+        )}
       >
         <div className="flex items-center gap-1">
           <h2 className="text-sm font-medium text-muted-foreground">المحادثة</h2>

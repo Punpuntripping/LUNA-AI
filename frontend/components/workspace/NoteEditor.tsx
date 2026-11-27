@@ -314,6 +314,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
       )}
       <ReferencePanel
         references={references}
+        layout="grid"
         // Access-tiers Phase C: the metered source reveal is scoped to the WI
         // that owns the reference rows. The writer publisher writes
         // ``workspace_item_references`` for the agent_writing item too, so the
