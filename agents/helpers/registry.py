@@ -18,7 +18,9 @@ offer «بحث موسّع». The readers after the router stay critical for the 
 router did NOT wait on (a file from an earlier message, a case document, a
 library file never mapped): ``TurnHelpers.mark_waited`` records the router's
 files and ``ensure_ready`` never makes a later reader wait on them again, so a
-file that missed its ceiling once does not hold the turn twice.
+file that missed its ceiling once does not hold the turn twice. The angle map is
+only WAITED for (its runs already going), never started by the router: a
+«الملفات» file with stored sections gets no new mapper call (owner, 11-27).
 
 ``angle_map`` is started per item but maps the item's whole MESSAGE group in one
 run (relationship_map.md D17; the runner decides which member runs it).

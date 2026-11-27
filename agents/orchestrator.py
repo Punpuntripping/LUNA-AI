@@ -3233,7 +3233,12 @@ async def _wait_attachment_helpers(
     citation pins side by side, then the angle map. Each up to its own ceiling;
     a helper off for this user, or a file it does not apply to, is
     ``not_applicable`` at once. The files are then marked as waited for, so no
-    agent after the router waits on them again. Never raises."""
+    agent after the router waits on them again. Never raises.
+
+    The angle map is only WAITED for, never started here: it keeps starting
+    where it did before — when a segmenter run ends — so a «الملفات» file with
+    stored sections gets no new mapper call (owner 2026-11-27: a library file
+    carries its existing map; ``project_library_file_angle_map_reuse``)."""
     from agents.helpers import ensure_ready
 
     def wait(helper: str) -> "Any":
@@ -3250,13 +3255,27 @@ async def _wait_attachment_helpers(
             yield ev
         turn.mark_waited("segmenter", item_ids)
         turn.mark_waited("citation_pins", item_ids)
-        async for ev in _wait_with_stage(wait("angle_map"), "threads"):
+        async for ev in _wait_with_stage(_wait_in_flight("angle_map", item_ids), "threads"):
             yield ev
         turn.mark_waited("angle_map", item_ids)
     finally:
         for task in (segmenter, pins):
             if not task.done():
                 task.cancel()
+
+
+async def _wait_in_flight(helper: str, item_ids: list[str]) -> None:
+    """Wait, up to the helper's ceiling, for its runs already going in this process
+    on ``item_ids`` (this turn's, or a consumer's). Starts nothing and never
+    cancels a run: past the ceiling it goes on and lands for the next turn."""
+    from agents.helpers import registry as helper_registry
+    from agents.helpers._runtime import inflight
+
+    spec = helper_registry.get_spec(helper)
+    tasks = {t for t in (inflight(helper, str(i)) for i in item_ids) if t is not None}
+    if spec is None or not tasks:
+        return
+    await asyncio.wait(tasks, timeout=spec.ceiling_s)
 
 
 def _ocr_notices(stats: "Any", *, failed: bool, timed_out: bool = False) -> list[str]:

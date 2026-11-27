@@ -11,6 +11,7 @@ Offline; ``asyncio.run`` (CI has no pytest-asyncio).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -151,12 +152,19 @@ class _Waits:
         self.ended[helper] = time.monotonic()
         return {i: Readiness.ready("x") for i in item_ids}
 
+    async def in_flight(self, helper: str, item_ids: Any) -> None:
+        """``orch._wait_in_flight`` stand-in: the angle map is waited, never started."""
+        self.calls.append((helper, "in_flight", tuple(item_ids), time.monotonic()))
+        await asyncio.sleep(self.delays.get(helper, 0.0))
+        self.ended[helper] = time.monotonic()
+
 
 def _pre_router(monkeypatch, waits: _Waits, *, attachments: list[str], unread: bool) -> tuple:
     async def fake_ocr(_ctx: Any) -> SimpleNamespace:
         return SimpleNamespace(filled_item_ids=[], failed=0)
 
     monkeypatch.setattr(helper_frame, "ensure_ready", waits)
+    monkeypatch.setattr(orch, "_wait_in_flight", waits.in_flight)
     monkeypatch.setattr(orch, "has_unread_attachments", lambda *_a: unread)
     monkeypatch.setattr(orch, "_load_reply_attachment_ids", lambda *_a: list(attachments))
 
@@ -182,7 +190,8 @@ def test_the_router_waits_for_the_file_helpers_in_order(monkeypatch, quick_stage
     assert helpers == [
         ("segmenter", "router", ("f1", "f2")),
         ("citation_pins", "router", ("f1", "f2")),
-        ("angle_map", "router", ("f1", "f2")),
+        # Waited for, never started: a «الملفات» file gets no new mapper call.
+        ("angle_map", "in_flight", ("f1", "f2")),
     ]
     # The segmenter and the pins side by side; the angles after both.
     starts = {h: t for h, _, _, t in waits.calls}
@@ -205,6 +214,48 @@ def test_a_message_without_files_waits_for_nothing_and_shows_nothing(monkeypatch
     assert waits.calls == []
     assert events == []
     assert turn.message_item_ids == []
+
+
+def test_the_angle_map_wait_starts_nothing():
+    """No run going for the files (a «الملفات» file with stored sections): the
+    wait returns at once and no mapper run is started."""
+    async def go() -> float:
+        started = time.monotonic()
+        await orch._wait_in_flight("angle_map", ["lib-1"])
+        return time.monotonic() - started
+
+    assert asyncio.run(go()) < 0.05
+    assert runtime._INFLIGHT == {}
+
+
+def test_the_angle_map_wait_follows_a_running_map_and_never_cancels_it(monkeypatch):
+    import agents.helpers.registry as registry
+
+    ended: list[str] = []
+
+    async def mapping(delay: float, name: str) -> None:
+        await asyncio.sleep(delay)
+        ended.append(name)
+
+    async def go() -> tuple[float, float]:
+        runtime.spawn("angle_map", "f1", mapping(0.05, "quick"))
+        started = time.monotonic()
+        await orch._wait_in_flight("angle_map", ["f1", "f2"])
+        quick = time.monotonic() - started
+        # Past the ceiling: the wait gives up, the run goes on.
+        spec = dataclasses.replace(registry.ANGLE_MAP, ceiling_s=0.05)
+        monkeypatch.setattr(registry, "get_spec", lambda name, *a, **k: spec)
+        runtime.spawn("angle_map", "f2", mapping(0.3, "slow"))
+        started = time.monotonic()
+        await orch._wait_in_flight("angle_map", ["f2"])
+        slow = time.monotonic() - started
+        await asyncio.sleep(0.35)
+        return quick, slow
+
+    quick, slow = asyncio.run(go())
+    assert 0.04 <= quick < 0.25
+    assert slow < 0.25
+    assert ended == ["quick", "slow"]  # the slow run was not cancelled
 
 
 @pytest.mark.parametrize("users", [None, "someone-else"])
