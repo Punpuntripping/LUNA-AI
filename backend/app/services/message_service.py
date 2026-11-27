@@ -1222,10 +1222,16 @@ async def send_message_stream(
                         ]
                         if notices:
                             captured_ocr_notices[:] = notices
-                        await queue.put(_sse_event("ocr_progress", {
+                        progress = {
                             "phase": event.get("phase", ""),
                             "notices": notices,
-                        }))
+                        }
+                        # Which pre-router stage runs (extended_search.md D34):
+                        # extracting / summarizing / arranging / organizing /
+                        # threads. Older clients read only the phase.
+                        if event.get("stage"):
+                            progress["stage"] = str(event["stage"])
+                        await queue.put(_sse_event("ocr_progress", progress))
 
                     elif event_type == "status":
                         # Never relayed. The executor loops narrate onto

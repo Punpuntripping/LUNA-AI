@@ -3135,16 +3135,35 @@ async def _run_pre_router_helpers(
 ) -> AsyncGenerator[dict, None]:
     """Steps 0a + 0b on the helper frame.
 
-    The router waits as before: OCR up to its ceiling, the status line if an
-    attachment could not be read, then the summaries. Still before the pause
-    check, so a file sent as the answer to a pause reaches the resumed agent.
-    What changes: the summaries run in parallel, and an OCR run past its ceiling
-    is not cancelled — its text and summaries land for the next turn.
+    With ``ROUTER_HELPER_WAITS_*`` off for the user: OCR, the status line, then the
+    summaries — today's step exactly. On (D34/D35):
+
+    The router waits: OCR up to its ceiling, the status line if an attachment
+    could not be read, then the summaries, then — on this message's files — the
+    segmenter and the citation pins together, then the angle map (owner
+    2026-11-27, extended_search.md D34). Still before the pause check, so a file
+    sent as the answer to a pause reaches the resumed agent with its sections.
+    The summaries run in parallel, and a run past its ceiling is never cancelled
+    — its result lands for the next turn.
+
+    The client sees one ``ocr_progress`` "extracting" event per stage that is
+    still running after ``_STAGE_AFTER_S`` (``stage`` = which one: the web shows
+    «ريحان يستخرج المستندات» / «يلخص» / «يرتب» / «ينظم» / «يستخرج الخيوط»),
+    and one "done" with the OCR notices at the end. Older clients read only the
+    phase and keep «ريحان يستخرج المستندات» throughout.
     """
+    from agents.utils.router_wait_flags import router_helper_waits_enabled
+
+    # D34/D35 behind ROUTER_HELPER_WAITS_*: off = today's step, byte-identical.
+    waits_on = router_helper_waits_enabled(turn.user_id)
     # «ريحان يستخرج المستندات» while OCR runs (ocr_page_budget.md, owner 11-16).
     extracting = has_unread_attachments(turn.supabase, turn.conversation_id)
+    shown = extracting
     if extracting:
-        yield {"type": "ocr_progress", "phase": "extracting"}
+        yield (
+            _ocr_stage_event("extracting") if waits_on
+            else {"type": "ocr_progress", "phase": "extracting"}
+        )
     turn.start("ocr")
     ocr = (await turn.ready("router", only=("ocr",))).helper("ocr")
     timed_out = ocr.reason == "timeout"
@@ -3154,9 +3173,90 @@ async def _run_pre_router_helpers(
     if failed:
         yield {"type": "status", "text": _OCR_FAILED_STATUS}
     notices = _ocr_notices(ocr.result if ocr.ok else None, failed=bool(failed), timed_out=timed_out)
-    if extracting or notices:
+    if not waits_on:
+        if extracting or notices:
+            yield {"type": "ocr_progress", "phase": "done", "notices": notices}
+        await turn.ready("router", only=("summary",))
+        return
+    async for ev in _wait_with_stage(turn.ready("router", only=("summary",)), "summarizing"):
+        shown = True
+        yield ev
+    turn.message_item_ids = await asyncio.to_thread(
+        _load_reply_attachment_ids, turn.supabase, turn.message_id
+    )
+    if turn.message_item_ids:
+        async for ev in _wait_attachment_helpers(turn, turn.message_item_ids):
+            shown = True
+            yield ev
+    if shown or notices:
         yield {"type": "ocr_progress", "phase": "done", "notices": notices}
-    await turn.ready("router", only=("summary",))
+
+
+#: A stage still running after this long is shown to the user (``ocr_progress``).
+#: Shorter waits — a small file the helper does not apply to, a stored result —
+#: show nothing, so the line never flickers.
+_STAGE_AFTER_S = 1.0
+
+#: ``ocr_progress.stage`` values, in the order they run. The web's phrases live in
+#: ``frontend/components/chat/TypingIndicator.tsx`` (OCR_STAGE_PHRASES).
+OCR_STAGES = ("extracting", "summarizing", "arranging", "organizing", "threads")
+
+
+def _ocr_stage_event(stage: str) -> dict:
+    return {"type": "ocr_progress", "phase": "extracting", "stage": stage}
+
+
+async def _wait_with_stage(
+    awaitable: "Any", stage: str
+) -> AsyncGenerator[dict, None]:
+    """Await ``awaitable``; if it is still running after ``_STAGE_AFTER_S``, yield
+    the stage's ``ocr_progress`` event first. The awaited result is dropped (the
+    callers read what they need from the turn or the store)."""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=_STAGE_AFTER_S)
+        if not done:
+            yield _ocr_stage_event(stage)
+            await asyncio.wait({task})
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("pre-router wait (%s) failed", stage, exc_info=task.exception())
+    finally:
+        # Our own waiter only: the helper runs are separate tasks, never cancelled.
+        if not task.done():
+            task.cancel()
+
+
+async def _wait_attachment_helpers(
+    turn: "helper_frame.TurnHelpers", item_ids: list[str]
+) -> AsyncGenerator[dict, None]:
+    """The router's wait on this message's files (D34): the segmenter and the
+    citation pins side by side, then the angle map. Each up to its own ceiling;
+    a helper off for this user, or a file it does not apply to, is
+    ``not_applicable`` at once. The files are then marked as waited for, so no
+    agent after the router waits on them again. Never raises."""
+    from agents.helpers import ensure_ready
+
+    def wait(helper: str) -> "Any":
+        return ensure_ready(
+            helper, item_ids, consumer="router", supabase=turn.supabase, user_id=turn.user_id,
+        )
+
+    segmenter = asyncio.ensure_future(wait("segmenter"))
+    pins = asyncio.ensure_future(wait("citation_pins"))
+    try:
+        async for ev in _wait_with_stage(segmenter, "arranging"):
+            yield ev
+        async for ev in _wait_with_stage(pins, "organizing"):
+            yield ev
+        turn.mark_waited("segmenter", item_ids)
+        turn.mark_waited("citation_pins", item_ids)
+        async for ev in _wait_with_stage(wait("angle_map"), "threads"):
+            yield ev
+        turn.mark_waited("angle_map", item_ids)
+    finally:
+        for task in (segmenter, pins):
+            if not task.done():
+                task.cancel()
 
 
 def _ocr_notices(stats: "Any", *, failed: bool, timed_out: bool = False) -> list[str]:
@@ -3173,6 +3273,22 @@ def _ocr_notices(stats: "Any", *, failed: bool, timed_out: bool = False) -> list
         notices.append(OCR_FAILED_NOTICE)
     notices.extend(budget_notices(stats))
     return notices
+
+
+def _router_extended_view(
+    supabase: SupabaseClient, user_id: str, workspace_item_summaries: list[dict]
+) -> "Any":
+    """«بحث موسّع» as the router sees it this turn (``extended.router_view``), or
+    ``None`` while the flag is off for the user. Sync (DB reads). Never raises."""
+    try:
+        from agents.deep_search_v4.extended.router_view import router_extended_view
+
+        return router_extended_view(
+            supabase, user_id=user_id, workspace_item_summaries=workspace_item_summaries,
+        )
+    except Exception:  # noqa: BLE001 - no section = no extended search offered
+        logger.warning("extended_search: router view unavailable", exc_info=True)
+        return None
 
 
 def _memory_consumer(agent_family: str | None) -> str:
@@ -3457,6 +3573,14 @@ async def _route(
     # clarifying question cannot re-greet the user mid-conversation.
     welcome = resolve_welcome(supabase, user_id, conversation_id)
 
+    # «بحث موسّع» (extended_search.md D34): the router chooses it. What it is told —
+    # available with the mapped files, or not with the reason. None (no read) while
+    # the flag is off for this user. Built before the persist below: its angle
+    # titles are encoded with the turn codec.
+    extended_view = await asyncio.to_thread(
+        _router_extended_view, supabase, user_id, ctx.workspace_item_summaries,
+    )
+
     # وضع السرية: load_router_context assembled the router's prior-turn history
     # through messages_to_history, which encodes each message via the active
     # codec. Any fake minted there must be persisted BEFORE the router LLM reads
@@ -3482,6 +3606,7 @@ async def _route(
         compaction_summary_md=ctx.compaction_summary_md,
         wi_lock_policy=wi_lock_policy,
         conversation_memory=ctx.conversation_memory,
+        extended_view=extended_view,
     )
 
     # Drain any save_memo side effects FIRST so the pinned-memo chip appears
@@ -3594,6 +3719,9 @@ async def _route(
             # The router chose this family: a too-general request may come back.
             # Not when the user accepted a partial verdict's offer to search.
             allow_handback=handoff is None,
+            # «بحث موسّع» only when the router chose it (D34); the planning turn
+            # re-checks eligibility and falls back to today's planner silently.
+            extended_allowed=bool(getattr(result, "extended", False)),
         ):
             yield ev
         return
@@ -3851,13 +3979,15 @@ async def _dispatch(
     analyzer_handoff: dict | None = None,
     analyzer_checked: bool = False,
     allow_handback: bool = False,
-    extended_allowed: bool = True,
+    extended_allowed: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
     ``extended_allowed``: a deep_search dispatch may go to «بحث موسّع» (flag-gated
-    inside ``_run_deep_search``). False only for the plan card's «بحث عادي» (D31),
-    which must run today's deep search exactly.
+    inside ``_run_deep_search``). True only when the router chose it
+    (``DispatchAgent.extended``, D34 — owner 2026-11-27, replacing D30's silent
+    code decision on every deep-search turn). Every other caller — the analyzer's
+    "insufficient", the plan card's «بحث عادي» (D31) — runs today's deep search.
 
     ``allow_handback`` (set by ``_route`` only): the deep_search planner may
     hand a request it finds too general to search back to the router, which

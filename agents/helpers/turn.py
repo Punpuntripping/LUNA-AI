@@ -118,6 +118,14 @@ class TurnHelpers:
         self._store = store
         self._tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._token: Any = None
+        #: Per item helper, the items a consumer already waited for in this turn
+        #: (the router, on this message's files — registry note (*)). A later
+        #: ``ensure_ready`` never waits on them again: the stored result or the
+        #: fallback, at once.
+        self._waited: dict[str, set[str]] = {}
+        #: This message's attachments (``message_attachments``), filled by the
+        #: orchestrator's pre-router step. Empty when the message has none.
+        self.message_item_ids: list[str] = []
 
     # -- identity ----------------------------------------------------------- #
 
@@ -221,6 +229,19 @@ class TurnHelpers:
 
     def task(self, name: str, item_id: str | None = None) -> asyncio.Task | None:
         return self._tasks.get((name, item_id or MESSAGE_KEY))
+
+    # -- waited once -------------------------------------------------------- #
+
+    def mark_waited(self, name: str, item_ids: Iterable[str]) -> None:
+        """Record that a consumer already waited for ``name`` on ``item_ids`` this
+        turn, whatever the outcome (ready, fallback, timeout). Never raises."""
+        try:
+            self._waited.setdefault(name, set()).update(str(i) for i in item_ids or [] if i)
+        except Exception:  # noqa: BLE001
+            logger.warning("helper frame: mark_waited(%s) failed", name, exc_info=True)
+
+    def waited_for(self, name: str, item_id: str | None) -> bool:
+        return bool(item_id) and str(item_id) in self._waited.get(name, ())
 
     # -- the DAG ------------------------------------------------------------ #
 

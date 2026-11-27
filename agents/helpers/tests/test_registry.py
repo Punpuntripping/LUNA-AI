@@ -132,16 +132,29 @@ def test_existing_helpers_keep_their_metadata_markers():
     assert not any(registry.REGISTRY[name].stored for name in existing)
 
 
-def test_segmenter_is_a_stored_item_helper_critical_for_the_four_readers():
-    """attachment_segmentation.md D15/D16 — never the router, planners or analyzer."""
-    spec = registry.REGISTRY["segmenter"]
+@pytest.mark.parametrize("name", ["segmenter", "citation_pins"])
+def test_segmenter_and_pins_are_critical_for_the_router_and_the_four_readers(name):
+    """extended_search.md D34 (owner 2026-11-27): the router waits on this
+    message's files; the four readers stay critical for any other file. Never the
+    planners or the analyzer (the router before them covers this message)."""
+    spec = registry.REGISTRY[name]
     assert spec.stored and spec.scope == "item"
     assert spec.depends_on == ("ocr", "summary")
     assert spec.critical_for == frozenset(
-        {"case_expander", "reg_expander", "aggregator", "writer"}
+        {"router", "case_expander", "reg_expander", "aggregator", "writer"}
     )
-    assert not spec.critical_for & {"router", "deep_planner", "writer_planner", "analyzer"}
+    assert not spec.critical_for & {"deep_planner", "writer_planner", "analyzer"}
+    assert spec.covered_upstream == frozenset()
     assert spec.ceiling_s == 300.0
+
+
+def test_angle_map_is_critical_for_the_router_only():
+    """D34: the router waits for the angles so «بحث موسّع» is reachable on the
+    turn the file is sent; nobody after it waits."""
+    spec = registry.REGISTRY["angle_map"]
+    assert spec.depends_on == ("segmenter",)
+    assert spec.critical_for == frozenset({"router"})
+    assert spec.ceiling_s == registry.ANGLE_MAP_CEILING_S == 300.0
 
 
 def test_register_and_unregister_round_trip():

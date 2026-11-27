@@ -5,6 +5,7 @@ import type {
   LibraryItemRef,
   NextStep,
   NextStepKind,
+  OcrStage,
   PendingBlog,
   PendingFile,
   PendingLibraryItem,
@@ -295,11 +296,13 @@ export interface StreamState {
   runningAgentFamily: string | null;
   runningAgentSubtype: string | null;
   /**
-   * The OCR step is extracting this turn's files (``ocr_progress`` →
-   * extracting, cleared by → done). The typing indicator then says
-   * «ريحان يستخرج المستندات» instead of «ريحان يفكّر».
+   * A step on this turn's files is running before the answer (``ocr_progress``
+   * → extracting, cleared by → done). The typing indicator then shows that
+   * step's phrase («ريحان يستخرج المستندات»…) instead of «ريحان يفكّر».
    */
   extractingDocuments: boolean;
+  /** Which step (``ocr_progress.stage``); null when none runs. */
+  extractingStage: OcrStage | null;
 }
 
 /**
@@ -561,8 +564,13 @@ interface ChatState {
     subtype?: string | null,
   ) => void;
   finishAgentRun: (conversationId: string) => void;
-  /** ``ocr_progress``: the OCR step started (true) or ended (false). */
-  setExtractingDocuments: (conversationId: string, extracting: boolean) => void;
+  /** ``ocr_progress``: a step on the files started (true, with its stage —
+   *  OCR when absent) or every step ended (false). */
+  setExtractingDocuments: (
+    conversationId: string,
+    extracting: boolean,
+    stage?: OcrStage,
+  ) => void;
   /** Mirror a reconnect attempt (``attempts`` = this send's count so far). */
   startReconnect: (conversationId: string, attempts: number) => void;
   resetReconnect: (conversationId: string) => void;
@@ -626,6 +634,7 @@ function newStreamState(sendId: number): StreamState {
     runningAgentFamily: null,
     runningAgentSubtype: null,
     extractingDocuments: false,
+    extractingStage: null,
   };
 }
 
@@ -1096,11 +1105,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ splitRatio: clamped });
   },
 
-  setExtractingDocuments: (conversationId, extracting) =>
+  setExtractingDocuments: (conversationId, extracting, stage) =>
     set(
       (state) =>
         patchStream(state.streams, conversationId, () => ({
           extractingDocuments: extracting,
+          extractingStage: extracting ? (stage ?? "extracting") : null,
         })) ?? state,
     ),
 

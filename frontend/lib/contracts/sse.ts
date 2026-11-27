@@ -246,14 +246,30 @@ export interface SSEStatus {
 }
 
 /**
- * ``event: ocr_progress`` — the OCR step before the answer (plan
- * ocr_page_budget.md). ``extracting``: a file is being extracted — the web
- * shows «ريحان يستخرج المستندات». ``done``: extraction ended; ``notices`` are
- * the user's lines («استخرجنا 100 صفحة من أصل 606 …»), also persisted on the
- * reply as ``metadata.ocr_notices``. Older backends never send it.
+ * Which step before the answer is running (extended_search.md D34), in order:
+ * ``extracting`` (OCR) → ``summarizing`` (the summary) → ``arranging`` (the
+ * segmenter) → ``organizing`` (the citation pins) → ``threads`` (the angle map,
+ * «الخيوط»). A step that does not run for this user or file is skipped.
+ */
+export type OcrStage =
+  | "extracting"
+  | "summarizing"
+  | "arranging"
+  | "organizing"
+  | "threads";
+
+/**
+ * ``event: ocr_progress`` — the steps on the user's files before the answer
+ * (plans ocr_page_budget.md, extended_search.md D34). ``extracting``: a step is
+ * running — ``stage`` says which, and the web shows its phrase («ريحان يستخرج
+ * المستندات»، «ريحان يلخص المستندات»…); no ``stage`` (older backends) = OCR.
+ * ``done``: every step ended; ``notices`` are the user's lines («استخرجنا 100
+ * صفحة من أصل 606 …»), also persisted on the reply as ``metadata.ocr_notices``.
+ * Older backends never send it.
  */
 export interface SSEOcrProgress {
   phase: "extracting" | "done";
+  stage?: OcrStage;
   notices?: string[];
 }
 

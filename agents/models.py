@@ -86,6 +86,14 @@ class DispatchAgent(BaseModel):
             "accepts that offer."
         ),
     )
+    extended: bool = Field(
+        default=False,
+        description=(
+            "deep_search only: True to run «بحث موسّع» on the attached files — "
+            "only when the section «بحث موسّع» says it is available this turn. "
+            "False (the default) = an ordinary deep search."
+        ),
+    )
     # NOTE: the router no longer paraphrases the query into a ``describe_query``
     # field. The specialist receives the raw user message via
     # ``MajorAgentInput.describe_query`` (filled by the orchestrator from the

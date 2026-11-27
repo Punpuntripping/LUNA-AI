@@ -80,11 +80,19 @@ because an earlier consumer in the same turn waited for it.
 | **OCR** | item | — | C | (C) | (C) | (C) | (C) | (C) | (C) | (C) | (C) | 180 s² | attachment travels as filename only + status line «تعذّرت قراءة بعض المرفقات…» (today) |
 | **Summary** | item | OCR | C | (C) | (C) | (C) | (C) | (C) | (C) | (C) | (C) | ?² | no summary: router falls back to `content_md`; case docs show a 1,500-char opening (today) |
 | **Memory agent** | message | — | **–** | C | C | C | (C) | (C) | (C) | C³ | C | 60 s² | the memory as it was before this message (today) |
-| **Segmenter** | item > 5k chars | OCR, summary | – | – | – | – | C | C | C | C | – | 300 s | full text within the caps (100k per document, 300k overall) |
+| **Segmenter** | item > 5k chars | OCR, summary | C⁴ | (C) | (C) | (C) | C⁴ | C⁴ | C⁴ | C⁴ | – | 300 s | full text within the caps (100k per document, 300k overall) |
+| **Citation pins** | item, not a contract | OCR, summary | C⁴ | (C) | (C) | (C) | C⁴ | C⁴ | C⁴ | C⁴ | – | 300 s | the sections without pinned official text |
+| **Angle map** | item (maps its message group) | segmenter | C⁴ | – | – | – | – | – | – | – | – | 300 s | no angles: «بحث موسّع» is not offered this turn |
 | *Metadata agent (later)* | conversation | segmenter (all docs) | – | – | – | – | – | – | – | C | – | ? | — |
 
 ¹ responder, simple search, any other dispatched agent. ² owner question §7 Q1 — today's values shown.
 ³ the writer runs inside the writer-planner call, which already waited.
+⁴ **2026-11-27 (extended_search.md D34, owner):** the router waits for the segmenter, the citation
+pins and the angle map on THIS message's files, before the pause check
+(`orchestrator._run_pre_router_helpers`: segmenter + pins side by side, then the angle map). The
+readers after it stay critical for any OTHER file (an earlier message's, a case document, a library
+file never mapped) and never wait twice for a file the router waited on (`TurnHelpers.mark_waited`).
+Before 11-27 the router waited for none of the three and the angle map was critical for nobody.
 
 **Effect on the critical path of a first turn with a long attachment:**
 

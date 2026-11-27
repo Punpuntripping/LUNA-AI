@@ -340,7 +340,8 @@ def test_dispatch_turns_a_card_into_an_agent_question(monkeypatch, dispatch_env)
         return orch._DeepSearchOutcome(kind="extended_paused", question="CARD TEXT")
 
     monkeypatch.setattr(orch, "_run_deep_search", fake_ds)
-    events = _dispatch(F.FakeDB())
+    # The router chose «بحث موسّع» (D34): only then may the planning turn run.
+    events = _dispatch(F.FakeDB(), extended_allowed=True)
 
     turn = seen["extended"]
     assert isinstance(turn, W.ExtendedTurn)
@@ -366,6 +367,26 @@ def test_dispatch_can_switch_the_extended_planner_off(monkeypatch, dispatch_env)
     monkeypatch.setattr(orch, "_run_deep_search", fake_ds)
     monkeypatch.setattr(orch, "_run_prior_check", no_check)
     _dispatch(F.FakeDB(), extended_allowed=False)
+    assert seen["extended"] is None
+
+
+def test_dispatch_runs_todays_search_unless_the_router_chose_extended(monkeypatch, dispatch_env):
+    """D34: ``extended_allowed`` defaults to False — the analyzer's "insufficient"
+    and every other caller run today's deep search; only the router's
+    ``DispatchAgent(extended=True)`` passes True."""
+    seen: dict[str, Any] = {}
+
+    async def fake_ds(_input, _db, **kw):
+        seen.update(kw)
+        return orch._DeepSearchOutcome(kind="reverted")
+
+    async def no_check(**_k):
+        if False:
+            yield {}
+
+    monkeypatch.setattr(orch, "_run_deep_search", fake_ds)
+    monkeypatch.setattr(orch, "_run_prior_check", no_check)
+    _dispatch(F.FakeDB())
     assert seen["extended"] is None
 
 

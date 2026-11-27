@@ -738,7 +738,11 @@ export function useSendMessage(): UseSendMessageReturn {
               const payload = data as SSEOcrProgress;
               useChatStore
                 .getState()
-                .setExtractingDocuments(conversationId, payload.phase === "extracting");
+                .setExtractingDocuments(
+                  conversationId,
+                  payload.phase === "extracting",
+                  payload.stage,
+                );
               break;
             }
             case "status": {

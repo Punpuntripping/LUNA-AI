@@ -555,6 +555,15 @@ class Settings(BaseSettings):
     EXTENDED_SEARCH_ENABLED: bool = False
     EXTENDED_SEARCH_USERS: Optional[str] = None
 
+    # ── The router waits for the file helpers — extended_search.md D34/D35 ───
+    # On: before routing, the turn waits for the segmenter + citation pins, then
+    # the angle map, on the message's files (each ≤ 300 s), and the waiting line
+    # names each step (ocr_progress.stage). Off: today's pre-router step,
+    # byte-identical (the readers after the router wait as before). *_USERS:
+    # comma-separated users.user_id; empty = everyone. Env var name == field name.
+    ROUTER_HELPER_WAITS_ENABLED: bool = False
+    ROUTER_HELPER_WAITS_USERS: Optional[str] = None
+
     # ── Completion Search — .claude/plans/completion_search.md §4.10 ────────
     # COMPLETION_SEARCH: the two planners get `complete_search` / `keep_results`
     # (the search planner in place of `fetch_article`). Off: the search planner

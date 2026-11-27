@@ -3,7 +3,9 @@
 Two moments, each reached from ``agents/orchestrator.py`` through one small call site:
 
 * **The planning turn** — :func:`plan_extended_turn`, called by ``_run_deep_search`` on a
-  FRESH deep-search turn (no decision, no editorial pin, reached from ``_dispatch``).
+  FRESH deep-search turn (no decision, no editorial pin, reached from ``_dispatch``) that
+  the ROUTER chose as «بحث موسّع» (``DispatchAgent.extended``, D34 — 2026-11-27; the
+  router is told whether it is available by ``router_view``).
   Flag off → ``None`` at once, no database read. On: eligibility (D30, D23, D24) → the
   planner's view → the angle-aware planner. One request → the plan is dropped and
   today's planner runs from scratch (``None``, D6). Two or more → room in the workspace

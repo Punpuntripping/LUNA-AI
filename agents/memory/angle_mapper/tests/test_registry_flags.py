@@ -54,11 +54,13 @@ def test_topo_order_puts_it_after_the_segmenter_and_its_inputs():
     assert registry.dependents("angle_map") == []
 
 
-def test_critical_for_no_consumer():
+def test_critical_for_the_router_only():
+    """extended_search.md D34 (owner 2026-11-27) — replaces plan Q3's "nobody
+    waits": the router waits up to 300 s, nobody after it."""
     spec = registry.ANGLE_MAP
-    assert spec.critical_for == frozenset() and spec.covered_upstream == frozenset()
-    assert spec.ceiling_s is None
-    assert [c for c in CONSUMERS if spec.waits(c)] == []
+    assert spec.critical_for == frozenset({"router"}) and spec.covered_upstream == frozenset()
+    assert spec.ceiling_s == 300.0
+    assert [c for c in CONSUMERS if spec.waits(c)] == ["router"]
 
 
 def test_load_is_the_fresh_group_loader(monkeypatch):

@@ -488,11 +488,13 @@ async def _ensure_item(
     deadline: float | None,
     *,
     registry: Mapping[str, HelperSpec] | None = None,
+    critical: bool | None = None,
 ) -> Readiness:
     """One item, §5.3 steps 1–4, until ready or the deadline. Never raises
     (except the caller's own cancellation). A run it starts starts its
-    :data:`CONSUMER_RUN_DEPENDENTS` when it ends."""
-    critical = spec.waits(consumer)
+    :data:`CONSUMER_RUN_DEPENDENTS` when it ends. ``critical`` overrides
+    ``spec.waits(consumer)`` (an item the turn already waited for: ``False``)."""
+    critical = spec.waits(consumer) if critical is None else critical
     key = str(ctx.item_id)
     try:
         while True:
@@ -586,9 +588,21 @@ async def ensure_ready(
                 return turn.context(helper, item_id)
             return HelperContext(helper=helper, supabase=supabase, user_id=user_id, item_id=item_id)
 
+        def _critical(item_id: str) -> bool | None:
+            # An item this turn already waited for (the router, registry note (*))
+            # is never waited for again: stored result or fallback, at once.
+            waited = getattr(turn, "waited_for", None) if turn is not None else None
+            if callable(waited) and waited(helper, item_id):
+                return False
+            return None
+
         with wait_span(consumer, helper, len(ids)) as out:
             gathered = asyncio.ensure_future(asyncio.gather(*(
-                _ensure_item(spec, _ctx(i), consumer, runner, store, deadline, registry=reg) for i in ids
+                _ensure_item(
+                    spec, _ctx(i), consumer, runner, store, deadline,
+                    registry=reg, critical=_critical(i),
+                )
+                for i in ids
             )))
             try:
                 done, _ = await asyncio.wait({gathered}, timeout=ON_WAIT_AFTER_S)

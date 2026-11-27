@@ -2,12 +2,23 @@
 
 | Helper              | Scope   | Depends on | Waits (critical)                                   | Ceiling |
 |---------------------|---------|------------|----------------------------------------------------|---------|
-| ocr                 | message | —          | router (everyone after it is covered upstream)     | 180 s   |
+| ocr                 | message | —          | router (everyone after it is covered upstream)     | 600 s   |
 | summary             | item    | ocr        | router (everyone after it is covered upstream)     | 180 s   |
 | pre_router_memory   | message | —          | router (everyone after it is covered upstream)     | 180 s   |
 | memory              | message | —          | everyone but the router; expanders + aggregator covered upstream | 60 s |
-| segmenter           | item    | ocr, summary | case expander, reg expander, aggregator, writer  | 300 s   |
-| angle_map           | item    | segmenter  | — (nobody waits; relationship_map.md Q3)           | —       |
+| segmenter           | item    | ocr, summary | router (*), case expander, reg expander, aggregator, writer | 300 s |
+| citation_pins       | item    | ocr, summary | router (*), case expander, reg expander, aggregator, writer | 300 s |
+| angle_map           | item    | segmenter  | router (*)                                         | 300 s   |
+
+(*) Owner 2026-11-27 (extended_search.md D34): the router waits for the
+segmenter, the citation pins and the angle map on the files of THIS message,
+before the pause check (``orchestrator._run_pre_router_helpers``), so every agent
+after it reads the sections, the pinned texts and the angles, and the router can
+offer «بحث موسّع». The readers after the router stay critical for the files the
+router did NOT wait on (a file from an earlier message, a case document, a
+library file never mapped): ``TurnHelpers.mark_waited`` records the router's
+files and ``ensure_ready`` never makes a later reader wait on them again, so a
+file that missed its ceiling once does not hold the turn twice.
 
 ``angle_map`` is started per item but maps the item's whole MESSAGE group in one
 run (relationship_map.md D17; the runner decides which member runs it).
@@ -229,7 +240,9 @@ SEGMENTER = HelperSpec(
     scope="item",
     # doc_type (the label list) comes from the summary.
     depends_on=("ocr", "summary"),
-    critical_for=frozenset({"case_expander", "reg_expander", "aggregator", "writer"}),
+    # The router first, on this message's files (D34); the four readers for any
+    # other file they are handed.
+    critical_for=frozenset({"router", "case_expander", "reg_expander", "aggregator", "writer"}),
     ceiling_s=SEGMENTER_CEILING_S,
     run=run_segmenter,
     load=load_segmenter,
@@ -266,6 +279,11 @@ SEGMENTER = HelperSpec(
 # the extended-search planner asks for it through ``ensure_ready`` (phase 2, not
 # built yet). ``helper_runs`` rows hang on the item's FILE (migration 223), so a
 # library file attached to two conversations shares one row.
+
+#: The router waits this long for the angle map (D34), counted from when its wait
+#: starts — after the segmenter's. Prod 2026-11-20…27: a run takes 117 s median,
+#: 244 s p90, 293 s max.
+ANGLE_MAP_CEILING_S = 300.0
 
 #: Angle-map runs at once in this process — one V4.1 call per group (49–150 s
 #: tested per file; a 165k-char group ≈ 3–4 min), plus at most one re-attempt and
@@ -350,9 +368,12 @@ ANGLE_MAP = HelperSpec(
     scope="item",
     # Its input is the segmenter's sections; it starts when the segmenter ends.
     depends_on=("segmenter",),
-    # Critical for nobody (plan Q3 default): the planner uses a stored map and
-    # plans without angles when there is none — nobody waits.
-    critical_for=frozenset(),
+    # The router waits for it on this message's files (owner 2026-11-27, D34 —
+    # replaces plan Q3's "nobody waits"), so «بحث موسّع» is reachable on the turn
+    # the file is sent. Nobody after the router waits: the extended planner reads
+    # the stored map and plans without angles when there is none.
+    critical_for=frozenset({"router"}),
+    ceiling_s=ANGLE_MAP_CEILING_S,
     run=run_angle_map,
     load=load_angle_map,
     applies_to=angle_map_applies_to,
@@ -442,8 +463,9 @@ CITATION_PINS = HelperSpec(
     scope="item",
     # doc_type comes from the summary — contracts are never scanned.
     depends_on=("ocr", "summary"),
-    # The same readers as the segmenter: the pinned articles arrive inside its sections.
-    critical_for=frozenset({"case_expander", "reg_expander", "aggregator", "writer"}),
+    # The same waiters as the segmenter (router first, D34): the pinned articles
+    # arrive inside its sections.
+    critical_for=frozenset({"router", "case_expander", "reg_expander", "aggregator", "writer"}),
     ceiling_s=CITATION_PINS_CEILING_S,
     run=run_citation_pins,
     load=load_citation_pins,

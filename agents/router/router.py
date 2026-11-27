@@ -25,6 +25,7 @@ import html
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, ModelRetry, RunContext, TextOutput
 from pydantic_ai.messages import ModelMessage
@@ -57,6 +58,9 @@ from agents.utils.tracking import track_stage
 from agents.utils.welcome import WelcomeState, render_welcome_instruction
 from shared.observability import get_logfire
 from shared.workspace.preview_lock import LockPolicy
+
+if TYPE_CHECKING:  # the extended package loads lazily (its section, its check)
+    from agents.deep_search_v4.extended.router_view import RouterExtendedView
 
 
 # ── Alias resolution (migration 052 / agent communication protocol) ───────────
@@ -192,6 +196,11 @@ class RouterDeps:
     # note. The router may then only talk — explore the request with the user —
     # and its validator refuses any dispatch (``orchestrator._route_after_handback``).
     planner_handback: str | None = None
+    # «بحث موسّع» (extended_search.md D34): what the router is told about it this
+    # turn — available with the mapped files, or not with the reason. ``None`` =
+    # the flag is off for this user: no section, and ``extended=true`` is refused.
+    # Built by ``orchestrator._route`` (``extended.router_view``).
+    extended_view: "RouterExtendedView | None" = None
 
 
 @dataclass
@@ -607,7 +616,32 @@ def _validate_and_resolve_dispatch(
         resolved_attached.append(resolved)
     value.attached_item_ids = resolved_attached
 
+    if isinstance(value, DispatchAgent) and value.extended:
+        _check_extended(ctx, value)
+
     return value
+
+
+def _check_extended(ctx: RunContext[RouterDeps], value: DispatchAgent) -> None:
+    """``extended=true`` (D34): deep_search only, and only when the section said
+    «بحث موسّع» is available. Refused once with the reason, then dropped to an
+    ordinary deep search. With no file attached, the mapped files are attached."""
+    if value.agent_family != "deep_search":
+        value.extended = False
+        return
+    view = getattr(ctx.deps, "extended_view", None)
+    if view is None or not view.available:
+        if view is not None and ctx.retry < 1:
+            raise ModelRetry(
+                "«بحث موسّع» is not available this turn (the section «بحث موسّع» says "
+                "why). Set extended=false for an ordinary deep search, or reply with "
+                "ChatResponse as that section says."
+            )
+        value.extended = False
+        return
+    if not value.attached_item_ids:
+        value.attached_wis = [alias for alias, _, _ in view.files][:MAX_ATTACHED_ITEMS]
+        value.attached_item_ids = view.file_item_ids[:MAX_ATTACHED_ITEMS]
 
 
 # ── Dynamic instructions ──────────────────────────────────────────────────────
@@ -755,6 +789,19 @@ def inject_planner_handback(ctx: RunContext[RouterDeps]) -> str:
     )
 
 
+@router_agent.instructions
+def inject_extended_search(ctx: RunContext[RouterDeps]) -> str:
+    """«بحث موسّع» (extended_search.md D34): available with its files and angles, or
+    not with the reason. Empty while the flag is off for this user, so that prompt
+    stays as it was. Registered last: it changes only when a file's angles land."""
+    view = getattr(ctx.deps, "extended_view", None)
+    if view is None:
+        return ""
+    from agents.deep_search_v4.extended.router_view import render_router_section
+
+    return render_router_section(view)
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 
@@ -881,6 +928,7 @@ async def run_router(
     wi_lock_policy: LockPolicy | None = None,
     conversation_memory: list[MemoryEntry] | None = None,
     planner_handback: str | None = None,
+    extended_view: "RouterExtendedView | None" = None,
 ) -> RouterRunResult:
     """Run the router agent to classify user intent and respond or dispatch.
 
@@ -919,6 +967,8 @@ async def run_router(
         planner_handback: Set only when the deep_search planner handed this
             turn's request back as too general to search: its note. The router
             then explores the request in a ChatResponse and may not dispatch.
+        extended_view: «بحث موسّع» this turn (``extended.router_view``), or
+            None while the flag is off for this user.
 
     Returns:
         A ``RouterRunResult`` wrapping the structured output (ChatResponse if
@@ -953,6 +1003,7 @@ async def run_router(
         wi_lock_policy=wi_lock_policy,
         conversation_memory=list(conversation_memory or []),
         planner_handback=planner_handback,
+        extended_view=extended_view,
     )
 
     # PII note: user_id intentionally NOT on this span. The monitor recovers
@@ -972,6 +1023,10 @@ async def run_router(
         wi_preview_lock=wi_lock_policy is not None,
         memory_entry_count=len(deps.conversation_memory),
         planner_handback=planner_handback is not None,
+        extended_offer=(
+            None if extended_view is None
+            else ("available" if extended_view.available else extended_view.reason)
+        ),
     ) as span:
         try:
             result = await router_agent.run(
@@ -998,6 +1053,7 @@ async def run_router(
                 decision=decision_type,
                 agent_family=agent_family,
                 attached_item_count=attached_count,
+                extended=bool(getattr(result.output, "extended", False)),
             )
 
             logger.info(
