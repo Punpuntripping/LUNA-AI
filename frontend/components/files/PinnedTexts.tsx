@@ -7,6 +7,16 @@ import type { FilePinnedText } from "@/lib/contracts";
 import { FILES_COPY } from "./copy";
 
 /**
+ * The library stores each article with a markdown heading line naming it
+ * («### المادة العشرون بعد المائة:») and no other markdown (checked on the
+ * pinned articles 2026-11-27). The text is shown plain, so the heading marks
+ * are dropped and the words kept.
+ */
+function plainArticleText(text: string): string {
+  return text.replace(/^[ \t]{0,3}#{1,6}[ \t]*/gm, "").trim();
+}
+
+/**
  * «النصوص المثبّتة (n)» — the official articles a section of the file cites,
  * collapsed by default. The same disclosure as «الإحالات» in an opened
  * reference (`CrossRefsSection` in ReferencePanel): a quiet toggle, then one
@@ -64,7 +74,7 @@ export function PinnedTexts({
             >
               <span className="block font-medium text-foreground">{pin.title}</span>
               <span className="mt-0.5 block whitespace-pre-line text-muted-foreground">
-                {pin.text}
+                {plainArticleText(pin.text)}
               </span>
             </li>
           ))}
