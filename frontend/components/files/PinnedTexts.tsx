@@ -10,10 +10,15 @@ import { FILES_COPY } from "./copy";
  * The library stores each article with a markdown heading line naming it
  * («### المادة العشرون بعد المائة:») and no other markdown (checked on the
  * pinned articles 2026-11-27). The text is shown plain, so the heading marks
- * are dropped and the words kept.
+ * are dropped and the words kept; its paragraphs are separated by blank lines,
+ * which `whitespace-pre-line` would print as wide gaps, so each run of blank
+ * lines becomes one line break.
  */
 function plainArticleText(text: string): string {
-  return text.replace(/^[ \t]{0,3}#{1,6}[ \t]*/gm, "").trim();
+  return text
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]*/gm, "")
+    .replace(/\n[ \t]*(?:\n[ \t]*)+/g, "\n")
+    .trim();
 }
 
 /**
