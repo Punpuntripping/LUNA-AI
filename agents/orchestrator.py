@@ -414,6 +414,26 @@ def _load_reply_attachment_ids(
         return []
 
 
+def _resume_attachment_ids(
+    supabase: SupabaseClient, pending: dict | None, user_message_id: str | None
+) -> list[str]:
+    """The files a resume leg works on: the ones the paused leg had
+    (``deferred_payload.attached_item_ids``, saved by :func:`_record_deferred`)
+    first, then the ones attached to the reply — deduped.
+
+    Without the saved ids a clarifying question stripped the router's files from
+    the search (prod 2026-11-27: the report said the attached judgment was not
+    available). A pause recorded before the ids were saved has no key → the
+    reply's files only, as before. Feed the result to ``_load_attached_items``,
+    which still enforces the user/conversation scope (a file deleted in between
+    simply drops)."""
+    payload = (pending or {}).get("deferred_payload") or {}
+    saved = payload.get("attached_item_ids") if isinstance(payload, dict) else None
+    saved_ids = [str(i) for i in saved if i] if isinstance(saved, list) else []
+    reply_ids = _load_reply_attachment_ids(supabase, user_message_id)
+    return list(dict.fromkeys([*saved_ids, *reply_ids]))
+
+
 def _encode_attached_for_planner(
     snapshots: list[WorkspaceItemSnapshot],
 ) -> list[WorkspaceItemSnapshot]:
@@ -1304,9 +1324,11 @@ async def _resume_major_agent_inner(
         # try/finally so the writing run is closed out first.
         _handoff = False
         try:
+            # The files the paused writer had (router pick, saved on the pause)
+            # + the reply's — not the reply's alone.
             attached_items = _load_attached_items(
                 supabase,
-                _load_reply_attachment_ids(supabase, user_message_id),
+                _resume_attachment_ids(supabase, pending, user_message_id),
                 user_id,
                 conversation_id,
             )
@@ -1373,6 +1395,8 @@ async def _resume_major_agent_inner(
                     # Inherit the original task_label (router did not re-run).
                     task_label=(pending.get("task_label") if pending else None),
                     pause_reason=wp_outcome.pause_reason or "clarify",
+                    # Carry the files forward so the next resume still has them.
+                    attached_item_ids=[s.item_id for s in attached_items],
                 )
                 # Close out the previous run row (superseded by the new one).
                 _resolve_pause_loud(
@@ -1528,9 +1552,15 @@ async def _resume_major_agent_inner(
         _resume_prior_searches = _load_prior_search_summaries(
             supabase, conversation_id, user_id,
         )
+        # The files the paused search had (the router's pick, saved on the
+        # pause) + the reply's. Computed once: the search below (phases 2–3)
+        # loads the same list.
+        _resume_attachment_id_list = _resume_attachment_ids(
+            supabase, pending, user_message_id,
+        )
         _resume_attached_items = _load_attached_items(
             supabase,
-            _load_reply_attachment_ids(supabase, user_message_id),
+            _resume_attachment_id_list,
             user_id,
             conversation_id,
         )
@@ -1568,8 +1598,8 @@ async def _resume_major_agent_inner(
 
         # وضع السرية: mask the attached items' inline content_md/title for the
         # decider (parity with fresh dispatch). Copies only; alias map built above
-        # from the REAL ids. On resume the list holds the files attached to the
-        # reply message (_load_reply_attachment_ids). case_brief +
+        # from the REAL ids. On resume the list holds the paused search's files
+        # plus the reply's (_resume_attachment_ids). case_brief +
         # prior_searches were already encoded/persisted inside their loaders.
         _resume_attached_items = _encode_attached_for_planner(_resume_attached_items)
 
@@ -1686,6 +1716,8 @@ async def _resume_major_agent_inner(
             task_label=(pending.get("task_label") if pending else None),
             analyzer=_resume_analyzer or None,
             extended=(_offer_pause_payload(_resume_deps) if getattr(_resume_deps, "one_planner", False) else None),
+            # Carry the files forward so the next resume still has them.
+            attached_item_ids=[s.item_id for s in _resume_attached_items],
         )
         # Close out the previous run row (it's superseded by the new one).
         _resolve_pause_loud(supabase, run_id, where="ds_chained_pause_supersede")
@@ -1818,9 +1850,10 @@ async def _resume_major_agent_inner(
     err_payload: dict | None = None
 
     try:
+        # The same files the decider resume had (saved pause files + the reply's).
         attached_items = _load_attached_items(
             supabase,
-            _load_reply_attachment_ids(supabase, user_message_id),
+            _resume_attachment_id_list,
             user_id,
             conversation_id,
         )
@@ -2222,6 +2255,8 @@ async def _resume_simple_search_leg(
                     agent_family="deep_search",
                     describe_query=user_reply,
                     task_label=(pending.get("task_label") if pending else None),
+                    # What this leg searched with, so its resume has the same files.
+                    attached_item_ids=[s.item_id for s in major_input.attached_items],
                 )
                 yield {
                     "type": "agent_question",
@@ -2427,6 +2462,7 @@ def _record_deferred(
     run_id: str | None = None,
     analyzer: dict | None = None,
     extended: dict | None = None,
+    attached_item_ids: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """Persist pause state for a DeferredToolRequests planner output.
 
@@ -2437,6 +2473,12 @@ def _record_deferred(
     Inserts the paused_runs row (migration 060) and the agent_question message
     row. Returns (question_text, run_id).  Both are best-effort; run_id may be
     None on DB failure.
+
+    ``attached_item_ids`` — the files the paused leg was working on (the router's
+    pick on a fresh dispatch; on a chained pause, everything the resumed leg had).
+    Saved as ``deferred_payload.attached_item_ids`` so the resume leg gets them
+    back (:func:`_resume_attachment_ids`): the reply carries only the files the
+    user attached to it. ``None`` → the key is not written (resume = reply files only).
 
     ``task_label`` is the router-emitted short Arabic label for the dispatched
     task (Wave 1 redesign). Persisted to ``paused_runs.task_label`` so the
@@ -2463,7 +2505,7 @@ def _record_deferred(
     )
     now = _now_utc()
 
-    deferred_payload = {
+    deferred_payload: dict[str, _Any] = {
         "tool_call_id": pending_call.tool_call_id,
         "tool_name": pending_call.tool_name,
         "args": pending_args,
@@ -2476,6 +2518,12 @@ def _record_deferred(
         from agents.deep_search_v4.extended.offer import PAUSE_KEY as _OFFER_PAUSE_KEY
 
         deferred_payload[_OFFER_PAUSE_KEY] = extended
+    if attached_item_ids is not None:
+        # Same reason: the router's file pick is deps-only, and a resume without
+        # it searched without the user's documents (prod, 2026-11-27).
+        deferred_payload["attached_item_ids"] = list(
+            dict.fromkeys(str(i) for i in attached_item_ids if i)
+        )
 
     run_id = record_pause(
         supabase,
@@ -4459,6 +4507,8 @@ async def _dispatch(
                         run_id=run_id,
                         analyzer={"handoff": analyzer_handoff, "checked": analyzer_checked},
                         extended=ds_outcome.extended_payload,
+                        # The router's files: the resume leg loads them back.
+                        attached_item_ids=[s.item_id for s in major_input.attached_items],
                     )
                     raise _SkipRunRecord()
                 run_result = ds_outcome.result
@@ -4501,6 +4551,8 @@ async def _dispatch(
                         task_label=task_label,
                         pause_reason=wp_outcome.pause_reason or "clarify",
                         run_id=run_id,
+                        # The router's files: the resume leg loads them back.
+                        attached_item_ids=[s.item_id for s in major_input.attached_items],
                     )
                     raise _SkipRunRecord()
                 run_result = wp_outcome.result
@@ -4702,6 +4754,10 @@ async def _dispatch(
                                 describe_query=describe_query,
                                 task_label=task_label,
                                 run_id=run_id,
+                                # The router's files: the resume leg loads them back.
+                                attached_item_ids=[
+                                    s.item_id for s in major_input.attached_items
+                                ],
                             )
                             raise _SkipRunRecord()
                         if ds_handoff.kind == "reverted":

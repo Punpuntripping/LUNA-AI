@@ -93,6 +93,7 @@ agents/tests/*
 # silently in production — a lost or doubled section, a run started twice, a
 # document read unmasked — so a clean clone must keep its guards.
 !agents/tests/test_helper_frame_orchestrator.py
+!agents/tests/test_resume_keeps_attachments.py
 !agents/helpers/tests/
 !agents/memory/attachment_segmenter/tests/
 # the angle map (relationship_map.md §4, 2026-11-21): masking round trip, section-id
