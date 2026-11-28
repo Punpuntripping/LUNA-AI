@@ -103,6 +103,7 @@ from agents.utils.reading_corrections import KEY as CORRECTIONS_KEY, with_correc
 from shared.attachments.overlay import correct_text
 from shared.files import store as files_store
 from shared.seo.judgment_naming import judgment_subject
+from shared.workspace.file_refs import labelled_report_text
 # The WI preview lock — the SAME decision and cut the backend applies to the
 # web / app (shared/, so agents/ never imports backend/ for it).
 from shared.workspace.preview_lock import (
@@ -906,6 +907,12 @@ def unfold_parts(
         raw,
         item.get(CORRECTIONS_KEY) or item.get("metadata"),
     )
+    # A report's [F1·S7] / [F1] file tags (aggregator_file_refs.md §4.7) become
+    # words — «(القسم 7 من الحكم المرفق)» — from its workspace_item_file_refs rows,
+    # so a router / writer reading it never copies a tag into its own text. A
+    # body with no tag is untouched and costs no read.
+    if item.get("kind") != "attachment":
+        content_md = labelled_report_text(supabase, item_id, content_md)
     lines = resolve_used_sources(supabase, item_id, snippet_max_chars=snippet_max_chars)
     if lock_policy is None or not is_locked(item, lock_policy):
         return UnfoldParts(render_unfold_md(content_md, lines))

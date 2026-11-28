@@ -38,6 +38,8 @@ READS_THROUGH_FILES: dict[str, str] = {
                                                   "with_file_id + overlay_files); lengths via content_chars_for_items; "
                                                   "section text through the segmenter's files-aware loader",
     "backend/app/services/attachment_cleanup.py": "S3 retention purge (its scan stays until contract)",
+    "backend/app/services/file_refs_service.py": "_load_items (a cited file's title / text, with_file_id + "
+                                                 "overlay_files); section rows through the segmenter's loader",
     "backend/app/services/files_service.py": "«الملفات» — the user_files path behind the read switch",
     "backend/app/services/message_service.py": "S2 _attachment_page_counts (the rest lists pointers)",
     "backend/app/services/upload_reconciler.py": "S3 promote / soft-delete (its scan stays until contract)",
@@ -103,6 +105,8 @@ TEXT_CORRECTIONS_APPLIED: dict[str, str] = {
     "agents/tool_repository/unfold_workspace_item.py": "unfold_parts (planner / writer planner), before the codec",
     "agents/writer_planner/walkers.py": "_fetch_workspace_items_sync — the writer's whole-text bodies",
     "backend/app/services/angle_maps_service.py": "_map_out — the AngleSectionDialog section text",
+    "backend/app/services/file_refs_service.py": "_section_text — the file-ref popup text (a report's "
+                                                 "[F1·S7] chip), after the positions cut it",
     "backend/app/services/files_service.py": "the opened file's text (viewer + Copy) and _sections "
                                              "(which also applies the section promotions)",
     "backend/app/services/workspace_service.py": "list routes; get_workspace_item(text_corrections=True) for "

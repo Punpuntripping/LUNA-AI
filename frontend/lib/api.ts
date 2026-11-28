@@ -66,6 +66,7 @@ import type {
   AnnouncementsResponse,
   FileMatchRequest,
   FileMatchResponse,
+  FileRefSectionResponse,
   FilesStatusResponse,
   LibraryFileDetail,
   LibraryFileListResponse,
@@ -73,6 +74,7 @@ import type {
   PasswordForgotResponse,
   PasswordResetRequest,
   PlanChoicePayload,
+  WorkspaceItemFileRefsResponse,
   WorkspaceItemReferencesResponse,
 } from "@/lib/contracts";
 import { supabase } from "@/lib/supabase";
@@ -999,6 +1001,26 @@ export const workspaceApi = {
     fetchReferenceSource(
       `/workspace/${encodeURIComponent(itemId)}/references/${n}/source`,
       { requireToken: true },
+    ),
+
+  /**
+   * «من مستنداتك» (aggregator_file_refs.md §4.6): the report's citations of the
+   * user's own file sections — one row per ``[F1·S7]`` / ``[F1]``, in order of
+   * first mention. Never gated or metered (the user's own file).
+   */
+  listFileRefs: (itemId: string) =>
+    api.get<WorkspaceItemFileRefsResponse>(
+      `/workspace/${encodeURIComponent(itemId)}/file-refs`,
+    ),
+
+  /**
+   * One cited section's text for the popup. 410 = the attachment was deleted
+   * on purpose («لم يعد هذا الملف متاحًا»); every other case still serves the
+   * text (stored positions into the file's text, plan §4.5).
+   */
+  getFileRefSection: (itemId: string, refId: string) =>
+    api.get<FileRefSectionResponse>(
+      `/workspace/${encodeURIComponent(itemId)}/file-refs/${encodeURIComponent(refId)}/section`,
     ),
 };
 

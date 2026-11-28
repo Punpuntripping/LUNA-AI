@@ -207,6 +207,7 @@ def render_sections(
     keep: frozenset[str],
     *,
     ratio: float = 1.0,
+    file_wi: int | None = None,
 ) -> tuple[str, bool]:
     """The kept sections in document order, each under a ``〔what〕`` tag.
 
@@ -214,6 +215,12 @@ def render_sections(
     their descriptions; ``boilerplate`` / ``repeat`` are left out silently. With
     ``ratio < 1`` every kept section keeps that share of its length (cut from its
     end) and ends with :data:`TRIM_NOTE`. Returns ``(text, trimmed)``.
+
+    ``file_wi`` (the aggregator's file refs, aggregator_file_refs.md §4.2, D12): the
+    document's WI number. Each kept section's tag then opens with its ready file
+    tag, ``〔F3·S7 · what — owner〕`` — ``S7`` is the ``seq`` the «الخيوط» squares
+    show — so the aggregator copies it as it is. Pinned articles get no tag.
+    ``None`` → the text is byte-identical to before.
     """
     parts: list[str] = []
     left_out: list[str] = []
@@ -236,6 +243,11 @@ def render_sections(
                 trimmed = True
                 body = f"{body}\n{TRIM_NOTE}" if body else TRIM_NOTE
             tag = section.tag()
+            if file_wi is not None:
+                from shared.workspace.file_refs import format_file_tag
+
+                ready = format_file_tag(file_wi, section.seq)
+                tag = f"{ready} · {tag}" if tag else ready
             parts.append(f"〔{tag}〕\n{body}" if tag else body)
             # The official articles this section cites, right under it (C19, C22).
             parts.extend(_render_pin(pin) for pin in section.pins)

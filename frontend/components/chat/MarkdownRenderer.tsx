@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { CodeBlock } from "@/components/chat/CodeBlock";
 import { CitationMarker } from "@/components/chat/CitationMarker";
 import { remarkCitations } from "@/lib/markdown/remark-citations";
+import { remarkFileRefs } from "@/lib/markdown/remark-file-refs";
 import { slugifyHeading } from "@/lib/markdown/headings";
 
 /**
@@ -63,6 +64,14 @@ interface MarkdownRendererProps {
    */
   renderCitation?: (n: number) => ReactNode;
   /**
+   * When set, each file-ref tag of a report (``[F1·S7]`` / ``[F1]``,
+   * ``remarkFileRefs``) renders as whatever this returns for its canonical ref
+   * (``"F1.S7"`` / ``"F1"``) — ``null`` hides it. Omitted → the tag stays as
+   * the text it was written as. Keep it identity-stable: it is a memo
+   * dependency.
+   */
+  renderFileRef?: (ref: string) => ReactNode;
+  /**
    * Opt-in: when true, ``h1..h6`` render with a deterministic
    * ``id={slugifyHeading(text)}`` + ``scroll-mt-24`` so TOC anchor jumps land
    * below the sticky header. Default off → chat rendering is byte-identical.
@@ -90,8 +99,19 @@ function buildMarkdownComponents(
   renderCitation: ((n: number) => ReactNode) | undefined,
   headingAnchors: boolean,
   reading: boolean,
+  renderFileRef?: (ref: string) => ReactNode,
 ): Components {
   return {
+    // --- File refs ([F1·S7] / [F1]) — ``remarkFileRefs`` emits one
+    // ``<data value="F1.S7">`` per ref; its text child is the tag as written.
+    data({ node, children }) {
+      const props = (node as { properties?: Record<string, unknown> } | undefined)
+        ?.properties ?? {};
+      const ref = typeof props.value === "string" ? props.value : "";
+      if (!renderFileRef || !ref) return <>{children}</>;
+      return <>{renderFileRef(ref)}</>;
+    },
+
     // --- Citation markers ([n] / [n,m,...]) ---
     // The ``remarkCitations`` plugin (registered below) transforms the
     // mdast text nodes that contain citation tokens into ``<cite data-n="n">``
@@ -379,8 +399,9 @@ function buildMarkdownComponents(
 
 // ``remarkCitations`` runs AFTER ``remarkGfm`` so any GFM-specific text node
 // shapes (e.g. inside table cells) are already in their final form before we
-// split them on ``[n]`` tokens.
-const remarkPlugins = [remarkGfm, remarkCitations];
+// split them on ``[n]`` tokens. ``remarkFileRefs`` (``[F1·S7]``) never matches
+// what ``remarkCitations`` matches, so their order does not matter.
+const remarkPlugins = [remarkGfm, remarkCitations, remarkFileRefs];
 const rehypePlugins = [rehypeHighlight];
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({
@@ -388,6 +409,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   className,
   onCitationClick,
   renderCitation,
+  renderFileRef,
   headingAnchors,
   prose,
   streaming,
@@ -403,8 +425,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         renderCitation,
         headingAnchors ?? false,
         reading,
+        renderFileRef,
       ),
-    [onCitationClick, renderCitation, headingAnchors, reading],
+    [onCitationClick, renderCitation, headingAnchors, reading, renderFileRef],
   );
 
   return (

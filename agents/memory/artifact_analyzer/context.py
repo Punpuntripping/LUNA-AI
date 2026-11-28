@@ -23,6 +23,7 @@ from agents.deep_search_v4.ura.principles import (
 from agents.deep_search_v4.ura.services_unfold import build_service_aggregator_content
 from agents.utils.reading_corrections import entries_of, render_block
 from backend.app.services.masking_service import encode_active
+from shared.workspace.file_refs import labelled_report_text
 from shared.library.supersession import (
     aggregator_status,
     load_supersessions,
@@ -110,7 +111,11 @@ def load_reports(supabase: Any, call: AnalyzerCall) -> list[ReportRow]:
             wi_seq=row.get("wi_seq"),
             # Stored real; every field below reaches the LLM.
             title=encode_active(row.get("title") or ""),
-            content_md=encode_active(row.get("content_md") or ""),
+            # [F1·S7] file tags → «(القسم 7 من …)» (aggregator_file_refs.md §4.7);
+            # no tag = no read.
+            content_md=encode_active(
+                labelled_report_text(supabase, str(row["item_id"]), row.get("content_md") or "")
+            ),
             describe_query=encode_active(row.get("describe_query") or ""),
             confidence=confidence if confidence in ("high", "medium", "low") else "medium",
             gaps=[encode_active(str(g)) for g in gaps] if isinstance(gaps, list) else [],

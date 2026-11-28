@@ -54,6 +54,13 @@ interface ArtifactPreviewProps {
    * convo_context, references) omit it and the markers stay as plain text.
    */
   onCitationClick?: (n: number) => void;
+  /**
+   * When provided, the report's file-ref tags (``[F1·S7]`` / ``[F1]``) render
+   * as whatever this returns (``null`` hides one). AgentSearchViewer wires it
+   * to ``FileRefChip``. Omitted → the tags stay as plain text. Keep it
+   * identity-stable (a ``MarkdownRenderer`` memo dependency).
+   */
+  renderFileRef?: (ref: string) => ReactNode;
   /** Test hook. */
   "data-testid"?: string;
 }
@@ -84,6 +91,7 @@ export function ArtifactPreview({
   copyLabel = "نسخ",
   plainCopy = true,
   onCitationClick,
+  renderFileRef,
   "data-testid": testId,
 }: ArtifactPreviewProps) {
   // Single-button path only (``plainCopy={false}``) — CopyMenu owns its own
@@ -173,6 +181,7 @@ export function ArtifactPreview({
             <MarkdownRenderer
               content={content}
               onCitationClick={onCitationClick}
+              renderFileRef={renderFileRef}
             />
           ) : (
             <p className="text-sm text-muted-foreground">لا يوجد محتوى للعرض.</p>

@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from agents.deep_search_v4.shared.context import ContextBlock
@@ -51,6 +52,7 @@ from agents.utils.attachment_delivery import (
     trim_text,
     with_loose_pins,
 )
+from shared.workspace.file_refs import format_file_tag
 from agents.utils.attachment_delivery import PER_DOC_CAP as SEGMENTED_PER_DOC_CAP
 from agents.utils.attachment_delivery import TOTAL_CAP as SEGMENTED_TOTAL_CAP
 
@@ -151,11 +153,44 @@ def parse_wi_aliases(
     return resolved
 
 
+@dataclass(frozen=True)
+class FileRefDoc:
+    """One document the aggregator may cite, and what (aggregator_file_refs.md §4.1, D11–D12).
+
+    ``wi_seq`` is the document's WI number in the conversation — the ``WI-3`` of its
+    ``### WI-3 · …`` heading, fixed for the conversation — and its tags carry it after
+    an ``F``: the aggregator copies ``[F3·S7]`` from the section's label. ``sections`` —
+    ``(seq, char_start, char_end)`` of every section it was shown, so code can resolve
+    the tag after the run; empty = the document was shown as whole text (a short file,
+    or no usable map) and is cited ``[F3]``. A
+    document the aggregator saw only as a summary, or one with no WI number, is not
+    listed (D8). Ids and positions only — never text: the snapshots here are the
+    encoded copies, and the stored rows are written from the real ones (§4.8).
+    """
+
+    wi_seq: int
+    item_id: str
+    sections: tuple[tuple[int, int, int], ...] = ()
+
+    @property
+    def whole(self) -> bool:
+        return not self.sections
+
+
 def _heading(item: Any) -> str:
     """``### WI-3 · judgment · title`` — the type segment omitted when unset."""
     title = " ".join(str(getattr(item, "title", "") or "").split())
     segments = [_alias(item), _doc_type(item), title]
     return "### " + " · ".join(s for s in segments if s)
+
+
+def _citable_wi(item: Any) -> int | None:
+    """The document's WI number when it can carry a file tag (D11–D12), else ``None``."""
+    try:
+        seq = getattr(item, "wi_seq", None)
+        return int(seq) if seq is not None and int(seq) > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _render_body(
@@ -164,12 +199,16 @@ def _render_body(
     full_text: str | None,
     original_chars: int,
     over_total: bool,
+    file_tag: str | None = None,
 ) -> str:
     """One document's Markdown body (§3.1 body format + variants).
 
     ``full_text`` — the (possibly cut) text to show, ``None`` when this
     recipient gets no full text for the document. ``over_total`` — full text was
-    due but the recipient's total cap was already spent.
+    due but the recipient's total cap was already spent. ``file_tag`` (the
+    aggregator's file refs, D12) — the ready tag of a document shown whole
+    (``F3``), printed as one ``〔F3〕`` line at the top of its text; ``None`` →
+    byte-identical to before.
     """
     summary = str(getattr(item, "summary", "") or "").strip()
     content = str(getattr(item, "content_md", "") or "").strip()
@@ -187,7 +226,10 @@ def _render_body(
         ]
 
     if full_text is not None:
-        lines += [_FULL_TEXT_HEADING, full_text]
+        lines.append(_FULL_TEXT_HEADING)
+        if file_tag:
+            lines.append(f"〔{file_tag}〕")
+        lines.append(full_text)
         if original_chars > len(full_text):
             lines.append(
                 f"[انتهى المعروض: {len(full_text)} حرف من أصل {original_chars}"
@@ -205,8 +247,16 @@ def build_case_document_blocks(
     per_doc_cap: int = PER_DOC_FULL_TEXT_CAP,
     total_cap: int = TOTAL_FULL_TEXT_CAP,
     stats: dict[str, Any] | None = None,
+    file_ref_docs: list[FileRefDoc] | None = None,
 ) -> list[ContextBlock]:
     """One ``case_document`` block per document, for ONE recipient.
+
+    ``file_ref_docs`` (the aggregator's file refs, aggregator_file_refs.md §4.2,
+    D12): when a list is passed, every document shown with its text (and a WI
+    number) gets its ready tag as one ``〔F3〕`` line at the top of its text and is
+    appended to the list, in render order, so the aggregator's ``[F3]`` tags can be
+    resolved; a summary-only document gets neither. ``None`` → byte-identical to
+    before.
 
     ``full_text_ids`` — item_ids this recipient reads in full, in priority
     order. Those documents come first, in that order, then the rest in router
@@ -245,6 +295,12 @@ def build_case_document_blocks(
             else:
                 dropped = True
                 over_total.append(_alias(doc))
+        file_tag: str | None = None
+        if file_ref_docs is not None and full_text is not None:
+            wi = _citable_wi(doc)
+            if wi is not None:
+                file_ref_docs.append(FileRefDoc(wi_seq=wi, item_id=str(doc.item_id)))
+                file_tag = format_file_tag(wi)
         blocks.append(
             ContextBlock(
                 label=CASE_DOCUMENT_LABEL,
@@ -253,6 +309,7 @@ def build_case_document_blocks(
                     full_text=full_text,
                     original_chars=len(content),
                     over_total=dropped,
+                    file_tag=file_tag,
                 ),
                 persistence="turn",
                 source_item_id=str(doc.item_id),
@@ -296,8 +353,18 @@ def build_case_document_blocks_segmented(
     per_doc_cap: int = SEGMENTED_PER_DOC_CAP,
     total_cap: int = SEGMENTED_TOTAL_CAP,
     stats: dict[str, Any] | None = None,
+    file_ref_docs: list[FileRefDoc] | None = None,
 ) -> list[ContextBlock]:
     """One ``case_document`` block per document, for ONE recipient — segmented.
+
+    ``file_ref_docs`` (the aggregator's file refs, aggregator_file_refs.md §4.2,
+    D12): when a list is passed, every section of a document shown with text opens
+    with its ready tag (``〔F3·S7 · …〕``; F + the document's WI number), a document
+    shown whole gets one ``〔F3〕`` line over its text (pinned articles never get a
+    tag; headings are unchanged), and the document is appended to the list with the
+    sections it was shown. A summary-only document, or one with no WI number, gets
+    no tag and is not listed. ``None`` →
+    byte-identical to before.
 
     Same who-gets-which-document rule as :func:`build_case_document_blocks`
     (``full_text_ids`` first, then router order; the rest get their summary).
@@ -370,9 +437,26 @@ def build_case_document_blocks_segmented(
         alias = _alias(doc)
         content = str(getattr(doc, "content_md", "") or "").strip()
         mode = modes[iid]
+        # The document's WI number when its tags are shown (D12: the ready tag
+        # ``F3·S7`` on each section, ``F3`` over a whole text); else None.
+        tag_wi: int | None = None
+        wi = _citable_wi(doc) if file_ref_docs is not None else None
+        if wi is not None and mode in ("sections", "full", "fallback"):
+            tag_wi = wi
+            shown: tuple[tuple[int, int, int], ...] = ()
+            if mode == "sections":
+                shown = tuple(
+                    (int(s.seq), int(s.char_start), int(s.char_end))
+                    for s in sorted(sections_by_id[iid], key=lambda s: s.seq)
+                    if s.value in DEEP_SEARCH_VALUES and s.text.strip()
+                )
+            file_ref_docs.append(FileRefDoc(wi_seq=wi, item_id=iid, sections=shown))
         if mode == "sections":
             rendered, cut = render_sections(
-                sections_by_id[iid], DEEP_SEARCH_VALUES, ratio=ratios[iid]
+                sections_by_id[iid],
+                DEEP_SEARCH_VALUES,
+                ratio=ratios[iid],
+                file_wi=tag_wi,
             )
             body = _render_sections_body(doc, rendered)
             used += len(rendered)
@@ -383,7 +467,11 @@ def build_case_document_blocks_segmented(
         elif mode in ("full", "fallback"):
             text = content if mode == "full" else trim_text(content, ratios[iid])
             body = _render_body(
-                doc, full_text=text, original_chars=len(content), over_total=False
+                doc,
+                full_text=text,
+                original_chars=len(content),
+                over_total=False,
+                file_tag=format_file_tag(tag_wi) if tag_wi is not None else None,
             )
             # A document with no sections: the official articles it cites follow its
             # text once (completion_search.md §4.7). Unchanged when there are none.
@@ -429,6 +517,7 @@ def build_case_document_blocks_segmented(
 __all__ = [
     "CASE_DOCUMENT_LABEL",
     "CASE_DOCUMENT_TYPES",
+    "FileRefDoc",
     "NO_SUMMARY_EXCERPT_CHARS",
     "PER_DOC_FULL_TEXT_CAP",
     "TOTAL_FULL_TEXT_CAP",

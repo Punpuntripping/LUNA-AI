@@ -41,6 +41,7 @@ from typing import Any, Optional
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
+from shared.workspace.file_refs import strip_file_tags
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +316,10 @@ def insert_post(
         "subtype": subtype,
         "question_text": question_text,
         "title": title,
-        "content_md": content_md,
+        # [F1·S7] file tags point into the owner's own files (aggregator_file_refs.md
+        # §4.7): a public snapshot never carries them, so its page, snippet and any
+        # copy imported elsewhere are clean. Unchanged when there are none.
+        "content_md": strip_file_tags(content_md),
         "references_json": references_json,
         "display_mode": display_mode if display_mode in _DISPLAY_MODES else "question",
         "is_published": is_published,

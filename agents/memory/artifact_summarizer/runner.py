@@ -12,6 +12,7 @@ from typing import Any
 
 from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
+from shared.workspace.file_refs import strip_file_tags
 
 from .agent import (
     SUMMARIZER_LIMITS,
@@ -45,6 +46,10 @@ async def handle_artifact_summary_turn(
     raises — the caller treats this as best-effort enrichment.
     """
     t0 = time.perf_counter()
+    # A report's [F1·S7] / [F1] file tags are pointers for the report view only
+    # (aggregator_file_refs.md §4.7): the chat summary reads the body without
+    # them. A body with no tag is the same string.
+    content_md = strip_file_tags(input.content_md)
 
     with track_stage(
         "artifact_summarizer.run",
@@ -71,7 +76,7 @@ async def handle_artifact_summary_turn(
             describe_query=input.describe_query,
             title=input.title,
             kind=input.kind,
-            content_md=input.content_md,
+            content_md=content_md,
         )
 
         agent = create_artifact_summarizer()
@@ -93,7 +98,7 @@ async def handle_artifact_summary_turn(
             except Exception:
                 pass
             return ArtifactSummaryOutput(
-                summary_md=input.content_md[:_FALLBACK_LEN],
+                summary_md=content_md[:_FALLBACK_LEN],
                 fallback_used=True,
             )
 
@@ -108,7 +113,7 @@ async def handle_artifact_summary_turn(
             except Exception:
                 pass
             return ArtifactSummaryOutput(
-                summary_md=input.content_md[:_FALLBACK_LEN],
+                summary_md=content_md[:_FALLBACK_LEN],
                 fallback_used=True,
             )
 

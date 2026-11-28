@@ -38,6 +38,7 @@ from .agent import create_aggregator_agent, create_dcr_agents
 from .artifact_builder import build_artifact, render_reference_block
 from .correction import build_correction_prompt, failing_gate_names
 from .deps import AggregatorDeps
+from .file_refs import build_file_refs
 from .models import (
     AggregatorInput,
     AggregatorLLMOutput,
@@ -288,6 +289,17 @@ async def handle_aggregator_turn(
     # over-confident.
     final_gaps = _enrich_gaps(llm_output.gaps or [], agg_input)
 
+    # File refs (aggregator_file_refs.md §4.4): read the [F1·S7] / [F1] tags the
+    # aggregator wrote and resolve them against the documents it was shown. Code
+    # never edits the text: an unresolved tag stays in it and simply gets no row.
+    file_refs = (
+        build_file_refs(clean_synthesis, agg_input.file_ref_docs)
+        if agg_input.file_ref_docs
+        else []
+    )
+    if agg_input.file_ref_docs:
+        _emit(deps, {"event": "file_refs_built", "count": len(file_refs)})
+
     output = AggregatorOutput(
         synthesis_md=clean_synthesis,
         references=final_references,
@@ -306,6 +318,7 @@ async def handle_aggregator_turn(
             r.n: list(ref_to_sub_queries.get(r.n, [])) for r in final_references
         },
         transition_line=_transition_line(agg_input, llm_output, clean_synthesis),
+        file_refs=file_refs,
     )
 
     duration_s = time.perf_counter() - t0
@@ -411,7 +424,9 @@ async def _attempt_single_shot(
 
     Returns ``(llm_output, model_name, raw_text, agent_run_result)``.
     """
-    agent = create_aggregator_agent(prompt_key=prompt_key, model_name=model_name)
+    agent = create_aggregator_agent(
+        prompt_key=prompt_key, model_name=model_name, file_refs=deps.file_refs,
+    )
     _log_prompt(deps, prompt_key, user_message, stage_key)
     result = await agent.run(user_message)
     _accrue_agg_usage(deps, result)
@@ -519,7 +534,9 @@ async def _run_correction(
     instructions are injected fresh by the framework each call and are NOT
     stored in message history — there is no duplication when re-running.
     """
-    agent = create_aggregator_agent(prompt_key=prompt_key, model_name=model_name)
+    agent = create_aggregator_agent(
+        prompt_key=prompt_key, model_name=model_name, file_refs=deps.file_refs,
+    )
     _log_prompt(deps, prompt_key, correction_msg, stage="correction")
     result = await agent.run(correction_msg, message_history=prior_messages)
     _accrue_agg_usage(deps, result)
@@ -538,7 +555,7 @@ async def _run_dcr_chain(
     Any stage raising propagates out (caller catches → single-shot fallback).
     """
     draft_agent, critique_agent, rewrite_agent = create_dcr_agents(
-        model_name=deps.primary_model
+        model_name=deps.primary_model, file_refs=deps.file_refs,
     )
 
     raw_logs: dict[str, str] = {}
@@ -688,7 +705,7 @@ def _log_prompt(
     if deps.logger is None:
         return
     try:
-        system_prompt = get_aggregator_prompt(prompt_key)
+        system_prompt = get_aggregator_prompt(prompt_key, file_refs=deps.file_refs)
     except Exception as exc:  # noqa: BLE001
         logger.debug("aggregator: could not resolve prompt '%s' for log: %s", prompt_key, exc)
         return

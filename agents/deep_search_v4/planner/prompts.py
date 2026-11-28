@@ -46,6 +46,7 @@ from agents.utils.prior_coverage import render_prior_coverage
 from agents.utils.reply_guard import NO_INTERNALS_RULE
 from agents.utils.today import today_line
 from shared.library.supersession import RESPONDER_VERSION_RULE
+from shared.workspace.file_refs import strip_file_tags
 
 from .models import Mode
 
@@ -1096,7 +1097,8 @@ def build_responder_instructions(deps) -> str:
             counts[dom] += 1
 
     gaps = getattr(agg, "gaps", None) or []
-    synthesis = (getattr(agg, "synthesis_md", "") or "").strip()
+    # [F1·S7] file tags are report-only pointers (aggregator_file_refs.md §4.7).
+    synthesis = strip_file_tags((getattr(agg, "synthesis_md", "") or "").strip())
     synthesis_slice = synthesis[:_SYNTHESIS_DIGEST_CHARS]
     truncated = " […]" if len(synthesis) > _SYNTHESIS_DIGEST_CHARS else ""
 

@@ -121,6 +121,9 @@ jobs:
             backend/tests/test_extended_plan_api.py \
             agents/deep_search_v4/tests/test_case_documents_segmented.py \
             agents/deep_search_v4/tests/test_segmented_delivery_wiring.py \
+            agents/deep_search_v4/tests/test_aggregator_file_refs.py \
+            backend/tests/test_file_refs_service.py \
+            agents/tests/test_file_refs_readers.py \
             agents/deep_search_v4/extended_merger/tests/ \
             agents/attachment_agent/tests/ \
             shared/attachments/tests/ \

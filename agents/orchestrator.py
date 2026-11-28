@@ -361,6 +361,14 @@ def _load_attached_items(
     snapshots: list[WorkspaceItemSnapshot] = []
     for (item_id, _raw), d in zip(loaded, overlaid):
         try:
+            content = d.get("content_md") or ""
+            if (d.get("kind") or "") == "agent_search":
+                # A report's [F1·S7] file tags become words from its
+                # workspace_item_file_refs rows (aggregator_file_refs.md §4.7),
+                # so no agent copies a raw tag. No tag → no read, text as is.
+                from shared.workspace.file_refs import labelled_report_text
+
+                content = labelled_report_text(supabase, str(d.get("item_id", item_id)), content)
             snapshots.append(
                 WorkspaceItemSnapshot(
                     item_id=d.get("item_id", item_id),
@@ -369,9 +377,7 @@ def _load_attached_items(
                     title=d.get("title") or "",
                     # A report carries its saved reading corrections, so the
                     # planner and the writer read the note with the text.
-                    content_md=with_corrections(
-                        d.get("content_md") or "", d.get("metadata"),
-                    ),
+                    content_md=with_corrections(content, d.get("metadata")),
                     # The artifact_summarizer's summary — what a forwarded
                     # case document carries to the deep_search expanders
                     # (case_documents_forwarding.md §3.6). May be empty

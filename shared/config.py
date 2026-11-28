@@ -612,6 +612,18 @@ class Settings(BaseSettings):
     ATTACHMENT_PIN_DELIVERY_ENABLED: bool = False
     ATTACHMENT_PIN_DELIVERY_USERS: Optional[str] = None
 
+    # ── Aggregator file refs — .claude/plans/aggregator_file_refs.md §4.9 ───
+    # On: the ordinary deep search's aggregator sees its documents' sections
+    # labelled with ready tags (`〔F3·S7 · …〕` under `### WI-3 · …`), may cite a section of the
+    # user's file as `[F3·S7]` (a whole short file as `[F3]`), and the
+    # publisher writes the resolved refs to workspace_item_file_refs
+    # (migration 235 must be applied first). Off: input, prompt and output
+    # byte-identical to before. «بحث موسّع» is not covered (v1).
+    # *_USERS: comma-separated users.user_id; empty = everyone.
+    # Env var name == field name.
+    AGGREGATOR_FILE_REFS_ENABLED: bool = False
+    AGGREGATOR_FILE_REFS_USERS: Optional[str] = None
+
     # ── «ملفاتي» — .claude/plans/my_files.md §7 ─────────────────────────────
     # Off: every /api/v1/files route answers 404. *_USERS: comma-separated
     # users.user_id; empty = everyone. Env var name == field name.

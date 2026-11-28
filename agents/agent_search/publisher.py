@@ -255,6 +255,27 @@ async def publish_search_result(
                 "workspace_item_references persist failed: %s", exc, exc_info=True,
             )
 
+        # The user's file sections the answer cites (aggregator_file_refs.md
+        # §4.5) — written from the stored real rows, beside the library refs.
+        # Best-effort like them: a hiccup here never fails the publish (the
+        # chips are simply not drawn). No file ref → no request at all.
+        file_refs = list(getattr(input.agg_output, "file_refs", None) or [])
+        if file_refs:
+            try:
+                from backend.app.services.file_refs_service import persist_item_file_refs
+
+                written = persist_item_file_refs(
+                    deps.supabase,
+                    wi_id=item_id,
+                    user_id=input.user_id,
+                    file_refs=file_refs,
+                )
+                _pub_span.set(file_refs=written)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "workspace_item_file_refs persist failed: %s", exc, exc_info=True,
+                )
+
         # Forensic persistence is best-effort -- failure here is logged but never
         # crashes the publish. Done AFTER the main insert so the user-visible
         # item is durable even if the backing tables hiccup.

@@ -19,6 +19,8 @@ Endpoints (new):
     PATCH  /workspace/{item_id}/visibility
     GET    /workspace/{item_id}/file
     GET    /workspace/{item_id}/references/{n}/source   (metered reveal, Phase C)
+    GET    /workspace/{item_id}/file-refs               (aggregator_file_refs.md §4.6)
+    GET    /workspace/{item_id}/file-refs/{ref_id}/section
 """
 from __future__ import annotations
 
@@ -46,6 +48,7 @@ from backend.app.models.responses import (
 )
 from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
 from backend.app.services import (
+    file_refs_service,
     files_service,
     library_service,
     message_service,
@@ -338,6 +341,76 @@ async def list_workspace_item_references(
         return {"references": references}
     kept, hidden = wi_preview_service.filter_references(references, preview)
     return {"references": kept, "hidden_count": hidden}
+
+
+# --- the user's own file sections a report cites (aggregator_file_refs.md §4.6) ---
+
+
+@router.get("/workspace/{item_id}/file-refs")
+async def list_workspace_item_file_refs(
+    item_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """The ``[F1·S7]`` / ``[F1]`` refs of a report: one row per cited part of the
+    user's own file, in order of first mention — for the chips and the
+    «من مستنداتك» list. ``{"file_refs": []}`` when there are none.
+
+    Never gated or metered: a citation list is in the never-gated class (§1.3),
+    and this is the user's own file. Ownership as ``/references``: a report that
+    is not the caller's is 404 before anything is read.
+    """
+    validate_uuid(item_id, "معرف العنصر")
+    item = await run_db(
+        workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id
+    )
+    rows = await run_db(
+        file_refs_service.list_file_refs, supabase, item_id, str(item.get("user_id") or ""),
+    )
+    return {"file_refs": rows}
+
+
+@router.get("/workspace/{item_id}/file-refs/{ref_id}/section")
+async def get_workspace_item_file_ref_section(
+    item_id: str,
+    ref_id: str = Path(..., max_length=32),
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """One cited part of the user's file, for the popup: the row's fields, the
+    part's text (``content_md``) and ``files_item_id`` — the id «الملفات» opens,
+    ``null`` when the file is no longer listed there. 404 for an unknown report
+    or ref; 410 «لم يعد هذا الملف متاحًا» only when the attachment was deleted
+    on purpose — a file hidden from «الملفات», or whose original was purged, is
+    still served (plan §4.5, D7).
+    """
+    validate_uuid(item_id, "معرف العنصر")
+    item = await run_db(
+        workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id
+    )
+    caller = await run_db(get_user_id, supabase, current_user.auth_id)
+    try:
+        section = await run_db(
+            file_refs_service.file_ref_section,
+            supabase,
+            item_id,
+            ref_id,
+            owner_user_id=str(item.get("user_id") or ""),
+            caller_user_id=str(caller or ""),
+        )
+    except file_refs_service.FileRefGone:
+        raise LunaHTTPException(
+            status_code=410,
+            code=ErrorCode.DOC_NOT_FOUND,
+            detail=file_refs_service.FILE_GONE_AR,
+        )
+    except file_refs_service.FileRefNotFound:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="القسم غير موجود",
+        )
+    return section
 
 
 # --- the metered reveal (§6.2 step 2) --------------------------------------

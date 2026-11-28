@@ -24,6 +24,7 @@ from agents.writer.models import AnalyzedItem
 from backend.app.services.references_service import fetch_item_references
 from shared.attachments.overlay import correct_rows
 from shared.files import store as files_store
+from shared.workspace.file_refs import has_file_tags, labelled_report_text
 
 from .models import PlannerRole
 
@@ -323,6 +324,13 @@ async def build_analyzed_items_direct(
         word_count = int(wi.get("word_count") or 0)
         wi_seq = int(wi.get("wi_seq")) if wi.get("wi_seq") is not None else None
         body_md = attachment_bodies.get(item_id, str(wi.get("content_md") or ""))
+        if kind == "agent_search" and has_file_tags(body_md):
+            # A report's [F1·S7] file tags (aggregator_file_refs.md §4.7) become
+            # words — «(القسم 7 من الحكم المرفق)» — from its workspace_item_file_refs
+            # rows, as unfold does: the writer never sees (or copies) a raw tag.
+            body_md = await asyncio.to_thread(
+                labelled_report_text, deps.supabase, item_id, body_md
+            )
         role = _role_for(item_id, role_assignments)
         resolved_refs_md = (
             refs_md_by_id.get(item_id) if kind in _REFS_FAMILY_KINDS else None

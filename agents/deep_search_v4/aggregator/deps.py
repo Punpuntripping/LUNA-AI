@@ -51,6 +51,10 @@ class AggregatorDeps:
     logger: Any | None = None         # AggregatorLogger; None = disabled
     detail_level: Literal["low", "medium", "high"] = DEFAULT_DETAIL_LEVEL
     supabase: Any | None = None       # Sync supabase-py client; powers source_view lookup
+    # The prompt with the file-tag rules (aggregator_file_refs.md §4.3). Set by
+    # the deep-search orchestrator only when the turn numbered at least one
+    # document; False = the prompt byte-identical to before.
+    file_refs: bool = False
     # Mutable run-state ------------------------------------------------------
     _events: list[dict] = field(default_factory=list)
     # Usage accrued across this turn's LLM calls (single-shot / correction / DCR

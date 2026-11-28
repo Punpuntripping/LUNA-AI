@@ -52,6 +52,8 @@ AGGREGATOR_LIMITS = UsageLimits(
 def create_aggregator_agent(
     prompt_key: str = "prompt_1",
     model_name: str | None = None,
+    *,
+    file_refs: bool = False,
 ) -> Agent[None, AggregatorLLMOutput]:
     """Single-shot aggregator agent.
 
@@ -60,11 +62,13 @@ def create_aggregator_agent(
             "prompt_4", or the three DCR stage keys when called by the runner).
         model_name: Provenance label only — does NOT select a model. The model
             is always the ``aggregator`` tier FallbackModel.
+        file_refs: the prompt with the file-tag rules (aggregator_file_refs.md
+            §4.3); False = byte-identical to before.
 
     Returns:
         Agent configured with the selected prompt and AggregatorLLMOutput type.
     """
-    system_prompt = get_aggregator_prompt(prompt_key)
+    system_prompt = get_aggregator_prompt(prompt_key, file_refs=file_refs)
     model = get_agent_model("aggregator")
 
     agent: Agent[None, AggregatorLLMOutput] = Agent(
@@ -89,6 +93,8 @@ class _CritiqueOutput(AggregatorLLMOutput):
 
 def create_dcr_agents(
     model_name: str | None = None,
+    *,
+    file_refs: bool = False,
 ) -> tuple[
     Agent[None, AggregatorLLMOutput],
     Agent[None, AggregatorLLMOutput],
@@ -104,21 +110,21 @@ def create_dcr_agents(
         get_agent_model("aggregator"),
         name="aggregator_draft",
         output_type=[AggregatorLLMOutput, _aggregator_text_output()],
-        instructions=get_aggregator_prompt("prompt_3_draft"),
+        instructions=get_aggregator_prompt("prompt_3_draft", file_refs=file_refs),
         retries=1,
     )
     critique = Agent(
         get_agent_model("aggregator"),
         name="aggregator_critique",
         output_type=[AggregatorLLMOutput, _aggregator_text_output()],
-        instructions=get_aggregator_prompt("prompt_3_critique"),
+        instructions=get_aggregator_prompt("prompt_3_critique", file_refs=file_refs),
         retries=1,
     )
     rewrite = Agent(
         get_agent_model("aggregator"),
         name="aggregator_rewrite",
         output_type=[AggregatorLLMOutput, _aggregator_text_output()],
-        instructions=get_aggregator_prompt("prompt_3_rewrite"),
+        instructions=get_aggregator_prompt("prompt_3_rewrite", file_refs=file_refs),
         retries=1,
     )
     return draft, critique, rewrite

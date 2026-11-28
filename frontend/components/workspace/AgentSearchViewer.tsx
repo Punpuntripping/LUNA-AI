@@ -18,13 +18,24 @@ import {
   useWorkspaceItemReferencesHiddenCount,
   useWorkspaceItemReferencesPaidLockedCount,
 } from "@/hooks/use-workspace-item-references";
+import { useWorkspaceItemFileRefs } from "@/hooks/use-workspace-item-file-refs";
 import { DEMO_DISABLED_HINT } from "@/hooks/use-demo-conversation";
+import { FileRefChip } from "./FileRefChip";
+import { FileRefList } from "./FileRefList";
+import { FileRefSectionDialog } from "./FileRefSectionDialog";
+import {
+  canonicalFileRef,
+  findFileRefTags,
+  type FileRefRow,
+} from "@/lib/contracts/file-refs";
 import {
   isWiPreviewLocked,
   wiPreviewVisibleContent,
 } from "@/lib/contracts/wi-preview";
 import { parseExtendedSynthesis } from "@/lib/contracts/extended-synthesis";
 import type { WorkspaceFeedback, WorkspaceItem } from "@/types";
+
+const NO_FILE_REFS: FileRefRow[] = [];
 
 interface AgentSearchViewerProps {
   item: WorkspaceItem;
@@ -82,6 +93,10 @@ interface AgentSearchViewerProps {
  * ``ExtendedSynthesisTrail`` after it (settled disagreements, gaps, angles left
  * out, the child reports — each opens that report in the pane). Every other
  * subtype renders exactly as before.
+ *
+ * «من مستنداتك» (aggregator_file_refs.md §4.6): the body's ``[F1·S7]`` / ``[F1]``
+ * tags render as neutral ``FileRefChip`` squares, the cited parts are listed
+ * under «المراجع» (``FileRefList``), and both open ``FileRefSectionDialog``.
  */
 export function AgentSearchViewer({
   item,
@@ -101,6 +116,29 @@ export function AgentSearchViewer({
   const paidLockedReferenceCount = useWorkspaceItemReferencesPaidLockedCount(
     item.item_id,
     referenceOpts,
+  );
+  // «من مستنداتك» (aggregator_file_refs.md §4.6): the rows behind the body's
+  // ``[F1·S7]`` / ``[F1]`` tags. A tag with no row — still loading, a failed
+  // read, or a ref the publisher did not resolve — is hidden (display only).
+  const { data: fileRefRows } = useWorkspaceItemFileRefs(item.item_id);
+  const fileRefs = fileRefRows ?? NO_FILE_REFS;
+  const fileRefByRef = useMemo(
+    () => new Map(fileRefs.map((row) => [canonicalFileRef(row.ref_id) ?? row.ref_id, row])),
+    [fileRefs],
+  );
+  // A preview-locked report lists only the parts its visible text cites.
+  const listedFileRefs = useMemo(() => {
+    if (!previewLocked) return fileRefs;
+    const shown = new Set(findFileRefTags(visibleContent).flatMap((t) => t.refs));
+    return fileRefs.filter((row) => shown.has(canonicalFileRef(row.ref_id) ?? row.ref_id));
+  }, [fileRefs, previewLocked, visibleContent]);
+  const [openFileRef, setOpenFileRef] = useState<string | null>(null);
+  const renderFileRef = useCallback(
+    (ref: string) => {
+      const row = fileRefByRef.get(ref);
+      return row ? <FileRefChip row={row} onOpen={setOpenFileRef} /> : null;
+    },
+    [fileRefByRef],
   );
   const setFeedback = useSetWorkspaceItemFeedback();
   // null for every subtype but «بحث شامل» — those render exactly as before.
@@ -142,9 +180,11 @@ export function AgentSearchViewer({
   // ``appendReferencesForCopy`` (ReferencePanel) builds the «المراجع» block —
   // one ``{n}-{referenceCopyLabel}`` line each; the writer editor shares it.
   // A preview copies its visible part only (never the legacy wall line).
+  // File-ref tags copy as «(القسم 7 من …)»; one with no row is dropped, as on
+  // screen (aggregator_file_refs.md §4.7).
   const copyContent = useMemo(
-    () => appendReferencesForCopy(visibleContent, references),
-    [visibleContent, references],
+    () => appendReferencesForCopy(visibleContent, references, fileRefs),
+    [visibleContent, references, fileRefs],
   );
 
   return (
@@ -164,6 +204,7 @@ export function AgentSearchViewer({
         copyContent={copyContent}
         hideToolbar
         onCitationClick={handleBodyCitationClick}
+        renderFileRef={renderFileRef}
         header={
           extended ? (
             <ExtendedSynthesisLead
@@ -201,6 +242,7 @@ export function AgentSearchViewer({
               hiddenCount={previewLocked ? hiddenReferenceCount : undefined}
               paidLockedCount={paidLockedReferenceCount}
             />
+            <FileRefList rows={listedFileRefs} onOpen={setOpenFileRef} />
             <AgentOutputDisclaimer />
           </>
         }
@@ -228,6 +270,15 @@ export function AgentSearchViewer({
           onOpenChange={setShareOpen}
         />
       )}
+      <FileRefSectionDialog
+        itemId={item.item_id}
+        row={
+          openFileRef
+            ? fileRefByRef.get(canonicalFileRef(openFileRef) ?? openFileRef) ?? null
+            : null
+        }
+        onClose={() => setOpenFileRef(null)}
+      />
       {!previewLocked && (
         <SaveAsBlogDialog
           itemId={item.item_id}

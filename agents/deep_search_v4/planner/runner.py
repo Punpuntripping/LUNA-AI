@@ -27,6 +27,7 @@ from agents.models import salvage_next_steps
 from agents.utils.tracking import track_stage
 from shared.library.supersession import RESPONDER_VERSION_RULE
 from shared.observability import get_logfire
+from shared.workspace.file_refs import strip_file_tags
 
 from .agent import (
     PLANNER_DECIDER_LIMITS,
@@ -199,7 +200,8 @@ def _response_from_artifact(agg_output: "AggregatorOutput") -> PlannerResponse:
 
     Defaults ``build_artifact=True`` (the artifact already exists — publish it).
     """
-    synthesis = (getattr(agg_output, "synthesis_md", "") or "").strip()
+    # [F1·S7] file tags are report-only pointers (aggregator_file_refs.md §4.7).
+    synthesis = strip_file_tags((getattr(agg_output, "synthesis_md", "") or "").strip())
     head = synthesis[:_DEGRADED_SYNTHESIS_DIGEST_CHARS]
     return PlannerResponse(
         chat_summary_md=head or "اكتمل البحث؛ التفاصيل والمراجع في بطاقة البحث.",
@@ -278,7 +280,9 @@ async def _run_unified_responder(
     artifact = DeepSearchArtifact(
         query=retrieval_query,
         search_mode=getattr(decision, "mode", "reg_compliance_led") or "reg_compliance_led",
-        synthesis_md=(getattr(agg_output, "synthesis_md", "") or "").strip(),
+        # [F1·S7] file tags are report-only pointers (aggregator_file_refs.md
+        # §4.7): the chat reply is written from the body without them.
+        synthesis_md=strip_file_tags((getattr(agg_output, "synthesis_md", "") or "").strip()),
         confidence=str(getattr(agg_output, "confidence", "medium") or "medium"),
         gaps=[str(g) for g in (getattr(agg_output, "gaps", None) or [])],
         key_findings=[str(k) for k in (getattr(agg_output, "key_findings", None) or [])],

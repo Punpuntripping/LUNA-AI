@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { extractHeadings } from "@/lib/markdown/headings";
 import { stripMarkdownImages } from "@/lib/markdown/images";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
+import { stripFileRefTags } from "@/lib/contracts/file-refs";
 import type { BlogSubjectRef, Reference } from "@/types";
 import type { TocEntry } from "@/types/library";
 
@@ -206,7 +207,10 @@ export function BlogArticleView({
     ? SUBTYPE_LABEL[post.subtype] ?? post.subtype
     : null;
   const title = (post.title ?? "").trim() || post.question_text;
-  const body = post.content_md ?? "";
+  // A shared report's file-ref tags (`[F1·S7]`) point at the author's own
+  // files, which a public reader can never open — dropped
+  // (aggregator_file_refs.md §4.7).
+  const body = stripFileRefTags(post.content_md ?? "");
   const bylineDate = formatBylineDate(post.created_at);
 
   // `TocHeading[]` → `TocEntry[]`. The gate and the slugs are unchanged from

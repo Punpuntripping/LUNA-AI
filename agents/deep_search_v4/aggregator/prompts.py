@@ -780,14 +780,73 @@ AGGREGATOR_PROMPTS: dict[str, str] = {
 }
 
 
-def get_aggregator_prompt(prompt_key: str) -> str:
-    """Fetch a prompt by key; raises KeyError for unknown keys."""
+# ---------------------------------------------------------------------------
+# File refs — the user's file sections cited as [F3·S7] (aggregator_file_refs.md
+# §4.3, D11–D12: F + the file's fixed WI number in the conversation + the section's
+# number). The ready tag is printed on each section's label (〔F3·S7 · …〕) and over a
+# whole text (〔F3〕), so the aggregator copies it and never writes WI-N. Applied on
+# top of any variant ONLY when the turn tagged its documents (AggregatorDeps.file_refs);
+# otherwise every prompt is byte-identical.
+# ---------------------------------------------------------------------------
+
+#: Recorded on the deep_search.aggregator span when the rules are on.
+FILE_REFS_PROMPT_VERSION = "file-refs-v3"
+
+#: Inserted right after this line of the case_document rules (_SHARED_ROLE_AR).
+_FILE_REFS_ANCHOR = (
+    "  - The legal rule still comes from `<references>` only, cited `[n]`. A document "
+    "is a source of facts, never a legal authority, and never a `[n]` citation.\n"
+)
+
+_FILE_REFS_RULES_AR = """\
+  - **Point to the part you used — file tags.** Each section of a document is shown under a label that starts with its ready file tag: `〔F3·S7 · …〕`. A document shown whole, with no sections, has one label over its text: `〔F4〕`. Right after a sentence or a quote that rests on such a document, copy the tag of the part the words or the fact come from, in square brackets, exactly as the label shows it — e.g. «لم يقدّم المدعى عليه ما يثبت السداد» [F3·S7], or [F4] for a document shown whole.
+    - Copy the tag; never build one. Use only tags that appear on a label. A document you were given only the summary of has no label, so it has no tag — never tag it.
+    - The tag is a pointer, not a name: the user sees only a small number. In your sentences keep naming the document by what it is («أسباب الحكم المرفق»), as the rule below says.
+    - Tag the section that actually holds the words you quote or the fact you state — check that the quoted words are in that section's text. One tag per section; for several, put them side by side: `[F3·S7][F3·S9]`. Never put a file tag and a reference number inside the same brackets.
+    - A file tag is never a legal authority: the legal rule still comes from `<references>` with `[n]`.
+    - Never put a file tag on an official article printed under a section after the line «من المكتبة النظامية، لا من المستند — …» (that is library text, not the user's words), on a document's summary, or on `<conversation_memory>`.
+"""
+
+#: Appended after this line of the binding citation rules (_CITATION_RULES_AR).
+_FILE_REFS_CITATION_ANCHOR = (
+    "- Every reference you list in `used_refs` must actually appear as `[n]` in `synthesis_md`.\n"
+)
+
+_FILE_REFS_CITATION_RULE_AR = (
+    "- The one other square-bracket form is the file tag of the user's own documents "
+    "(`[F3·S7]`, `[F4]` — see the `case_document` rules). It is not a reference: it never "
+    "goes into `used_refs`, and it never shares brackets with reference numbers.\n"
+)
+
+
+def with_file_refs(prompt: str) -> str:
+    """``prompt`` with the file-tag rules: after the case_document rule on legal
+    authority, and (when the variant carries them) after the binding citation
+    rules. A prompt without the case_document anchor is returned unchanged."""
+    if _FILE_REFS_ANCHOR not in prompt:
+        return prompt
+    out = prompt.replace(_FILE_REFS_ANCHOR, _FILE_REFS_ANCHOR + _FILE_REFS_RULES_AR, 1)
+    if _FILE_REFS_CITATION_ANCHOR in out:
+        out = out.replace(
+            _FILE_REFS_CITATION_ANCHOR,
+            _FILE_REFS_CITATION_ANCHOR + _FILE_REFS_CITATION_RULE_AR,
+            1,
+        )
+    return out
+
+
+def get_aggregator_prompt(prompt_key: str, *, file_refs: bool = False) -> str:
+    """Fetch a prompt by key; raises KeyError for unknown keys.
+
+    ``file_refs`` — the variant with the file-tag rules (aggregator_file_refs.md
+    §4.3); False returns the stored prompt unchanged."""
     if prompt_key not in AGGREGATOR_PROMPTS:
         raise KeyError(
             f"Unknown aggregator prompt key: {prompt_key!r}. "
             f"Available: {sorted(AGGREGATOR_PROMPTS.keys())}"
         )
-    return AGGREGATOR_PROMPTS[prompt_key]
+    prompt = AGGREGATOR_PROMPTS[prompt_key]
+    return with_file_refs(prompt) if file_refs else prompt
 
 
 # ---------------------------------------------------------------------------

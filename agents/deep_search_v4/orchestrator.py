@@ -59,11 +59,13 @@ from agents.deep_search_v4.reg_compliance_search.models import (
 )
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.case_documents import (
+    FileRefDoc,
     build_case_document_blocks,
     build_case_document_blocks_segmented,
     forwardable_documents,
     parse_wi_aliases,
 )
+from agents.utils.aggregator_file_ref_flags import file_refs_enabled
 from agents.utils.attachment_delivery import delivery_enabled
 from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.models import RerankerQueryResult
@@ -183,6 +185,11 @@ class FullLoopDeps:
     # leaves every expander / aggregator message byte-identical. NEVER reaches
     # the sector_picker or a reranker.
     case_document_blocks: dict[str, list[ContextBlock]] = field(default_factory=dict)
+    # The aggregator's file refs (aggregator_file_refs.md §4.1 / §4.2): the
+    # documents its case_document list numbered (WI number → item, the sections
+    # it was shown). Empty (the default, the flag off, «بحث موسّع», or no document
+    # shown with text) leaves the aggregator's input, prompt and output as before.
+    case_document_file_refs: list[FileRefDoc] = field(default_factory=list)
     _events: list[dict] = field(default_factory=list)
     # Telemetry stash — the planner's RetrievalConfig / decision, when run via
     # run_retrieval. Typed Any to keep this module decoupled from the schema.
@@ -940,12 +947,19 @@ async def run_full_loop(
         )
         if agg_blocks:
             agg_input.context_blocks = agg_blocks
+        # File refs (aggregator_file_refs.md §4.2 / §4.4): the numbered documents
+        # go along so the runner can resolve the tags the aggregator writes; the
+        # deps switch picks the prompt with the file-tag rules. Nothing numbered →
+        # both stay off and the turn is byte-identical to before.
+        if deps.case_document_file_refs:
+            agg_input.file_ref_docs = list(deps.case_document_file_refs)
         deps._aggregator_input = agg_input
         agg_deps = build_aggregator_deps(
             detail_level=deps.detail_level,
             supabase=deps.supabase,
             logger=deps.aggregator_logger,
         )
+        agg_deps.file_refs = bool(agg_input.file_ref_docs)
         # Live progress: executors are done + the URA is merged — the aggregator
         # (one long LLM call) starts now. Counts stay OUT of this event: the
         # per-phase `searching` events already carry the source tallies the bar
@@ -974,6 +988,13 @@ async def run_full_loop(
                 confidence=agg_output.confidence,
                 model_used=getattr(agg_output, "model_used", None),
             )
+            if agg_deps.file_refs:
+                from agents.deep_search_v4.aggregator.prompts import FILE_REFS_PROMPT_VERSION
+
+                _agg_span.set(**{
+                    "file_refs.prompt_version": FILE_REFS_PROMPT_VERSION,
+                    "file_refs.count": len(getattr(agg_output, "file_refs", None) or []),
+                })
         deps._events.extend(agg_deps._events)
 
         logger.info(
@@ -1296,12 +1317,27 @@ def _whole_file_documents(items: Any) -> list[Any]:
     return docs
 
 
+def _file_refs_on(deps: Any) -> bool:
+    """The aggregator may cite the user's file sections this turn
+    (aggregator_file_refs.md §4.9): the flag is on for the user, and this is the
+    ordinary deep search — «بحث موسّع» (whole-file delivery) is out of v1 (D4)."""
+    return _whole_file_caps(deps) is None and file_refs_enabled(getattr(deps, "user_id", None))
+
+
 def _build_case_document_lists(
     decision: Any,
     deps: PlannerDeps,
     sections_by_id: dict[str, Any] | None = None,
+    *,
+    file_ref_docs: list[FileRefDoc] | None = None,
 ) -> tuple[dict[str, list[ContextBlock]], dict[str, Any]]:
     """Build this turn's per-recipient ``case_document`` lists (§3.2).
+
+    ``file_ref_docs`` (aggregator_file_refs.md §4.2): when a list is passed, the
+    AGGREGATOR's list puts the ready file tag on its documents (``〔F3·S7 · …〕`` on
+    each section, ``〔F3〕`` over a whole text; F + the heading's WI number) and those
+    documents are appended to it.
+    The expanders' lists never are. Ignored under whole-file delivery («بحث موسّع», v1).
 
     Returns ``(lists, telemetry)``. ``lists`` is keyed by recipient:
 
@@ -1338,17 +1374,22 @@ def _build_case_document_lists(
     over_total: list[str] = []
     for recipient, ids in (("case", case_ids), ("reg", reg_ids), ("aggregator", agg_ids)):
         stats: dict[str, Any] = {}
+        numbering = (
+            file_ref_docs if recipient == "aggregator" and caps is None else None
+        )
         if caps is not None:
             lists[recipient] = build_case_document_blocks(
                 docs, ids, per_doc_cap=caps[0], total_cap=caps[1], stats=stats
             )
         elif sections_by_id is None:
-            lists[recipient] = build_case_document_blocks(docs, ids, stats=stats)
+            lists[recipient] = build_case_document_blocks(
+                docs, ids, stats=stats, file_ref_docs=numbering
+            )
         else:
             # Segmented delivery (attachment_segmentation.md §4.6): core
             # sections, 100k / 300k caps, full text within the caps as fallback.
             lists[recipient] = build_case_document_blocks_segmented(
-                docs, ids, sections_by_id, stats=stats
+                docs, ids, sections_by_id, stats=stats, file_ref_docs=numbering
             )
             telemetry[f"case_docs.segmented.{recipient}"] = stats["segmented"]
             telemetry[f"case_docs.fallback.{recipient}"] = stats["fallback"]
@@ -1361,6 +1402,9 @@ def _build_case_document_lists(
     telemetry["case_docs.over_total"] = over_total
     if caps is not None:
         telemetry["case_docs.whole_file_caps"] = list(caps)
+    if file_ref_docs is not None and caps is None:
+        telemetry["case_docs.file_refs.docs"] = len(file_ref_docs)
+        telemetry["case_docs.file_refs.sections"] = sum(len(d.sections) for d in file_ref_docs)
     return lists, telemetry
 
 
@@ -1452,9 +1496,12 @@ async def run_retrieval(
             )
             case_document_sections = {}
 
+    # The aggregator's file refs (aggregator_file_refs.md §4.2): numbered only
+    # when the flag is on for the user, and never under «بحث موسّع».
+    file_ref_docs: list[FileRefDoc] | None = [] if _file_refs_on(deps) else None
     try:
         case_document_blocks, case_docs_telemetry = _build_case_document_lists(
-            decision, deps, case_document_sections
+            decision, deps, case_document_sections, file_ref_docs=file_ref_docs
         )
         if case_docs_telemetry and case_document_sections_telemetry:
             case_docs_telemetry.update(case_document_sections_telemetry)
@@ -1464,6 +1511,7 @@ async def run_retrieval(
             exc_info=True,
         )
         case_document_blocks, case_docs_telemetry = {}, {}
+        file_ref_docs = None
     if case_docs_telemetry:
         logger.info(
             "run_retrieval: case_documents count=%d full_text case=%s reg=%s "
@@ -1515,6 +1563,7 @@ async def run_retrieval(
         enable_planner=False,
         context_blocks=selected_blocks,
         case_document_blocks=case_document_blocks,
+        case_document_file_refs=list(file_ref_docs or []),
         conversation_id=getattr(deps, "conversation_id", "") or "",
         # Live progress sink — the SAME callback the planner's logger fires
         # (PlannerDeps.emit_sse). None outside a real dispatch → guarded no-op.

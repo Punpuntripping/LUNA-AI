@@ -240,6 +240,22 @@ class AggregatorLLMOutput(BaseModel):
     )
 
 
+class FileRef(BaseModel):
+    """One part of the user's own file the answer points at (aggregator_file_refs.md
+    §4.4, D11–D12). Built by CODE after the run from the ``[F1·S7]`` / ``[F1]`` tags
+    the aggregator wrote in ``synthesis_md`` — never part of the LLM's schema. Ids
+    and positions only: the publisher reads the real titles and descriptions from
+    the stored rows (§4.8). Field names follow ``workspace_item_file_refs``."""
+
+    n: int = Field(description="Order of first mention in synthesis_md, 1-based")
+    ref_id: str = Field(description='Canonical ref: "F1.S7" (a section) or "F1" (a whole document)')
+    item_id: str = Field(description="The attachment's workspace_items.item_id")
+    wi_seq: int = Field(description="The attachment's WI number in the conversation")
+    section_seq: Optional[int] = Field(default=None, description="attachment_segments.seq; None = whole document")
+    char_start: Optional[int] = Field(default=None, description="Where the section starts in the file's text")
+    char_end: Optional[int] = Field(default=None, description="Where the section ends in the file's text")
+
+
 class AggregatorOutput(BaseModel):
     """Final output returned to callers (post-validation + artifact built)."""
 
@@ -286,6 +302,15 @@ class AggregatorOutput(BaseModel):
     transition_line: str = Field(
         default="",
         description="Fixed sentence for the chat message; empty with no transition",
+    )
+    # The user's file sections the answer cites (aggregator_file_refs.md §4.4).
+    # Code-side only: excluded from every dump so a run with the flag off — or
+    # with no tag — serialises exactly as before. The publisher reads it off the
+    # object and writes workspace_item_file_refs.
+    file_refs: list[FileRef] = Field(
+        default_factory=list,
+        exclude=True,
+        description="Resolved [F1·S7] / [F1] tags, in order of first mention",
     )
 
 
@@ -375,6 +400,11 @@ class AggregatorInput:
     # after the planner emits decision.context_labels. The bundle reaches the
     # aggregator user message (rendered before <references>) — NOT any reranker.
     context_blocks: list[ContextBlock] = field(default_factory=list)
+    # The documents its case_document blocks numbered (aggregator_file_refs.md
+    # §4.2) — ``deep_search_v4.shared.case_documents.FileRefDoc``. Never rendered:
+    # the runner resolves the tags in ``synthesis_md`` against it. Empty = no
+    # file refs this turn.
+    file_ref_docs: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # ``Literal`` on a dataclass field is type-hint only -- not enforced at

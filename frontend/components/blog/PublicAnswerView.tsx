@@ -8,6 +8,7 @@ import { BlogPageShell } from "@/components/blog/BlogPageShell";
 // Own module, not the `blocks` barrel: this is a client component and a
 // barrel import would drag every other library block into the bundle.
 import { ChatWithPageCta } from "@/components/library/blocks/ChatWithPageCta";
+import { stripFileRefTags } from "@/lib/contracts/file-refs";
 import type { BlogPostPublic } from "@/types";
 
 // Subtype → Arabic chip label. Mirrors WorkspaceCard.tsx SUBTYPE_LABEL so the
@@ -102,7 +103,10 @@ export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
   // reader who copies the answer keeps the [n] markers resolvable. Matches
   // AgentSearchViewer.copyContent, ``referenceCopyLabel`` included — the
   // pasted list stands alone, so each wing adds what locates its document.
-  const body = post.content_md ?? "";
+  // The report's file-ref tags (``[F1·S7]``) are dropped: they point at the
+  // author's own files, which a public reader can never open
+  // (aggregator_file_refs.md §4.7).
+  const body = stripFileRefTags(post.content_md ?? "");
   const copyContent =
     references.length === 0
       ? body
