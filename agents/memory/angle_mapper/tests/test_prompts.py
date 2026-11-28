@@ -73,8 +73,17 @@ def test_v2_head_is_byte_identical(experiment):
     assert P._HEAD_V2 == experiment["HEAD"]
 
 
-def test_types_are_byte_identical(experiment):
-    assert P.TYPES == experiment["TYPES"]
+def test_types_are_the_experiments_but_signatures(experiment):
+    # 2026-11-27 (owner): OCR does not read signatures — "signatures" left the contract's
+    # prime contradictions; every other type is the tested experiment's, byte for byte.
+    exp = dict(experiment["TYPES"])
+    what, angles = exp["contract"]
+    exp["contract"] = (what, angles.replace("(dates, amounts, parties, signatures)", "(dates, amounts, parties)"))
+    assert P.TYPES == exp
+
+
+def test_signatures_are_no_contradiction_material():
+    assert "signatures" not in P.TYPES["contract"][1]
 
 
 # ── pinned without the experiment file (a clean clone / CI) ─────────────────
@@ -246,6 +255,12 @@ V5_RULES = [
     (11, "religion → Ramadan working hours; a lease vs a sale on credit"),
     (12, "every angle has `for_side` `contract_party` and `for_party` = the role it protects, copied from the owner "
          "words — never `unknown` or «الطرفان»"),
+    # 2026-11-27 (owner): an empty signature field in OCR text proves nothing
+    (13, "An empty signature, stamp or initials field is not a blank: OCR does not read handwriting or stamps"),
+    # 2026-11-28 (owner): both ways — an empty field shows neither signed nor unsigned
+    (13, "shows neither that a document is signed nor that it is unsigned — never a gap, a weakness, a "
+         "contradiction or a point in favour"),
+    (13, "Only the file's own words can say so («غير موقّع», «وقّعه الطرفان»)."),
 ]
 
 
@@ -256,9 +271,9 @@ def test_v5_the_twelve_rules(rule, phrase):
 
 
 def test_v5_every_rule_is_covered_and_short():
-    assert {r for r, _ in V5_RULES} == set(range(1, 13))
+    assert {r for r, _ in V5_RULES} == set(range(1, 14))
     bullets = [b for b in P._V5_RULES.split("\n") if b]
-    assert len(bullets) == 10 and all(b.startswith("- ") for b in bullets)  # rules 2 and 3 sit in their fields
+    assert len(bullets) == 11 and all(b.startswith("- ") for b in bullets)  # rules 2 and 3 sit in their fields
     assert all(len(b) <= 320 for b in bullets)  # one or two lines each, no long examples
     rules = P.HEAD.index("## Rules")
     assert rules < P.HEAD.index(bullets[0]) and P.HEAD.index(bullets[-1]) < P.HEAD.index("- All text in Arabic.")

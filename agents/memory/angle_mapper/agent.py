@@ -35,7 +35,13 @@ from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from .deps import AngleMapperDeps
 from .models import AngleMap
 from .prompts import bad_refs_message, multi_question_message, no_sections_message
-from .validate import invalid_refs, multi_question_angles, qualify_refs, sectionless_angles
+from .validate import (
+    fill_sections_from_text,
+    invalid_refs,
+    multi_question_angles,
+    qualify_refs,
+    sectionless_angles,
+)
 
 MODEL_SLOT = "angle_mapper"
 
@@ -76,7 +82,9 @@ def create_angle_mapper(instructions: str) -> Agent[AngleMapperDeps, AngleMap]:
         if refs:
             if problems := invalid_refs(value, refs):
                 parts.append(bad_refs_message(problems, sorted(refs)))
-            if empty := sectionless_angles(value, refs):
+            # An angle whose own text names its sections is not sent back: the
+            # runner fills them (fill_sections_from_text), so a retry is not spent.
+            if empty := sectionless_angles(fill_sections_from_text(value, refs)[0], refs):
                 parts.append(no_sections_message(empty))
         if several := multi_question_angles(value):
             parts.append(multi_question_message(several))

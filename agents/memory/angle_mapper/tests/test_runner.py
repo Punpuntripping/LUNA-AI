@@ -1236,6 +1236,36 @@ async def test_a_map_whose_every_angle_has_no_section_is_failed_invalid(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_angles_that_write_their_refs_in_the_text_are_filled_not_failed(monkeypatch, store_calls):
+    """The failure of 2026-11-27 (mapper_ab repro run7): every angle without its
+    `sections` key, the refs inside `argument` («… (D1·S3, D1·S4)»). The angles take
+    those refs; no retry is spent on them and the map is stored."""
+    def handler(call, n):
+        bare = F.good_one()
+        for a, refs in zip(bare["angles"], ("(D1·S3, D1·S4)", "(D1·S2)")):
+            del a["sections"]
+            a["argument"] = f"{a['argument']} {refs}"
+        return bare
+
+    db = db_for(J)
+    script = use(monkeypatch, handler)
+    res = await run_angle_mapper(db, A)
+    assert res.outcome == "stored" and script.kinds == ["map"]
+    assert [a["sections"] for a in res.output["angles"]] == [["D1.S3", "D1.S4"], ["D1.S2"]]
+    st = res.stats
+    assert st["angles_sections_from_text"] == 2 and st["angles_without_sections"] == 0
+    assert [(a["seq"], a["sections"]) for a in store_calls[0]["angles"]] == [(1, ["D1.S3", "D1.S4"]), (2, ["D1.S2"])]
+
+
+@pytest.mark.asyncio
+async def test_a_map_that_names_its_sections_fills_none(monkeypatch):
+    db = db_for(J)
+    use(monkeypatch, lambda call, n: F.good_one())
+    res = await run_angle_mapper(db, A)
+    assert res.outcome == "stored" and res.stats["angles_sections_from_text"] == 0
+
+
+@pytest.mark.asyncio
 async def test_the_repairs_answer_gets_the_same_rule(monkeypatch):
     short = F.good_two()["angles"][:2]  # D1·S5 and D2·S3 nowhere → the repair call
 

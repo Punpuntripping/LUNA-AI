@@ -102,6 +102,12 @@ agents/tests/*
 # drops, coverage repair, contract-party labels and the store's rollback all fail
 # silently in production — same reason as the segmenter's suite
 !agents/memory/angle_mapper/tests/
+# the attachment summarizer's signature + cover-email rules (2026-11-27): OCR text
+# never shows a signature, and a forwarded document's text is not in the file
+!agents/memory/artifact_summarizer/tests/
+agents/memory/artifact_summarizer/tests/*
+!agents/memory/artifact_summarizer/tests/__init__.py
+!agents/memory/artifact_summarizer/tests/test_attachment_prompt_rules.py
 # a local CI-like test run moves .env aside under this name — never commit it
 .env.ci_hidden
 # the attachment agent (attachment_agent.md, 2026-11-27): quote checks, the

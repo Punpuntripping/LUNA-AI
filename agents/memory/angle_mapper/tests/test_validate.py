@@ -363,6 +363,37 @@ def test_sectionless_angles_are_those_with_no_section_of_the_group():
     assert V.sectionless_angles(amap(), REFS_TWO) == []
 
 
+# The failed run of 2026-11-27 (mapper_ab repro run7): no `sections` key on any
+# angle, the refs written inside `argument` instead.
+_ARG = "يثبت السداد بالتحويلات (D2·S2, D1·S3) ويقرّ به الخصم في D1.S5؛ وأما D3·S1 وD1·S41 فليسا في الملف."
+
+
+def test_an_angle_with_no_section_takes_the_refs_its_own_text_writes():
+    m = amap(angles=[F.angle(sections=[], argument=_ARG), F.angle(sections=["D1.S2"], argument=_ARG)])
+    filled, n = V.fill_sections_from_text(m, REFS_TWO)
+    assert n == 1
+    assert filled.angles[0].sections == ["D2.S2", "D1.S3", "D1.S5"]  # first mention order, only the group's
+    assert filled.angles[1].sections == ["D1.S2"]  # an angle that names a section is left alone
+    assert filled.angles[0].argument == _ARG  # code never edits the text
+    assert V.sectionless_angles(filled, REFS_TWO) == []
+
+
+def test_refs_from_every_field_of_the_angle_in_order():
+    m = amap(angles=[F.angle(sections=["D1.S41"], argument="لا مرجع هنا", title="وجه d2 s2",
+                             legal_question="ما أثر D1-S03؟", weakness="يضعفه D1·S5 وD2·S2")])
+    filled, n = V.fill_sections_from_text(m, REFS_TWO)
+    assert n == 1 and filled.angles[0].sections == ["D2.S2", "D1.S3", "D1.S5"]
+
+
+def test_an_angle_whose_text_names_no_section_of_the_group_is_left_for_the_retry():
+    m = amap(angles=[F.angle(sections=[], argument="بلا مرجع"), F.angle(sections=[], argument="ID1·S3 وD9·S1")])
+    same, n = V.fill_sections_from_text(m, REFS_TWO)
+    assert n == 0 and same is m
+    assert V.sectionless_angles(same, REFS_TWO) == [1, 2]
+    whole = amap()
+    assert V.fill_sections_from_text(whole, REFS_TWO) == (whole, 0)
+
+
 # ── angles-v5: one question per angle ────────────────────────────────────────
 
 

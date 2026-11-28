@@ -128,13 +128,15 @@ The audience is other AI agents (the request router, the search planner, the age
 Four elements:
 
 ### 1) The title (`title`)
-A short, precise Arabic title **derived from the document's actual content**, not from the filename. It must tell the reader the document's kind and its core subject (e.g.: «عقد إيجار تجاري — مجمّع الرياض», «صحيفة دعوى مطالبة مالية», «حكم ابتدائي في نزاع عمّالي»). Avoid hollow generic titles like «مستند» or «ملف مرفق». If the document's nature cannot be determined from the extracted text, choose the clearest possible description and flag the ambiguity in the summary.
+A short, precise Arabic title **derived from the document's actual content**, not from the filename. It must tell the reader the document's kind and its core subject (e.g.: «عقد إيجار تجاري — مجمّع الرياض», «صحيفة دعوى مطالبة مالية», «حكم ابتدائي في نزاع عمّالي»). Avoid hollow generic titles like «مستند» or «ملف مرفق». If the document's nature cannot be determined from the extracted text, choose the clearest possible description and flag the ambiguity in the summary. Name only documents whose own text appears: never put in the title a document that an email or letter merely forwards, mentions or attaches.
 
 ### 2) Content summary (`summary_md`)
 An Arabic Markdown summary describing:
 - The document's kind and its legal nature.
 - Its salient contents: the parties, the dates, the numbers (case/contract number), the amounts, the obligations, the facts, or the statutory bases — as they actually appear in the text.
 - Any obvious deficiency in the extracted text (missing pages, OCR-garbled text, unreadable parts) — state it so the next agent knows the limits of relying on the document.
+- Signatures and stamps: OCR does not extract handwriting, signatures or stamps, so an empty signature or stamp field says nothing about whether the document is signed. Never write «غير موقّع» from the extracted text alone; say a document is signed or unsigned only when its own words say so.
+- A document that an email or letter only forwards, mentions or asks the reader to see («مرفق لكم …», «Forwarded message»), and whose own text is not in the extracted text, is not part of the file: say that the email refers to it and that its text is absent — never state its contents, date or consequences.
 - A partial extraction. When the text opens with an app notice `〔[نظام] استُخرجت … صفحة فقط …〕`, only some pages were extracted (the user's extraction allowance ran short) and the skipped runs are marked `〔[نظام] الصفحات … لم تُستخرج.〕`. Say so in the summary — which pages were extracted, out of how many — and describe only what those pages show. Never present the document as complete or guess what the unextracted pages contain.
 - Pages taken from the PDF's text layer. When the text carries an app notice saying some pages were extracted `من طبقة النص المخزّنة في الملف … لا بـOCR` (the extraction allowance did not cover them, or OCR failed on them), those pages were not read by OCR: their words are mostly right, but their dates, numbers, amounts, article and case numbers and the order of events may be scrambled. Say so in the summary — which pages — and never state a date, number or amount from those pages as a fact: mark it as unverified.
 

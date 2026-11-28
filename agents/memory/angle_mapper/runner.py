@@ -97,7 +97,8 @@ masking codec for the whole group (وضع السرية; new fakes persisted BEFO
 reads them) → one call (``CALL_TIMEOUT_S``, one re-attempt; the agent's output
 validator sends unknown refs and angles without a section back once) → unknown refs
 still left are dropped, angles still without a section are dropped and counted
-(``angles_without_sections``; none left → ``failed_invalid``); gaps fixed in code
+(``angles_without_sections``; none left → ``failed_invalid``) — an angle whose own
+text writes its refs gets them first (``angles_sections_from_text``); gaps fixed in code
 (``equal_value_gaps_dropped``, ``ocr_gaps_merged``) → coverage: core
 sections of every document in no angle / ``context`` / ``no_angle`` get ONE repair
 call on the first call's history (its output under the same rules) → decode →
@@ -160,6 +161,7 @@ from .validate import (
     drop_equal_value_gaps,
     drop_invalid_refs,
     drop_sectionless_angles,
+    fill_sections_from_text,
     mark_unplaced,
     merge_ocr_gaps,
     multi_question_angles,
@@ -435,6 +437,7 @@ def _finish_span(span: Any, result: AngleMapRunResult, t0: float) -> None:
         unplaced=len(result.unplaced),
         invalid_refs_dropped=st.get("invalid_refs_dropped"),
         angles_without_sections=st.get("angles_without_sections"),
+        angles_sections_from_text=st.get("angles_sections_from_text"),
         compound_questions_after_retry=st.get("compound_questions_after_retry"),
         equal_value_gaps_dropped=st.get("equal_value_gaps_dropped"),
         ocr_gaps_merged=st.get("ocr_gaps_merged"),
@@ -824,16 +827,20 @@ def _unread_titles(supabase: Any, group: Group) -> list[str]:
 
 
 def _clean(output: AngleMap, refs: frozenset[str]) -> tuple[AngleMap, int, int, dict[str, int]]:
-    """``(map, refs dropped, angles dropped, gap counts)``: bare refs qualified, refs
-    outside the group dropped, then every angle left with no section dropped (the
-    validator already sent both back once); then the gaps fixed in code (never sent
-    back): contradictions between equal figures dropped, OCR gaps re-labelled
-    ``missing`` and merged to one per document."""
-    amap, dropped = drop_invalid_refs(qualify_refs(output, refs), refs)
+    """``(map, refs dropped, angles dropped, fix counts)``: bare refs qualified, an
+    angle with no section given the refs its own text writes, refs outside the group
+    dropped, then every angle left with no section dropped (the validator already
+    sent both back once); then the gaps fixed in code (never sent back):
+    contradictions between equal figures dropped, OCR gaps re-labelled ``missing``
+    and merged to one per document."""
+    amap, filled = fill_sections_from_text(qualify_refs(output, refs), refs)
+    amap, dropped = drop_invalid_refs(amap, refs)
     amap, empty = drop_sectionless_angles(amap)
     amap, equal = drop_equal_value_gaps(amap)
     amap, merged = merge_ocr_gaps(amap)
-    return amap, dropped, empty, {"equal_value_gaps_dropped": equal, "ocr_gaps_merged": merged}
+    return amap, dropped, empty, {
+        "angles_sections_from_text": filled, "equal_value_gaps_dropped": equal, "ocr_gaps_merged": merged,
+    }
 
 
 async def _run_group(

@@ -12,10 +12,12 @@ one per section of every document in the group, each carrying its ``ref``
   ``ModelRetry``); whatever is still wrong after that retry is dropped by
   :func:`drop_invalid_refs`, so a stored map never names a section that does not
   exist.
-- **Every angle has a section**: :func:`sectionless_angles` (an angle naming no
-  section of the group) goes back with the same one retry; an angle still without
-  one after it is dropped by :func:`drop_sectionless_angles` (the runner counts
-  them, and fails the run when none is left).
+- **Every angle has a section**: :func:`fill_sections_from_text` first gives an
+  angle with no section the group's refs its own text writes («… (D2·S5, D2·S11)»);
+  :func:`sectionless_angles` (an angle still naming no section of the group) goes
+  back with the same one retry; an angle still without one after it is dropped by
+  :func:`drop_sectionless_angles` (the runner counts them, and fails the run when
+  none is left).
 - **Coverage** (D13): every ``core`` section of every document is in an angle, in
   ``context`` or in ``no_angle``. :func:`unplaced_core` lists the ones that are
   not — the runner sends them back once (the repair call), then
@@ -36,7 +38,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from .models import AngleMap, Gap, NoAngle
-from .refs import canonical_ref, doc_of, format_doc, qualify
+from .refs import canonical_ref, doc_of, format_doc, format_ref, qualify
 
 #: ``no_angle[].why`` for a core section the model never placed (plan §4.4).
 UNPLACED_WHY = "لم يُصنَّف"
@@ -178,6 +180,47 @@ def sectionless_angles(amap: AngleMap, refs: Iterable[str]) -> list[int]:
     angles, every core section then unplaced)."""
     valid = set(refs)
     return [i for i, a in enumerate(amap.angles, start=1) if not any(x in valid for x in a.sections)]
+
+
+#: A section ref written inside an angle's own words — «… (D2·S5, D2·S11)».
+_INLINE_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9])D\s*0*(\d+)\s*[·.‧•・\-_/:|]?\s*S\s*0*(\d+)(?!\d)", re.IGNORECASE,
+)
+#: The angle's own words, in the order its refs are taken.
+_ANGLE_TEXT_FIELDS = ("argument", "title", "legal_question", "weakness")
+
+
+def fill_sections_from_text(amap: AngleMap, refs: Iterable[str]) -> tuple[AngleMap, int]:
+    """``(map, angles filled)``: an angle whose ``sections`` names no section of the
+    group takes the group's refs that its own text writes, in order of first mention
+    (``argument``, then ``title``, ``legal_question``, ``weakness``). An angle whose
+    text names none is left as it was (the validator sends it back).
+
+    A real failure (2026-11-27, 3 of 22 runs on one file, both prompts): the model
+    left out ``sections`` on every angle and wrote the refs in ``argument`` instead
+    («… (D1·S5, D1·S11)»); the one retry repeated it, every angle was dropped and
+    the run failed. Code never edits the angle's text."""
+    valid = set(refs)
+    filled = 0
+    angles = []
+    for a in amap.angles:
+        if any(x in valid for x in a.sections):
+            angles.append(a)
+            continue
+        found: list[str] = []
+        for name in _ANGLE_TEXT_FIELDS:
+            for doc, seq in _INLINE_REF_RE.findall(str(getattr(a, name, "") or "")):
+                ref = format_ref(int(doc), int(seq))
+                if ref in valid and ref not in found:
+                    found.append(ref)
+        if found:
+            angles.append(a.model_copy(update={"sections": found}))
+            filled += 1
+        else:
+            angles.append(a)
+    if not filled:
+        return amap, 0
+    return amap.model_copy(update={"angles": angles}), filled
 
 
 def drop_sectionless_angles(amap: AngleMap) -> tuple[AngleMap, int]:
@@ -404,6 +447,7 @@ __all__ = [
     "drop_equal_value_gaps",
     "drop_invalid_refs",
     "drop_sectionless_angles",
+    "fill_sections_from_text",
     "equal_value_contradictions",
     "equal_valued",
     "invalid_refs",

@@ -101,7 +101,7 @@ TYPES = {
     "judgment": ("a court judgment (صك حكم)",
                  "grounds for an objection / appeal, or for upholding the ruling: what the court relied on, defenses it never answered, requests it never decided, evidence it ignored or misread, procedural defects; for the winning side, what makes the ruling hold"),
     "contract": ("a contract file — possibly MANY documents in one upload (contract, change orders, annexes, offers, payment claims, invoices, emails, notices)",
-                 "claims and defenses the documents support: entitlement to amounts, whether a change / annex / price binds, notice and deadlines, penalties, termination, VAT. Contradictions between documents (dates, amounts, parties, signatures) are prime `attack` and `answer` material"),
+                 "claims and defenses the documents support: entitlement to amounts, whether a change / annex / price binds, notice and deadlines, penalties, termination, VAT. Contradictions between documents (dates, amounts, parties) are prime `attack` and `answer` material"),
     "hearing_minutes": ("court hearing minutes (ضبط جلسة)",
                         "per charge or per claim: weak or contradicted evidence (confessions, identification, reports, procedure), contradictions between statements, defenses the court has not dealt with yet, what the other side will rely on"),
     "claim": ("a statement of claim or an objection / appeal brief (لائحة / صحيفة دعوى)",
@@ -288,6 +288,9 @@ _V5_RULES = (
     "- Garbled or looping text and the system's own extraction notes are reading errors — never an angle; at most "
     "one gap for them, with `ocr_suspect: true`. A blank left in the original is a real `missing` gap "
     "(`ocr_suspect: false`).\n"
+    "- An empty signature, stamp or initials field is not a blank: OCR does not read handwriting or stamps, so it "
+    "shows neither that a document is signed nor that it is unsigned — never a gap, a weakness, a contradiction "
+    "or a point in favour. Only the file's own words can say so («غير موقّع», «وقّعه الطرفان»).\n"
     "- A fact only the user states appears only as a condition («إن ثبت ما يذكره المستخدم…») or a gap, never as a "
     "fact; words inside «» are copied exactly from the cited section.\n"
     "- Powers of attorney, inheritance and company papers: check who granted what power over what, person by "
