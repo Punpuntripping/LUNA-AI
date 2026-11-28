@@ -94,6 +94,7 @@ async def merge_reports(
     supabase: Any = None,
     user_id: str | None = None,
     conversation_id: str | None = None,
+    conversation_memory: str | None = None,
     model: Any = None,
 ) -> MergedAnswer:
     """Merge the reports (every one of the plan — a failed one reaches the scoreboard as
@@ -101,7 +102,9 @@ async def merge_reports(
 
     ``query`` — the message the searches ran on (encoded, as they got it);
     ``recent_messages`` — the turn's encoded ``ChatMessageSnapshot`` list (or
-    ``{"role", "content"}`` dicts). ``supabase`` / ``user_id`` (optional): persist the
+    ``{"role", "content"}`` dicts). ``conversation_memory`` — the rendered, encoded
+    memory block the searches got (``None`` when the conversation has none).
+    ``supabase`` / ``user_id`` (optional): persist the
     masking fakes minted for the merger's input before the model runs. ``model`` — a
     test model. Raises ``ValueError`` with fewer than 2 usable reports (the wiring
     publishes the single report instead) and re-raises a model failure.
@@ -113,7 +116,10 @@ async def merge_reports(
     if len(usable) < 2:
         raise ValueError(f"extended_merger: needs at least 2 usable reports, got {len(usable)}")
 
-    inp = input_from_extended(reports, query=query, recent_messages=recent_messages, plan=plan, view=view)
+    inp = input_from_extended(
+        reports, query=query, recent_messages=recent_messages, plan=plan, view=view,
+        conversation_memory=conversation_memory,
+    )
     _persist_fakes(supabase, user_id)
     out, _usage = await run_merger(inp, model=model, conversation_id=conversation_id)
     logger.info(

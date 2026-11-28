@@ -1,7 +1,7 @@
 """The merger's input as the extended search builds it (``extended_merger.adapter``):
 every part present and masked, each report's citations rewritten to one shared
-reference list WITH excerpts (D19), pipeline gap codes dropped, documents capped like
-the searches; and the single-report answer the wiring falls back to."""
+reference list (merger-v2: titles only, no excerpts), pipeline gap codes dropped,
+documents capped like the searches; and the single-report answer the wiring falls back to."""
 from __future__ import annotations
 
 import pytest
@@ -71,25 +71,44 @@ def test_merger_input_carries_every_part_masked(codec):
     plan = make_plan()
     plan.left_out = [LeftOut(angle="A9", why="خارج السؤال " + REAL_ID)]
     _inp, msg = _message(list(_two_reports()), plan)
-    assert REAL_ID not in msg and FAKE_ID in msg               # documents, summaries, understanding, left out
+    assert REAL_ID not in msg and FAKE_ID in msg               # documents, understanding, left out
     assert "<query>\nما موقفي؟\n</query>" in msg
     assert '<message role="user">أرفقت الصحيفة</message>' in msg
     assert '<planner_understanding client_side="claimant"' in msg and "يريد المستخدم تقييم موقفه " + FAKE_ID in msg
-    # every document, whole, with its markers, its number and its summary
+    # every document, whole, with its markers and its number — its text only, no summary (merger-v2)
     assert '<case_document ref="D1" title="صحيفة الدعوى" doc_type="claim">' in msg
     assert "〔D1·S1 · claimant · جوهري〕" in msg
     assert '<case_document ref="D2" title="مذكرة الخصم" doc_type="memo">' in msg and "لم يُتح نص هذا المستند" in msg
-    assert "<summary>ملخص المذكرة</summary>" in msg
-    # references with their excerpts (D19)
-    assert '<reference n="3" type="case">' in msg and "<excerpt>منطوق</excerpt>" in msg
+    assert "<summary>" not in msg and "ملخص المذكرة" not in msg and "ملخص الصحيفة" not in msg
+    # references by title only — no excerpt (merger-v2)
+    assert '<reference n="3" type="case">' in msg
+    assert "<excerpt>" not in msg and "نص أطول للمادة الثانية" not in msg
     # report 2's citations rewritten to the shared list; the unknown [7] dropped
     assert "حكم [3] والمادة الثانية [2] والأولى [1] وخطأ ." in msg
-    # each report: title, side, confidence, its angle in the §4.9 b line with labelled sections, its gaps
+    # each report: title, side, confidence, its angle in the §4.9 b line (no sections), its gaps
     assert '<report n="2" title="بحث الاختصاص" side="الأنظمة" confidence="low" status="ok">' in msg
     assert "- وجه A2 [يجب الرد · متوسط]: دفع عدم الاختصاص" in msg
-    assert "D1·S2 (الخصم: respondent)" in msg
+    assert "الأقسام" not in msg and "D1·S2 (الخصم: respondent)" not in msg
     assert "<gap>فجوة ب</gap>" in msg and "no_references_after_reranker" not in msg
+    # merger-v2 order: reports, then references, then the user's file
+    assert msg.index("</reports>") < msg.index("<references ") < msg.index("<case_documents>")
     assert '<angle id="A9">' in msg and "خارج السؤال " + FAKE_ID in msg
+
+
+def test_the_memory_block_reaches_the_merger_untouched(codec):
+    block = ('<conversation_memory>\nقواعد\n\n'
+             '<entry id="M-1" kind="رأي قانوني — أصرّ عليه المستخدم">العقد تجاري</entry>\n</conversation_memory>')
+    inp = input_from_extended(list(_two_reports()), query="ما موقفي؟", recent_messages=recent(),
+                              plan=make_plan(), view=make_view(), conversation_memory=block)
+    assert inp.conversation_memory == block                     # already encoded: never re-encoded
+    shared, bodies, _, _ = build_shared_references(inp.reports)
+    msg = build_merger_user_message(inp, shared_refs=shared, report_bodies=bodies)
+    assert block in msg and "أصرّ عليه المستخدم]` entry is followed" in msg
+
+
+def test_no_memory_no_block(codec):
+    inp, msg = _message(list(_two_reports()))
+    assert inp.conversation_memory == "" and "<conversation_memory>" not in msg
 
 
 def test_a_failed_report_reaches_the_scoreboard(codec):

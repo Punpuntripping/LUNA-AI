@@ -62,6 +62,13 @@ def _merge(monkeypatch, replies, **kw):
     return out, seen
 
 
+def test_the_memory_reaches_the_model(monkeypatch):
+    block = '<conversation_memory>\nقواعد\n\n<entry id="M-1" kind="واقعة">الأجر</entry>\n</conversation_memory>'
+    _out_, seen = _merge(monkeypatch, [_out()], conversation_memory=block)
+    sent = "".join(str(getattr(p, "content", "")) for m in seen[0] for p in getattr(m, "parts", []))
+    assert block in sent
+
+
 def test_merge_renumbers_clamps_and_repairs(monkeypatch):
     out, seen = _merge(monkeypatch, [_out()])
     assert len(seen) == 1                                       # nothing sent back
@@ -96,7 +103,7 @@ def test_the_merger_reads_the_instructions_and_the_input(monkeypatch):
     _use(monkeypatch, FunctionModel(fn))
     asyncio.run(merge_reports(_reports(), query="ما موقفي؟", recent_messages=[], plan=make_plan(), view=make_view()))
     req = captured["messages"][0]
-    assert "merge parallel research reports into ONE answer" in (req.instructions or "")
+    assert "merge them, do not research again" in (req.instructions or "")
     assert "angle scoreboard" in (req.instructions or "")
     user = "".join(str(p.content) for p in req.parts if hasattr(p, "content"))
     assert '<reports count="3">' in user and '<report n="3"' in user and 'status="failed"' in user

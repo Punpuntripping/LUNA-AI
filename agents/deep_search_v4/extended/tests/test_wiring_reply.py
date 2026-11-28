@@ -358,6 +358,19 @@ def test_cheaper_runs_the_cheaper_requests(turn_env, pipeline):
     assert F.outcome(db) == "cheaper"
 
 
+def test_the_merger_gets_the_memory_the_searches_got(turn_env, pipeline, monkeypatch):
+    block = '<conversation_memory>\nقواعد\n\n<entry id="M-1" kind="واقعة">الأجر ٥٠٠٠</entry>\n</conversation_memory>'
+    monkeypatch.setattr(orch, "_load_conversation_memory", lambda *_a: block)
+    _turn(_ready(), plan_choice={"run_id": F.RUN, "option": "plan"})
+    assert pipeline["merge"]["conversation_memory"] == block
+    assert all(d.conversation_memory_md == block for d in pipeline["deps"])   # the searches' copy
+
+
+def test_no_memory_reaches_the_merger_as_none(turn_env, pipeline):
+    _turn(_ready(), plan_choice={"run_id": F.RUN, "option": "plan"})
+    assert pipeline["merge"]["conversation_memory"] is None
+
+
 def test_a_failed_merger_still_publishes_the_reports(turn_env, pipeline):
     pipeline["merge_raises"] = RuntimeError("merger down")
     events = _turn(_ready(), plan_choice={"run_id": F.RUN, "option": "plan"})

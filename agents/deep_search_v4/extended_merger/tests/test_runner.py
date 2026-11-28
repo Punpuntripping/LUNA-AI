@@ -138,7 +138,7 @@ def test_run_merger_end_to_end():
     assert [a.id for a in out.angles] == ["A1", "A2", "A3", "A4"]
     assert out.left_out[0].angle == "A5" and out.left_out[0].title == "وجه 5"
     assert [(r.n, r.ok, r.item_id) for r in out.reports] == [(1, True, "wi-1"), (2, True, "wi-2"), (3, False, None)]
-    assert out.prompt_version == "merger-v1"
+    assert out.prompt_version == "merger-v2"
 
 
 def test_run_merger_raises_without_a_finished_report():

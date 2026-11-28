@@ -1,6 +1,11 @@
 """Unit tests of the extended-search merger's prompt and user-message builder.
 
 Pure: no model, no network, no database.
+
+merger-v2: the merger merges the reports and never researches again — its system
+prompt is its own (no aggregator ``_SHARED_ROLE_AR``), references carry no excerpt,
+reports no planner request, documents no summary, angle lines no sections or OCR flag,
+and the message reads reports → references → case documents.
 """
 from __future__ import annotations
 
@@ -37,7 +42,8 @@ from agents.deep_search_v4.extended_merger.prompts import (
 from shared.library.reg_status import REPEALED_LABEL_AR
 
 _ARABIC_INDIC = re.compile(r"[٠-٩۰-۹]")
-_MERGER_PART = MERGER_SYSTEM_PROMPT[len(_SHARED_ROLE_AR):]
+#: The citation rule's one counter-example — the only Arabic-Indic digits the prompt may hold.
+_INDIC_COUNTER_EXAMPLE = "never `[١١]`"
 
 
 class _Ref(Reference):
@@ -114,77 +120,153 @@ def _report_block(msg: str, n: int) -> str:
     return m.group(0)
 
 
+def _references_block(msg: str) -> str:
+    return msg[msg.index("<references "):msg.index("</references>")]
+
+
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
 
 def test_prompt_version():
-    assert PROMPT_VERSION == "merger-v1"
+    assert PROMPT_VERSION == "merger-v2"
 
 
-def test_shared_role_is_imported_first():
-    assert MERGER_SYSTEM_PROMPT.startswith(_SHARED_ROLE_AR)
-    assert MERGER_SYSTEM_PROMPT.count(_SHARED_ROLE_AR) == 1
+def test_system_prompt_is_the_mergers_own():
+    # merger-v2 dropped the aggregator's shared role: the task, then the schema.
+    assert MERGER_SYSTEM_PROMPT == P._TASK_AR + P._SCHEMA_AR
+    assert MERGER_SYSTEM_PROMPT.startswith("## Your role")
+    assert _SHARED_ROLE_AR not in MERGER_SYSTEM_PROMPT
+    assert _MEMORY_CONFLICT_NOTE not in MERGER_SYSTEM_PROMPT
+    assert not hasattr(P, "_SHARED_ROLE_AR") and not hasattr(P, "_MEMORY_CONFLICT_NOTE")
 
 
 @pytest.mark.parametrize("needle", [
     "## الخلاصة",                         # opening
+    # merge, never research again
+    "**The reports are your evidence — merge them, do not research again.**",
+    "never re-check, drop or \"correct\" a citation",
+    # the file only for a disagreement about a fact
+    "open the user's file only to settle a contradiction between reports about a fact",
+    "Use the file only under rule 3.",
+    "About the user's file: check the document's `<text>`, follow it",
+    "you cannot open the sources — present both positions with their citations",
+    # organise + keep
     "Organise by the user's question, not by report",
     "«التقرير الأول…»",                    # forbidden phrasing named
+    "the user's strengths, each with its legal basis and the part of the file it rests on",
+    "each followed by its answer, or marked open with what would decide it",
     "remove only repetition",
-    "re-answer the user's whole question",  # plan §6 item 9
-    "never silently",
-    "Never settle it by majority",
-    "never by an angle's strength label",
+    "Never drop a point because only one report makes it",
+    "normally shorter than the reports put together",
+    # contradictions: settle the ones met, never hunt for them
+    "**When two reports contradict each other, settle it.**",
+    "Do not go through the reports looking for contradictions; handle the ones you meet.",
+    "A point one report makes and another does not mention is not a contradiction",
+    "Never settle by majority, by a report's `confidence` or by an angle's strength label",
     "〔D1·S7 · …〕",                           # code markers
     "machine analysis",
-    "follow the text",
+    # nothing new
     "Nothing new",
-    "normally shorter than the reports put together",
-    "drop a gap another report closed",
-    "signature fields are blank",          # §6 item 3
-    "takes effect only once signed",
-    "cover email",                          # §6 item 5
-    "may never exceed the highest `confidence` among the reports",
-    "## Strengths and weaknesses (نقاط القوة ونقاط الضعف)",  # §4.9 c
-    "Never drop a weakness because another report did not mention it",
-    "A weakness no report answered stays in the answer, marked open",
-    "## The angle scoreboard — `angle_status`",
-    "failed reports included",
-    "must agree with `synthesis_md`",
-    "Never write findings in the answer about an angle no report researched",
-    "`settled`",
-    "Never present findings on a left-out angle, never list it in `gaps`",
+    "Add no source, rule, article, ruling, amount or date that no report states",
+    "A point keeps the citations its report gave it — move them with the point.",
+    # ruling dates; repealed / draft
+    "never convert between Hijri and Gregorian",
     "<draft>",
+    "say in the same sentence that it is repealed, or a draft",
+    # the conversation memory wins; an insisted legal position is followed
+    "a fact there wins over the reports and the file, and a legal position the user insisted on is followed",
+    # scoreboard
+    "## The angle scoreboard — `angle_status`",
+    "Judge each angle by what the reports found about it",
+    "judge each angle by what the reports found about it — never re-analyse it",
+    "failed reports included",
+    "is `open`, not `supported`",
+    "must agree with `synthesis_md`",
+    "Never write findings about an angle no report researched",
+    # resolved, left out, gaps, confidence
+    "One entry per contradiction settled under rule 3",
+    "`settled`",
+    "never present findings on a left-out angle, never list it in `gaps`",
+    "minus any gap another report closed",
+    "Never above the highest `confidence` among the reports",
+    # the angle line as the renderer writes it (no sections, no OCR flag)
+    "`وجه A3 [kind · strength]: title — argument سؤال البحث: … ما يضعفه: …`",
+    # citations
+    "`[n]` tags appear in `synthesis_md` only",
     "at most 4 numbers per tag",
     "Western digit",
     "Article and system numbers are written in prose",
     "Every number in `used_refs` must appear as `[n]` in `synthesis_md`",
     "legal disclaimer",
     "«المراجع»",
+    "never by a code alias (WI-N, D1, S7)",
 ])
 def test_key_rules_present(needle):
     assert needle in MERGER_SYSTEM_PROMPT
 
 
-def test_strengths_section_follows_the_merge_rules():
-    assert _MERGER_PART.index("## How to merge") < _MERGER_PART.index("## Strengths and weaknesses")
+@pytest.mark.parametrize("needle", [
+    "excerpt",                       # references carry no excerpt; "follow the excerpt" is gone
+    "<request>",                     # reports carry no planner request
+    "<focus>",
+    "<summary>",                     # documents: their text only
+    "<decisions>",
+    "الأقسام",                       # angle lines carry no sections
+    "whose `ref` is",
+    "OCR",                           # an OCR doubt is the reports' to raise
+    P.OCR_SUSPECT_AR,
+    "signature",                     # v1 trap: unsigned documents
+    "cover email",                   # v1 trap: cover emails
+    "correct it, and record the correction",  # v1: correcting reports against the text
+    "## Strengths and weaknesses",   # folded into rule 1
+    "## Repealed and draft sources", # now one line (rule 6)
+    "## How to think",               # the model drafted in its reasoning anyway (11-27 A/B) — line removed
+    "in your reasoning",
+])
+def test_removed_rules_absent(needle):
+    assert needle not in MERGER_SYSTEM_PROMPT
+
+
+def test_sections_in_order():
+    heads = ["## Your role", "## What you receive", "## How to merge", "## The angle scoreboard",
+             "## Disagreements", "## Angles the planner left out", "## `gaps` and `confidence`",
+             "## Citation rules", "## Output language", "## Output schema"]
+    positions = [MERGER_SYSTEM_PROMPT.index(h) for h in heads]
+    assert positions == sorted(positions)
+
+
+def test_strengths_and_weaknesses_live_in_the_merge_rules():
+    # merger-v1's own section was folded into "How to merge" (rule 1).
+    merge = MERGER_SYSTEM_PROMPT[MERGER_SYSTEM_PROMPT.index("## How to merge"):
+                                 MERGER_SYSTEM_PROMPT.index("## The angle scoreboard")]
+    assert "the user's strengths" in merge
+
+
+def test_what_you_receive_lists_the_parts_in_message_order():
+    receive = MERGER_SYSTEM_PROMPT[MERGER_SYSTEM_PROMPT.index("## What you receive"):
+                                   MERGER_SYSTEM_PROMPT.index("## How to merge")]
+    marks = ["- `<query>`", "- `<conversation>`", "- `<planner_understanding>`", "- `<reports>`",
+             "- `<references>`", "- `<case_documents>`", "- `<left_out>`"]
+    positions = [receive.index(m) for m in marks]
+    assert positions == sorted(positions)
 
 
 def test_every_angle_state_is_defined_in_the_prompt():
-    scoreboard = _MERGER_PART[_MERGER_PART.index("## The angle scoreboard"):_MERGER_PART.index("## Disagreements")]
+    scoreboard = MERGER_SYSTEM_PROMPT[MERGER_SYSTEM_PROMPT.index("## The angle scoreboard"):
+                                      MERGER_SYSTEM_PROMPT.index("## Disagreements")]
     for state in ANGLE_STATES:
         assert f"`{state}` —" in scoreboard, state
 
 
 def test_arabic_labels_come_from_the_contract_dicts():
     for label in (*KIND_AR.values(), *STRENGTH_AR.values(), *MODE_AR.values()):
-        assert f"«{label}»" in _MERGER_PART, label
+        assert f"«{label}»" in MERGER_SYSTEM_PROMPT, label
 
 
 def test_schema_field_names_in_contract_order():
-    schema = _MERGER_PART[_MERGER_PART.index("## Output schema"):]
+    schema = MERGER_SYSTEM_PROMPT[MERGER_SYSTEM_PROMPT.index("## Output schema"):]
     positions = [schema.index(f'"{name}"') for name in MergerLLMOutput.model_fields]
     assert positions == sorted(positions)
     assert list(MergerLLMOutput.model_fields)[:2] == ["angle_status", "resolved"]
@@ -199,8 +281,10 @@ def test_no_support_mode_anywhere():
     assert "support" not in MODE_AR
 
 
-def test_merger_part_has_western_digits_only():
-    assert not _ARABIC_INDIC.search(_MERGER_PART)
+def test_system_prompt_has_western_digits_only():
+    # The citation rule names one Arabic-Indic counter-example; nothing else may.
+    assert MERGER_SYSTEM_PROMPT.count(_INDIC_COUNTER_EXAMPLE) == 1
+    assert not _ARABIC_INDIC.search(MERGER_SYSTEM_PROMPT.replace(_INDIC_COUNTER_EXAMPLE, ""))
 
 
 def test_retry_msg_names_fields_in_order_and_arabic():
@@ -217,9 +301,15 @@ def test_retry_msg_names_fields_in_order_and_arabic():
 def test_layout_order():
     msg = _build(_input(conversation_memory="المستخدم صاحب العمل"))
     marks = ["Today is", "<query>", "<conversation>", "<conversation_memory>", "<planner_understanding ",
-             "<case_documents>", "<references ", "<reports ", "<left_out>", "## Task"]
+             "<reports ", "<references ", "<case_documents>", "<left_out>", "## Task"]
     positions = [msg.index(m) for m in marks]
     assert positions == sorted(positions)
+
+
+def test_reports_come_before_references_and_the_file_last():
+    msg = _build()
+    assert msg.index("</reports>") < msg.index("<references ")
+    assert msg.index("</references>") < msg.index("<case_documents>")
 
 
 def test_query_is_verbatim_and_escaped():
@@ -239,14 +329,21 @@ def test_case_documents_rendered_and_escaped():
     doc = MergerDocument(title='مذكرة "أ" & <ب>', doc_type="memo", summary="ملخص <آلي>", text="نص & نص")
     msg = _build(_input(documents=[doc]))
     assert '<case_document title="مذكرة &quot;أ&quot; &amp; &lt;ب&gt;" doc_type="memo">' in msg
-    assert "<summary>ملخص &lt;آلي&gt;</summary>" in msg
-    assert "نص &amp; نص" in msg
+    assert "<text>\nنص &amp; نص\n    </text>" in msg
+
+
+def test_case_documents_carry_their_text_only_never_the_summary():
+    msg = _build()
+    block = msg[msg.index("<case_documents>"):msg.index("</case_documents>")]
+    assert "نص العقد" in block
+    assert "<summary>" not in msg and "ملخص آلي" not in msg
 
 
 def test_case_documents_omit_empty_parts():
-    msg = _build(_input(documents=[MergerDocument(title="بلا نص")]))
+    msg = _build(_input(documents=[MergerDocument(title="بلا نص", summary="ملخص فقط")]))
     block = msg[msg.index("<case_documents>"):msg.index("</case_documents>")]
     assert "<summary>" not in block and "<text>" not in block
+    assert '<case_document title="بلا نص">\n  </case_document>' in block
 
 
 # ---------------------------------------------------------------------------
@@ -274,19 +371,34 @@ def test_conversation_omitted_when_empty():
 def test_memory_absent_when_empty():
     msg = _build(_input(conversation_memory="  "))
     assert "<conversation_memory>" not in msg
+    assert P._MEMORY_NOTE_AR not in msg
     assert _MEMORY_CONFLICT_NOTE not in msg
 
 
-def test_memory_pre_rendered_block_kept_as_is():
+def test_memory_pre_rendered_block_kept_as_is_then_the_note():
     block = '<conversation_memory>\nقواعد\n\n<entry id="M-1" kind="واقعة">أجر &amp; بدل</entry>\n</conversation_memory>'
     msg = _build(_input(conversation_memory=block))
-    assert block in msg  # never escaped twice
-    assert _MEMORY_CONFLICT_NOTE in msg
+    assert block + "\n" + P._MEMORY_NOTE_AR + "\n\n<planner_understanding " in msg  # never escaped twice
+    assert _MEMORY_CONFLICT_NOTE not in msg  # the merger's own note, not the aggregator's
 
 
 def test_memory_raw_text_is_fenced_and_escaped():
     msg = _build(_input(conversation_memory="أجر <5000> & بدل"))
-    assert "<conversation_memory>\nأجر &lt;5000&gt; &amp; بدل\n</conversation_memory>" in msg
+    assert ("<conversation_memory>\nأجر &lt;5000&gt; &amp; بدل\n</conversation_memory>\n"
+            + P._MEMORY_NOTE_AR + "\n\n<planner_understanding ") in msg
+
+
+def test_memory_note_moves_a_conflict_to_the_opening_and_follows_an_insisted_position():
+    note = P._MEMORY_NOTE_AR
+    assert "If a report says its sources contradict a `[رأي قانوني]` entry" in note
+    assert "say so in the opening of `synthesis_md`, right after the direct answer" in note
+    assert "the chat reply is written from the opening and the close of the answer only" in note
+    # the insisted label is the memory store's own, so the merger reads the entry it gets
+    from agents.utils.conversation_memory import _BLOCK_RULES
+    assert "[رأي قانوني — أصرّ عليه المستخدم]" in _BLOCK_RULES
+    assert ("A `[رأي قانوني — أصرّ عليه المستخدم]` entry is followed: write the answer on that basis, "
+            "with no warning and no contrary statement, even where a report has one") in note
+    assert note not in MERGER_SYSTEM_PROMPT  # only when there is a memory block
 
 
 # ---------------------------------------------------------------------------
@@ -312,21 +424,48 @@ def test_reference_source_only_when_different():
     assert "<source>المحكمة العمالية</source>" in second
 
 
-def test_reference_ruling_year_number_and_excerpt():
+def test_reference_has_no_excerpt():
+    msg = _build(refs=[_ref(snippet="المادة 77: يستحق العامل <أجره> كاملاً")])
+    assert "<excerpt>" not in _references_block(msg)
+    assert "يستحق العامل" not in msg  # the snippet's text never reaches the merger
+
+
+def test_reference_ruling_number_and_hijri_year_without_excerpt():
     ruling = _ref(source_type="case", title="حكم", regulation_title="محكمة", case_number="434939",
                   hijri_year="١٤٤٣", snippet="المحكمة رأت أن <الأجر> ثابت")
     msg = _build(refs=[ruling])
     assert "<case_number>434939</case_number>" in msg
     assert "<year>سنة القضية: 1443هـ</year>" in msg
-    assert "<excerpt>المحكمة رأت أن &lt;الأجر&gt; ثابت</excerpt>" in msg
+    assert "<excerpt>" not in msg and "المحكمة رأت" not in msg
 
 
-def test_reference_year_skipped_when_excerpt_has_one():
+def test_reference_hijri_year_wins_over_the_snippet_year():
     ruling = _ref(source_type="case", title="حكم", hijri_year="1443",
                   snippet="المحكمة: العمالية\n\nسنة القضية: 2021\n\nالملخص")
-    msg = _build(refs=[ruling])
-    assert "<year>" not in msg
-    assert "سنة القضية: 2021" in msg
+    block = _references_block(_build(refs=[ruling]))
+    assert "<year>سنة القضية: 1443هـ</year>" in block
+    assert "2021" not in block and block.count("<year>") == 1
+
+
+def test_reference_hijri_year_already_marked_is_not_marked_twice():
+    block = _references_block(_build(refs=[_ref(source_type="case", title="حكم", hijri_year="1443هـ")]))
+    assert "<year>سنة القضية: 1443هـ</year>" in block
+    assert "هـهـ" not in block
+
+
+def test_reference_year_falls_back_to_the_snippets_gregorian_year():
+    ruling = _ref(source_type="case", title="حكم", snippet="المحكمة: العمالية\n\nسنة القضية: 2019\n\nالملخص")
+    block = _references_block(_build(refs=[ruling]))
+    assert "<year>سنة القضية: 2019</year>" in block  # Gregorian: no هـ
+    assert "2019هـ" not in block
+    assert "المحكمة: العمالية" not in block and "الملخص" not in block  # the year only, not the snippet
+
+
+def test_reference_snippet_year_in_arabic_indic_digits_is_westernised():
+    ruling = _ref(source_type="case", title="حكم", snippet="سنة القضية: ٢٠١٩\n\nالملخص")
+    block = _references_block(_build(refs=[ruling]))
+    assert "<year>سنة القضية: 2019</year>" in block
+    assert not _ARABIC_INDIC.search(block)
 
 
 def test_reference_without_year_excerpt_or_status():
@@ -352,12 +491,13 @@ def test_reference_without_status_note_attribute():
     assert "<status>" not in msg and "<draft>" not in msg
 
 
-def test_reference_principle_decisions():
+def test_reference_principle_has_no_decisions():
     principle = _ref(source_type="official_principle", title="المبدأ رقم 2", regulation_title="المحكمة العليا",
                      decision_line="القرار 162/5 بتاريخ 24/3/1415هـ")
     msg = _build(refs=[principle])
-    assert "<decisions>القرار 162/5 بتاريخ 24/3/1415هـ</decisions>" in msg
+    assert "<title>المبدأ رقم 2</title>" in msg
     assert "<source>المحكمة العليا</source>" in msg
+    assert "<decisions>" not in msg and "القرار 162/5" not in msg
 
 
 def test_reference_type_attribute_escaped():
@@ -374,9 +514,15 @@ def test_ok_report_attributes_body_and_gaps():
     block = _report_block(_build(), 1)
     assert block.startswith(f'<report n="1" title="الأجر والعقد" side="{MODE_AR["full"]}" '
                             'confidence="medium" status="ok">')
-    assert "<focus>إثبات الأجر</focus>" in block and "<why>أقوى الأوجه</why>" in block
     assert "<body>\n## الخلاصة\nالأجر ثابت [1]\n    </body>" in block
     assert "<gap>لم يُعثر على سابقة</gap>" in block
+
+
+def test_report_has_no_planner_request():
+    block = _report_block(_build(), 1)
+    for tag in ("<request>", "<focus>", "<why>"):
+        assert tag not in block, tag
+    assert "إثبات الأجر" not in block and "أقوى الأوجه" not in block
 
 
 def test_failed_report_has_status_failed_and_no_body():
@@ -386,7 +532,7 @@ def test_failed_report_has_status_failed_and_no_body():
     assert "confidence=" not in block
     assert "<body>" not in block and "<gaps>" not in block
     assert "نص لا يجب أن يظهر" not in block
-    assert "<focus>حجية الفاتورة</focus>" in block and "<why>" not in block
+    assert "<request>" not in block and "<focus>" not in block  # (its focus text is also A3's question)
     assert "وجه A3" in block  # its angles still listed
 
 
@@ -416,20 +562,27 @@ def test_unknown_mode_has_no_side_attribute():
 def test_angle_line_layout_with_arabic_labels():
     block = _report_block(_build(), 1)
     expected = ("- وجه A1 [يقوّي · قوي]: عقد مكتوب — العقد يثبت الأجر. سؤال البحث: هل يثبت العقد الأجر؟ "
-                "ما يضعفه: التوقيع ناقص الأقسام: D1.S7 (الموكّل: المدعي)، D1.S12 (الخصم: الشركة)")
+                "ما يضعفه: التوقيع ناقص\n")
     assert expected in block
     assert f"- وجه A2 [{KIND_AR['answer']} · {STRENGTH_AR['medium']}]: دفع التقادم" in block
 
 
-def test_angle_line_omits_empty_weakness_and_sections():
+def test_angle_line_never_carries_sections():
+    line = render_angle_line("A1", _angles()["A1"], "claimant")  # A1 has sections
+    assert "الأقسام" not in line and "D1.S7" not in line and "D1.S12" not in line
+    assert "الأقسام" not in _build()
+
+
+def test_angle_line_omits_empty_weakness():
     line = render_angle_line("A2", _angles()["A2"], "claimant")
     assert "ما يضعفه" not in line and "الأقسام" not in line
 
 
-def test_angle_line_flags_other_side_and_ocr():
-    line = render_angle_line("A3", _angles()["A3"], "claimant")
-    assert line.startswith(f"وجه A3 [{KIND_AR['attack']} · {STRENGTH_AR['weak']} · لصالح الشركة · "
-                           f"{P.OCR_SUSPECT_AR}]: ")
+def test_angle_line_flags_other_side_never_ocr():
+    line = render_angle_line("A3", _angles()["A3"], "claimant")  # A3 is ocr_suspect
+    assert line.startswith(f"وجه A3 [{KIND_AR['attack']} · {STRENGTH_AR['weak']} · لصالح الشركة]: ")
+    assert P.OCR_SUSPECT_AR not in line
+    assert P.OCR_SUSPECT_AR not in _build()
     # the user's own side and an unknown side are not tagged
     assert "لصالح" not in render_angle_line("A1", _angles()["A1"], "claimant")
     assert "لصالح" not in render_angle_line("A7", _angles()["A7"], "claimant")
@@ -488,7 +641,7 @@ def test_task_line_without_angles_or_references():
 
 def test_task_line_cites_reference_range():
     msg = _build(refs=[_ref(), _ref(), _ref()])
-    assert "(1–3)" in msg[msg.index("## Task"):]
+    assert "cite only numbers from `<references>` (1–3)" in msg[msg.index("## Task"):]
 
 
 # ---------------------------------------------------------------------------
@@ -509,12 +662,6 @@ def test_today_line_opens_the_message(monkeypatch):
 
 
 def test_case_document_ref_attribute_names_the_document():
-    from agents.deep_search_v4.extended_merger.models import MergerDocument, MergerInput
-    from agents.deep_search_v4.extended_merger.prompts import (
-        MERGER_SYSTEM_PROMPT,
-        build_merger_user_message,
-    )
-
     inp = MergerInput(
         query="س",
         reports=[],
@@ -526,4 +673,4 @@ def test_case_document_ref_attribute_names_the_document():
     msg = build_merger_user_message(inp, shared_refs=[], report_bodies=[])
     assert '<case_document ref="D1" title="الحكم">' in msg
     assert '<case_document title="المذكرة">' in msg
-    assert "whose `ref` is `D1`" in MERGER_SYSTEM_PROMPT
+    # (the answer never names a document by this alias — see "never by a code alias" in the key rules)

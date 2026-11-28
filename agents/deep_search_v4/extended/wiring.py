@@ -1317,6 +1317,7 @@ async def _run_plan(
                         _merge(
                             reports, query=pause.describe_query, recent_messages=recent, plan=plan,
                             view=view, supabase=supabase, user_id=user_id, conversation_id=conversation_id,
+                            conversation_memory=major_input.conversation_memory_md,
                         ),
                         queue, box, deadline=perf_counter() + budget,
                     ):

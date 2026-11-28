@@ -113,9 +113,11 @@ def input_from_extended(
     recent_messages: Any,
     plan: "ExtendedPlan",
     view: "PlannerView",
+    conversation_memory: str | None = None,
 ) -> MergerInput:
     """Every report of the plan, in plan order — a failed one with ``output=None`` so
-    its angles reach the scoreboard as not researched."""
+    its angles reach the scoreboard as not researched. ``conversation_memory`` is the
+    block the searches got, already rendered and encoded: passed through untouched."""
     from agents.deep_search_v4.extended.view import recent_pairs
 
     merger_reports: list[MergerReport] = []
@@ -146,6 +148,7 @@ def input_from_extended(
         client_side=plan.client_side or "unknown",
         client_party=_encode(party),
         left_out=[LeftOutAngle(angle_id=lo.angle, why=_encode(lo.why)) for lo in plan.left_out],
+        conversation_memory=conversation_memory or "",
     )
 
 
