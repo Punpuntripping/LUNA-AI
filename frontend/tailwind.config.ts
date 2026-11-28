@@ -174,6 +174,14 @@ const config: Config = {
           execution:  { DEFAULT: cssVar("--case-execution-bg"),  fg: cssVar("--case-execution-fg")  },
         },
 
+        // «من مستنداتك» — a report's chip pointing at the user's own file (aubergine/mauve)
+        "file-ref": {
+          DEFAULT: cssVar("--file-ref-bg"),
+          fg: cssVar("--file-ref-fg"),
+          border: cssVar("--file-ref-border"),
+          hover: cssVar("--file-ref-hover"),
+        },
+
         ring: cssVar("--ring"),
 
         // code block plane (warm dark in both modes)
@@ -250,6 +258,7 @@ const config: Config = {
         md: "var(--shadow-md)",
         lg: "var(--shadow-lg)",
         ring: "var(--ring-focus)",
+        "file-ref": "var(--file-ref-shadow)",
       },
 
       fontSize: {

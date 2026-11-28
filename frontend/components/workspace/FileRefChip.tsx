@@ -6,12 +6,14 @@ import { FILE_REFS_AR, type FileRefRow } from "@/lib/contracts";
 
 /**
  * The square of a file ref (``.claude/plans/aggregator_file_refs.md`` §4.6):
- * the «الخيوط» section-number square (``AngleMapDiagram``) with NO colour —
- * neutral (D2) — showing the section number only (D1); a whole-document ref
- * (``[F2]``) shows a file icon in the same square (D8).
+ * the «الخيوط» section-number square (``AngleMapDiagram``) showing the section
+ * number only (D1); a whole-document ref (``[F2]``) shows a file icon in the
+ * same square (D8). Colour (D14, owner 2026-11-28 — replaces D2's neutral): the
+ * brand's aubergine/mauve pair with a soft shadow (``--file-ref-*``), so the
+ * user's own file never looks like a library citation (sage ``[n]``).
  */
 const SQUARE_CLASS =
-  "inline-flex min-w-7 items-center justify-center rounded-md border border-border bg-card px-1.5 text-xs font-semibold tabular-nums leading-6 text-foreground";
+  "inline-flex min-w-7 items-center justify-center rounded-md border border-file-ref-border bg-file-ref px-1.5 text-xs font-semibold tabular-nums leading-6 text-file-ref-fg shadow-file-ref";
 
 function SquareContent({ row }: { row: Pick<FileRefRow, "section_seq"> }) {
   return row.section_seq == null ? (
@@ -39,8 +41,8 @@ export function FileRefChip({
       onClick={() => onOpen(row.ref_id)}
       className={cn(
         SQUARE_CLASS,
-        "mx-0.5 align-middle transition-colors hover:bg-accent",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "mx-0.5 align-middle transition-colors hover:bg-file-ref-hover",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-file-ref-fg/50",
       )}
     >
       <SquareContent row={row} />

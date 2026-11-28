@@ -81,6 +81,15 @@
     --case-admin-bg:      #D5E0E5; --case-admin-fg:      #264652;
     --case-execution-bg:  #DDE5E0; --case-execution-fg:  #2A4438;
 
+    /* ---------- «من مستنداتك» — a report's chip pointing at the user's own file ----------
+       The brand's aubergine/mauve pair (royal-aubergine ink on a dusty-mauve tint), lifted
+       by a soft shadow: never the sage of a library citation [n] (aggregator_file_refs.md D14). */
+    --file-ref-bg:     #ECE8F1;
+    --file-ref-fg:     #4C4158;
+    --file-ref-border: #D3CCDD;
+    --file-ref-hover:  #E0DAE8;
+    --file-ref-shadow: 0 1px 2px rgba(76, 65, 88, 0.18);
+
     /* ---------- Shape ---------- */
     --radius-sm:     4px;
     --radius-md:     6px;
@@ -334,6 +343,13 @@
     --case-personal-bg:   #341E2A; --case-personal-fg:   #E8B2CC;
     --case-admin-bg:      #18282E; --case-admin-fg:      #AECCD6;
     --case-execution-bg:  #18271F; --case-execution-fg:  #ADD6BE;
+
+    /* «من مستنداتك» file chip — dark: light mauve ink on a mauve veil */
+    --file-ref-bg:     rgba(167, 156, 190, 0.16);
+    --file-ref-fg:     #CFC6DE;
+    --file-ref-border: rgba(167, 156, 190, 0.32);
+    --file-ref-hover:  rgba(167, 156, 190, 0.26);
+    --file-ref-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 
     /* Code block — warm-retoned (was raw cool zinc) */
     --code-bg:      #121110;
