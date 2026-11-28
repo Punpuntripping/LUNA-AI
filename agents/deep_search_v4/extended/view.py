@@ -72,6 +72,39 @@ def marker_line(section: Mapping[str, Any]) -> str:
     return f"〔{display_ref(str(section.get('ref') or ''))} · {owner_of(section)} · {VALUE_AR.get(value, value)}〕"
 
 
+# --------------------------------------------------------------------------- file tags
+# «بحث شامل» with the file refs on (aggregator_file_refs.md §4.3, D12): the searches and
+# the merger see each section under the ready file tag of the conversation's numbering —
+# 〔F3·S7 · …〕, F + the file's WI number — instead of the map's 〔D1·S7 · …〕, and a
+# document shown whole under 〔F3〕. The section number is the same
+# (``attachment_segments.seq``); only the document number changes. Off = unchanged.
+
+
+def file_ref(ref: str, file_wi: Mapping[str, int] | None = None) -> str:
+    """A section ref as the searches see it: ``D1.S7`` → ``F3·S7`` when ``file_wi`` maps
+    ``"D1"`` to 3; otherwise :func:`display_ref` (``D1·S7``)."""
+    from agents.memory.angle_mapper.refs import parse_ref
+    from shared.workspace.file_refs import format_file_tag
+
+    parsed = parse_ref(ref)
+    if parsed is not None and file_wi:
+        wi = file_wi.get(f"D{parsed[0]}")
+        if wi:
+            return format_file_tag(int(wi), parsed[1])
+    return display_ref(ref)
+
+
+def file_tagged_text(marked: str, doc_id: str, wi_seq: int) -> str:
+    """``marked`` with each marker of ``doc_id`` («〔D1·S7 · …») opening with the file tag
+    instead («〔F3·S7 · …»)."""
+    return (marked or "").replace(f"〔{doc_id}·S", f"〔F{int(wi_seq)}·S")
+
+
+def whole_file_label(wi_seq: int) -> str:
+    """The one label over a document shown whole, with no sections: ``〔F3〕``."""
+    return f"〔F{int(wi_seq)}〕"
+
+
 def _paragraphs_fit(paragraphs: Sequence[Any], sections: Sequence[Mapping[str, Any]]) -> bool:
     n = len(paragraphs)
     for s in sections:
@@ -182,6 +215,7 @@ def build_planner_view(supabase: Any, angle_map: dict, *, user_id: str) -> Plann
         doc_type = str(metadata.get("doc_type") or "") if isinstance(metadata, Mapping) else ""
         content = str(r.get("content_md") or "")
         secs = [s for s in index.values() if s.get("doc") == doc]
+        marked = marked_text(content, secs, doc_type=doc_type)
         docs.append(DocView(
             id=f"D{doc}",
             item_id=item_id,
@@ -189,9 +223,11 @@ def build_planner_view(supabase: Any, angle_map: dict, *, user_id: str) -> Plann
             doc_type=doc_type,
             summary=str(r.get("summary") or ""),
             content_chars=len(content),
-            marked_text=apply_text_corrections(
-                marked_text(content, secs, doc_type=doc_type), fixes.get(item_id),
-            ),
+            marked_text=apply_text_corrections(marked, fixes.get(item_id)),
+            section_spans=tuple(sorted(
+                (int(s.get("seq") or 0), int(s.get("char_start") or 0), int(s.get("char_end") or 0))
+                for s in secs
+            )) if marked else (),
         ))
 
     cards: list[AngleCard] = []
@@ -319,10 +355,13 @@ __all__ = [
     "VALUE_AR",
     "build_planner_view",
     "display_ref",
+    "file_ref",
+    "file_tagged_text",
     "marked_text",
     "marker_line",
     "owner_of",
     "recent_pairs",
     "render_extended_block",
     "render_planner_input",
+    "whole_file_label",
 ]

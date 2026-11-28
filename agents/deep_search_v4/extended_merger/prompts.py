@@ -179,6 +179,69 @@ Return ONE JSON object with these fields, in this order — settle the scoreboar
 
 MERGER_SYSTEM_PROMPT = _TASK_AR + _SCHEMA_AR
 
+
+# ---------------------------------------------------------------------------
+# File refs — the user's file sections cited as [F3·S7] (aggregator_file_refs.md
+# D11–D12, «بحث شامل»): the reports carry the tags their aggregators copied from the
+# sections' labels, and the merger keeps each with its point. Applied ONLY when the
+# merger input has tagged documents (``MergerInput.file_ref_docs``); otherwise the
+# prompt is byte-identical.
+# ---------------------------------------------------------------------------
+
+#: Recorded on the deep_search.extended_merger span when the rules are on.
+FILE_REFS_PROMPT_VERSION = "merger-file-refs-v1"
+
+_FILE_REFS_SWAPS: tuple[tuple[str, str], ...] = (
+    (
+        "Lines like 〔D1·S7 · …〕 are section markers added by code — never quote them. "
+        "Use the file only under rule 3.\n",
+        "Each section starts under a label added by code that opens with its file tag — "
+        "〔F3·S7 · …〕; a document shown whole, with no sections, has one label over its text — "
+        "〔F4〕. Never quote a label. Use the file only under rule 3.\n",
+    ),
+    (
+        "7. **Length:** complete, without repetition — normally shorter than the reports put together.\n",
+        "7. **Length:** complete, without repetition — normally shorter than the reports put together.\n"
+        "8. **File tags — keep them with their point.** A report's `[F3·S7]` (or `[F4]` for a whole "
+        "document) right after a sentence or a quote points at the part of the user's file the point "
+        "rests on; the user sees it as a small number that opens that part. When you keep the point, "
+        "keep its tag right after it, copied exactly as the report wrote it; when reports tag the same "
+        "point with different sections, keep each distinct tag once, side by side: `[F3·S7][F3·S9]`. "
+        "When you settle a contradiction from the file (rule 3), put after your sentence the tag of the "
+        "section that holds the words you followed, copied from its label. Never build or change a tag, "
+        "never tag a point no report tagged unless rule 3 made you read that section, and never put a "
+        "file tag and reference numbers in the same brackets. A file tag is not a legal authority: the "
+        "rule still carries its `[n]`.\n",
+    ),
+    (
+        "- `[n]` tags appear in `synthesis_md` only — never in a `note`, a `decision`, a `topic` or a gap.\n",
+        "- `[n]` tags appear in `synthesis_md` only — never in a `note`, a `decision`, a `topic` or a gap.\n"
+        "- The one other square-bracket form is the file tag (`[F3·S7]`, `[F4]` — rule 8): it is not a "
+        "reference, it never goes into `used_refs`, and like `[n]` it appears in `synthesis_md` only.\n",
+    ),
+    (
+        "never by a code alias (WI-N, D1, S7).",
+        "never by a code alias (WI-N, F3, S7) in your words — a file tag in square brackets after a "
+        "sentence (rule 8) is a pointer, not a name.",
+    ),
+)
+
+
+def with_file_refs(prompt: str) -> str:
+    """``prompt`` with the file-tag rules: the labels described, rule 8 (keep each
+    report's tag with its point), the citation line, the alias rule. Each swap applies
+    once; a prompt missing an anchor gets the others."""
+    out = prompt
+    for old, new in _FILE_REFS_SWAPS:
+        if old in out:
+            out = out.replace(old, new, 1)
+    return out
+
+
+def merger_system_prompt(*, file_refs: bool = False) -> str:
+    """The system prompt; ``file_refs`` — the variant with the file-tag rules."""
+    return with_file_refs(MERGER_SYSTEM_PROMPT) if file_refs else MERGER_SYSTEM_PROMPT
+
 RETRY_MSG = (
     "Return the output as a single valid JSON object conforming to the schema "
     "(angle_status, resolved, synthesis_md, used_refs, gaps, confidence — in that order) "
@@ -424,11 +487,14 @@ def build_merger_user_message(
 
 
 __all__ = [
+    "FILE_REFS_PROMPT_VERSION",
     "MERGER_SYSTEM_PROMPT",
     "OCR_SUSPECT_AR",
     "PROMPT_VERSION",
     "RETRY_MSG",
     "build_merger_user_message",
+    "merger_system_prompt",
     "render_angle_line",
     "scoreboard_angle_ids",
+    "with_file_refs",
 ]

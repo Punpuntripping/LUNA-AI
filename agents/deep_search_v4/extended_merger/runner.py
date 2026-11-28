@@ -26,9 +26,11 @@ from types import SimpleNamespace
 
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from agents.deep_search_v4.aggregator.file_refs import build_file_refs
 from agents.deep_search_v4.aggregator.postvalidator import strip_thinking_block
 from agents.utils.tracking import track_stage
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
+from shared.workspace.file_refs import strip_file_tags
 
 from .agent import MODEL_SLOT, create_merger_agent, missing_angles
 from .models import (
@@ -40,7 +42,7 @@ from .models import (
     MergerLLMOutput,
     MergerOutput,
 )
-from .prompts import PROMPT_VERSION, build_merger_user_message, scoreboard_angle_ids
+from .prompts import FILE_REFS_PROMPT_VERSION, PROMPT_VERSION, build_merger_user_message, scoreboard_angle_ids
 from .references import build_shared_references, renumber_answer, strip_citations, western_citations
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,12 @@ def clamp_confidence(confidence: str, inp: MergerInput) -> str:
     if ceiling < 0:
         return confidence
     return confidence if _RANK.get(confidence, 1) <= ceiling else {v: k for k, v in _RANK.items()}[ceiling]
+
+
+def _plain(text: str) -> str:
+    """A note, topic, decision or gap: no ``[n]`` and no file tag (both belong in
+    ``synthesis_md`` only)."""
+    return strip_file_tags(strip_citations(text))
 
 
 def repair_scoreboard(statuses: list[AngleStatus], expected: list[str]) -> tuple[list[AngleStatus], dict[str, int]]:
@@ -122,9 +130,10 @@ async def run_merger(
         raise ValueError("extended_merger: no finished report to merge")
 
     shared, bodies, sources, dropped = build_shared_references(inp.reports)
+    file_refs_on = bool(inp.file_ref_docs)
     expected = scoreboard_angle_ids(inp.reports)
     message = build_merger_user_message(inp, shared_refs=shared, report_bodies=bodies)
-    agent = create_merger_agent(n_shared=len(shared), model=model)
+    agent = create_merger_agent(n_shared=len(shared), model=model, file_refs=file_refs_on)
 
     t0 = time.perf_counter()
     spent = RunUsage()
@@ -151,16 +160,21 @@ async def run_merger(
         llm: MergerLLMOutput = result.output
         synthesis = western_citations(strip_thinking_block(llm.synthesis_md).strip())
         text, refs, final = renumber_answer(synthesis, shared)
+        # The answer's file tags → the parts of the user's file it points at (only
+        # tags of a document and section the reports could cite resolve; code never
+        # moves or removes a tag — the web hides one with no row).
+        file_refs = build_file_refs(text, inp.file_ref_docs) if file_refs_on else []
         ref_reports = {final[old]: sources.get(old, []) for old in final}
         board, board_stats = repair_scoreboard(llm.angle_status, expected)
         confidence = clamp_confidence(llm.confidence, inp)
 
         resolved = [
-            r.model_copy(update={"topic": strip_citations(r.topic), "decision": strip_citations(r.decision),
+            r.model_copy(update={"topic": _plain(r.topic), "decision": _plain(r.decision),
                                  "reports": sorted({n for n in r.reports if 1 <= n <= len(inp.reports)})})
             for r in llm.resolved
         ]
-        gaps = list(dict.fromkeys(g for g in (strip_citations(x) for x in llm.gaps) if g))
+        gaps = list(dict.fromkeys(g for g in (_plain(x) for x in llm.gaps) if g))
+        board = [s.model_copy(update={"note": strip_file_tags(s.note)}) for s in board]
         angles = [
             AngleCard(id=a.id, kind=a.kind, strength=a.strength, title=a.title,
                       for_party=a.for_party, for_side=a.for_side, argument=a.argument,
@@ -193,10 +207,15 @@ async def run_merger(
             "reasoning_tokens": usage["details"]["reasoning_tokens"],
             "requests": usage["requests"],
         }
+        if file_refs_on:
+            stats["file_refs"] = len(file_refs)
+            stats["file_refs_prompt_version"] = FILE_REFS_PROMPT_VERSION
         try:
             span.set(cited_refs=len(refs), resolved=len(resolved), confidence=confidence,
                      confidence_model=llm.confidence, scoreboard_filled=board_stats["filled"],
                      synthesis_chars=len(text))
+            if file_refs_on:
+                span.set(file_refs=len(file_refs), file_refs_prompt_version=FILE_REFS_PROMPT_VERSION)
         except Exception:  # noqa: BLE001
             pass
 
@@ -214,6 +233,7 @@ async def run_merger(
         model_used=usage.get("model") or "",
         prompt_version=PROMPT_VERSION,
         stats=stats,
+        file_refs=file_refs,
     )
     return out, usage
 

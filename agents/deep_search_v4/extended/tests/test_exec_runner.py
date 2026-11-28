@@ -187,7 +187,7 @@ def _factory(made: list):
 
 def _run(requests, fake, monkeypatch, *, deps_factory=None, emitted=None, made=None, on_report=None):
     monkeypatch.setattr(orch, "run_retrieval", fake)
-    monkeypatch.setattr(runner, "_brief", lambda req, plan, view: req.title)
+    monkeypatch.setattr(runner, "_brief", lambda req, plan, view, file_wi=None: req.title)
     made = made if made is not None else []
     emitted = emitted if emitted is not None else []
     return asyncio.run(run_extended_searches(
@@ -316,7 +316,7 @@ def test_what_the_searches_read_is_encoded_and_persisted_first(monkeypatch, code
         return await fake(query, config, deps)
 
     monkeypatch.setattr(orch, "run_retrieval", _retrieval)
-    monkeypatch.setattr(runner, "_brief", lambda req, plan, view: runner._encode("موجز " + REAL_ID))
+    monkeypatch.setattr(runner, "_brief", lambda req, plan, view, file_wi=None: runner._encode("موجز " + REAL_ID))
     req = make_request("ب1")
     reports = asyncio.run(run_extended_searches(
         [req], plan=make_plan([req]), view=make_view(), query="سؤال",

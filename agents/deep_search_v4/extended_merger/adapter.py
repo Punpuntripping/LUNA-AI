@@ -69,16 +69,20 @@ def _angle(card: "AngleCard") -> MergerAngle:
     )
 
 
-def _documents(view: "PlannerView") -> list[MergerDocument]:
+def _documents(view: "PlannerView", searched: Sequence[Any] | None = None) -> list[MergerDocument]:
     """Every document as the searches read it (encoded marked text + summary), capped
-    per document and in total like the searches (``runner.WHOLE_FILE_*_CAP``)."""
+    per document and in total like the searches (``runner.WHOLE_FILE_*_CAP``).
+
+    ``searched`` — the snapshots the searches read (``ExtendedSearchReport.documents``),
+    given when the file refs are on: the merger then reads the same text under the same
+    file tags (〔F3·S7 · …〕), and each document's ``ref`` is its tag (``F3``)."""
     from agents.deep_search_v4.extended.runner import (
         WHOLE_FILE_PER_DOC_CAP,
         WHOLE_FILE_TOTAL_CAP,
         whole_file_items,
     )
 
-    items = {s.item_id: s for s in whole_file_items(view)}
+    items = {s.item_id: s for s in (searched if searched else whole_file_items(view))}
     used = 0
     out: list[MergerDocument] = []
     for doc in view.documents:
@@ -95,8 +99,9 @@ def _documents(view: "PlannerView") -> list[MergerDocument]:
                 body = cut
                 if len(text) > len(cut):
                     body += f"\n[انتهى المعروض: {len(cut)} حرف من أصل {len(text)} — بقية الوثيقة لم تُعرض]"
+        tagged = bool(searched) and snap is not None and snap.wi_seq is not None
         out.append(MergerDocument(
-            ref=doc.id,
+            ref=f"F{int(snap.wi_seq)}" if tagged else doc.id,
             title=(snap.title if snap is not None else "") or _encode(doc.title),
             doc_type=doc.doc_type,
             summary=(snap.summary if snap is not None else "") or "",
@@ -117,7 +122,9 @@ def input_from_extended(
 ) -> MergerInput:
     """Every report of the plan, in plan order — a failed one with ``output=None`` so
     its angles reach the scoreboard as not researched. ``conversation_memory`` is the
-    block the searches got, already rendered and encoded: passed through untouched."""
+    block the searches got, already rendered and encoded: passed through untouched.
+    With the file refs on (the reports carry ``file_ref_docs``), the merger reads the
+    searches' own documents under their file tags and may keep the reports' tags."""
     from agents.deep_search_v4.extended.view import recent_pairs
 
     merger_reports: list[MergerReport] = []
@@ -137,11 +144,13 @@ def input_from_extended(
         ))
     client = view.map_client or {}
     party = str(client.get("party") or "") if str(client.get("side") or "") == plan.client_side else ""
+    file_ref_docs = next((list(r.file_ref_docs) for r in reports if getattr(r, "file_ref_docs", None)), [])
+    searched = next((list(r.documents) for r in reports if getattr(r, "documents", None)), None)
     return MergerInput(
         query=query,
         reports=merger_reports,
         angles={a.id: _angle(a) for a in view.angles},
-        documents=_documents(view),
+        documents=_documents(view, searched if file_ref_docs else None),
         recent_messages=[{"role": role, "content": content}
                          for role, content in recent_pairs(recent_messages, query=query)],
         understanding=_encode(plan.understanding),
@@ -149,6 +158,7 @@ def input_from_extended(
         client_party=_encode(party),
         left_out=[LeftOutAngle(angle_id=lo.angle, why=_encode(lo.why)) for lo in plan.left_out],
         conversation_memory=conversation_memory or "",
+        file_ref_docs=file_ref_docs,
     )
 
 

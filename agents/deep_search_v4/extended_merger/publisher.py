@@ -266,6 +266,23 @@ async def publish_merged_result(
                 exc, exc_info=True,
             )
 
+        # The user's file sections the answer points at (aggregator_file_refs.md
+        # §4.5), written from the stored real rows like the ordinary deep search's.
+        # Best-effort: a hiccup here never fails the publish (no chips are drawn).
+        file_refs = list(output.file_refs or [])
+        if file_refs:
+            try:
+                from backend.app.services.file_refs_service import persist_item_file_refs
+
+                written = persist_item_file_refs(
+                    deps.supabase, wi_id=item_id, user_id=input.user_id, file_refs=file_refs,
+                )
+                _pub_span.set(file_refs=written)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "workspace_item_file_refs persist failed (merged item): %s", exc, exc_info=True,
+                )
+
         sse_events: list[dict] = [
             {
                 "type": "workspace_item_created",

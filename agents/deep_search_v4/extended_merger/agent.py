@@ -21,7 +21,7 @@ from agents.utils.agent_models import get_agent_model
 from agents.utils.structured_output import make_json_salvager
 
 from .models import MergerLLMOutput
-from .prompts import MERGER_SYSTEM_PROMPT, RETRY_MSG
+from .prompts import RETRY_MSG, merger_system_prompt
 from .references import cited_numbers, western_citations
 
 MODEL_SLOT = "extended_merger"
@@ -32,12 +32,16 @@ def missing_angles(out: MergerLLMOutput, expected: Sequence[str]) -> list[str]:
     return [a for a in expected if a not in have]
 
 
-def create_merger_agent(*, n_shared: int, model: Any = None) -> Agent[None, MergerLLMOutput]:
+def create_merger_agent(
+    *, n_shared: int, model: Any = None, file_refs: bool = False,
+) -> Agent[None, MergerLLMOutput]:
+    """``file_refs`` — the prompt variant that keeps the reports' file tags
+    (aggregator_file_refs.md); False = today's prompt, byte-identical."""
     agent: Agent[None, MergerLLMOutput] = Agent(
         model if model is not None else get_agent_model(MODEL_SLOT),
         name="extended_merger",
         output_type=[MergerLLMOutput, TextOutput(make_json_salvager(MergerLLMOutput, retry_msg=RETRY_MSG))],
-        instructions=MERGER_SYSTEM_PROMPT,
+        instructions=merger_system_prompt(file_refs=file_refs),
         retries=2,
         output_retries=2,
     )

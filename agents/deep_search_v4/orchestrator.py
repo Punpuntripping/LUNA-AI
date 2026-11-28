@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time as _time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -1319,9 +1320,38 @@ def _whole_file_documents(items: Any) -> list[Any]:
 
 def _file_refs_on(deps: Any) -> bool:
     """The aggregator may cite the user's file sections this turn
-    (aggregator_file_refs.md §4.9): the flag is on for the user, and this is the
-    ordinary deep search — «بحث موسّع» (whole-file delivery) is out of v1 (D4)."""
-    return _whole_file_caps(deps) is None and file_refs_enabled(getattr(deps, "user_id", None))
+    (aggregator_file_refs.md §4.9): the flag is on for the user. Under «بحث شامل»
+    (whole-file delivery) only when the runner tagged the documents
+    (``deps._whole_file_refs``, set by ``extended/runner.py`` with the same flag)."""
+    if not file_refs_enabled(getattr(deps, "user_id", None)):
+        return False
+    return _whole_file_caps(deps) is None or bool(getattr(deps, "_whole_file_refs", None))
+
+
+#: A label of a tagged document as the aggregator is shown it: 〔F3·S7 · …〕 / 〔F3〕.
+_SHOWN_TAG_RE = re.compile(r"〔F(\d+)(?:·S(\d+))?(?:〕| ·)")
+
+
+def _shown_whole_file_refs(refs: Any, blocks: Any) -> list[FileRefDoc]:
+    """«بحث شامل»: the runner's ``FileRefDoc`` list kept to what the aggregator was
+    actually shown — a document over the total cap is dropped, and a document cut at
+    its cap keeps only the sections whose label made it in."""
+    shown: dict[int, set[int | None]] = {}
+    for block in blocks or []:
+        for m in _SHOWN_TAG_RE.finditer(str(getattr(block, "body", "") or "")):
+            shown.setdefault(int(m.group(1)), set()).add(int(m.group(2)) if m.group(2) else None)
+    out: list[FileRefDoc] = []
+    for doc in refs or []:
+        seen = shown.get(int(doc.wi_seq))
+        if not seen:
+            continue
+        if doc.sections:
+            kept = tuple(s for s in doc.sections if int(s[0]) in seen)
+            if kept:
+                out.append(FileRefDoc(wi_seq=doc.wi_seq, item_id=doc.item_id, sections=kept))
+        elif None in seen:
+            out.append(doc)
+    return out
 
 
 def _build_case_document_lists(
@@ -1337,7 +1367,9 @@ def _build_case_document_lists(
     AGGREGATOR's list puts the ready file tag on its documents (``〔F3·S7 · …〕`` on
     each section, ``〔F3〕`` over a whole text; F + the heading's WI number) and those
     documents are appended to it.
-    The expanders' lists never are. Ignored under whole-file delivery («بحث موسّع», v1).
+    The expanders' lists never are. Under whole-file delivery («بحث شامل») the documents
+    already carry their labels (the extended runner put them in), and the list gets the
+    runner's ``deps._whole_file_refs`` kept to what the aggregator was shown.
 
     Returns ``(lists, telemetry)``. ``lists`` is keyed by recipient:
 
@@ -1402,7 +1434,11 @@ def _build_case_document_lists(
     telemetry["case_docs.over_total"] = over_total
     if caps is not None:
         telemetry["case_docs.whole_file_caps"] = list(caps)
-    if file_ref_docs is not None and caps is None:
+        if file_ref_docs is not None:
+            file_ref_docs.extend(_shown_whole_file_refs(
+                getattr(deps, "_whole_file_refs", None), lists.get("aggregator"),
+            ))
+    if file_ref_docs is not None and (caps is None or getattr(deps, "_whole_file_refs", None)):
         telemetry["case_docs.file_refs.docs"] = len(file_ref_docs)
         telemetry["case_docs.file_refs.sections"] = sum(len(d.sections) for d in file_ref_docs)
     return lists, telemetry
@@ -1497,7 +1533,8 @@ async def run_retrieval(
             case_document_sections = {}
 
     # The aggregator's file refs (aggregator_file_refs.md §4.2): numbered only
-    # when the flag is on for the user, and never under «بحث موسّع».
+    # when the flag is on for the user — under «بحث شامل», only when the extended
+    # runner tagged the documents (``_file_refs_on``).
     file_ref_docs: list[FileRefDoc] | None = [] if _file_refs_on(deps) else None
     try:
         case_document_blocks, case_docs_telemetry = _build_case_document_lists(

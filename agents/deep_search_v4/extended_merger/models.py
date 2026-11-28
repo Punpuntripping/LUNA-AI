@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from agents.deep_search_v4.aggregator.models import Reference
+from agents.deep_search_v4.aggregator.models import FileRef, Reference
 
 if TYPE_CHECKING:
     from agents.deep_search_v4.aggregator.models import AggregatorOutput
@@ -172,6 +172,10 @@ class MergerInput:
     left_out: list[LeftOutAngle] = field(default_factory=list)
     conversation_memory: str = ""  # the rendered memory block the searches got, if any
     detail_level: Literal["low", "medium", "high"] = "medium"
+    # The file refs (aggregator_file_refs.md): what the reports could cite and the
+    # merger may keep — ``FileRefDoc`` per tagged document. Non-empty turns on the
+    # file-tag rules of the prompt and the resolution of the answer's tags; ``[]`` = off.
+    file_ref_docs: list[Any] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +265,9 @@ class MergerOutput(BaseModel):
     model_used: str = ""
     prompt_version: str = ""
     stats: dict[str, Any] = Field(default_factory=dict)  # shared_refs, dropped_tags, input_chars, …
+    # The user's file sections the answer points at — built by code from its
+    # [F3·S7] / [F3] tags (aggregator_file_refs.md §4.4); the publisher stores them.
+    file_refs: list[FileRef] = Field(default_factory=list)
 
 
 @dataclass

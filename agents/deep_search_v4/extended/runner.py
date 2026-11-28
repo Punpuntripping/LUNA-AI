@@ -42,6 +42,7 @@ from agents.models import WorkspaceItemSnapshot
 from agents.utils.tracking import track_stage
 
 from .models import ExtendedPlan, ExtendedRequest, ExtendedSearchReport, PlannerView
+from .view import file_tagged_text, whole_file_label
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from agents.deep_search_v4.planner.deps import PlannerDeps
@@ -84,6 +85,8 @@ def whole_file_items(
     view: PlannerView,
     attached_items: Sequence[WorkspaceItemSnapshot] | None = None,
     wi_alias_map: dict[int, str] | None = None,
+    *,
+    file_tags: bool = False,
 ) -> list[WorkspaceItemSnapshot]:
     """The case documents every search reads whole — encoded snapshots, map order.
 
@@ -94,6 +97,10 @@ def whole_file_items(
     snapshot, else the conversation's alias map, else a free number after every
     known one. Then every other attached attachment of the turn as it is (D29: each
     document of the turn travels). Never raises on one bad document — it is skipped.
+
+    ``file_tags`` (the file refs on, aggregator_file_refs.md): each marker opens with the
+    file's tag (〔F3·S7 · …〕, F + its ``wi_seq``) instead of the map's 〔D1·S7 · …〕, and a
+    document with no marked sections gets one label over its text (〔F3〕). Off = today.
     """
     attached = [s for s in attached_items or [] if getattr(s, "kind", None) == "attachment"]
     by_id = {str(s.item_id): s for s in attached}
@@ -109,9 +116,12 @@ def whole_file_items(
             if seq is None:
                 seq, next_free = next_free, next_free + 1
             if (doc.marked_text or "").strip():
-                content = _encode(doc.marked_text)
+                text = file_tagged_text(doc.marked_text, doc.id, int(seq)) if file_tags else doc.marked_text
+                content = _encode(text)
             else:
                 content = base.content_md if base is not None else ""
+                if file_tags and (content or "").strip():
+                    content = f"{whole_file_label(int(seq))}\n\n{content}"
             summary = (base.summary if base is not None and base.summary else _encode(doc.summary)) or ""
             title = base.title if base is not None and base.title else _encode(doc.title)
             metadata = dict(base.metadata) if base is not None and base.metadata else {}
@@ -129,8 +139,42 @@ def whole_file_items(
         except Exception:  # noqa: BLE001 - one bad document never sinks the searches
             logger.warning("extended_search: document %s skipped", doc.id, exc_info=True)
     in_view = {s.item_id for s in out}
-    out += [s for s in attached if str(s.item_id) not in in_view and s.wi_seq is not None]
+    for s in attached:
+        if str(s.item_id) in in_view or s.wi_seq is None:
+            continue
+        if file_tags and (s.content_md or "").strip():
+            s = s.model_copy(update={"content_md": f"{whole_file_label(int(s.wi_seq))}\n\n{s.content_md}"})
+        out.append(s)
     return out
+
+
+def whole_file_refs(view: PlannerView, items: Sequence[WorkspaceItemSnapshot]) -> list[Any]:
+    """What each search may cite (``FileRefDoc``, aggregator_file_refs.md §4.1): every
+    document of ``items`` with a WI number and text — its marked sections
+    (``DocView.section_spans``), or none when it travels whole (cited ``[F3]``)."""
+    from agents.deep_search_v4.shared.case_documents import FileRefDoc
+
+    spans = {str(d.item_id): tuple(d.section_spans) for d in view.documents if (d.marked_text or "").strip()}
+    out: list[Any] = []
+    for s in items:
+        if s.wi_seq is None or int(s.wi_seq) <= 0 or not (s.content_md or "").strip():
+            continue
+        out.append(FileRefDoc(wi_seq=int(s.wi_seq), item_id=str(s.item_id), sections=spans.get(str(s.item_id), ())))
+    return out
+
+
+def file_wi_of(view: PlannerView, items: Sequence[WorkspaceItemSnapshot]) -> dict[str, int]:
+    """The map's document id → the file's WI number (``{"D1": 3}``) — how the briefs
+    write a section once the markers carry file tags."""
+    seq = {str(s.item_id): int(s.wi_seq) for s in items if s.wi_seq is not None}
+    return {d.id: seq[str(d.item_id)] for d in view.documents if str(d.item_id) in seq}
+
+
+def _file_tags_on(deps: Any) -> bool:
+    """The file refs are on for this user (the same switch as the ordinary deep search)."""
+    from agents.utils.aggregator_file_ref_flags import file_refs_enabled
+
+    return file_refs_enabled(getattr(deps, "user_id", None))
 
 
 def _persist_fakes(deps: Any) -> None:
@@ -143,11 +187,13 @@ def _persist_fakes(deps: Any) -> None:
         logger.warning("extended_search: persisting new masking fakes failed", exc_info=True)
 
 
-def _brief(request: ExtendedRequest, plan: ExtendedPlan, view: PlannerView) -> str:
+def _brief(
+    request: ExtendedRequest, plan: ExtendedPlan, view: PlannerView, file_wi: dict[str, int] | None = None,
+) -> str:
     """§4.9 b — built by code (A's ``brief`` module), encoded with the turn codec."""
     from .brief import build_planner_brief
 
-    return _encode(build_planner_brief(request, plan=plan, view=view))
+    return _encode(build_planner_brief(request, plan=plan, view=view, file_wi=file_wi))
 
 
 def _base_query_id() -> int:
@@ -291,14 +337,19 @@ async def _run_one(
     query_id: int,
     total: int,
     progress: CombinedProgress,
+    file_ref_docs: Sequence[Any] = (),
 ) -> ExtendedSearchReport:
-    """One search on its own deps. Never raises (except cancellation)."""
+    """One search on its own deps. Never raises (except cancellation). ``file_ref_docs``
+    — what its aggregator may cite (the file refs on); empty = no file tags."""
     from agents.deep_search_v4.orchestrator import run_retrieval
     from agents.deep_search_v4.planner.apply import build_retrieval_config
     from agents.deep_search_v4.planner.models import PlannerDecision
 
     t0 = time.perf_counter()
-    report = ExtendedSearchReport(index=index, request=request, ok=False, query_id=query_id)
+    report = ExtendedSearchReport(
+        index=index, request=request, ok=False, query_id=query_id,
+        documents=list(items), file_ref_docs=list(file_ref_docs),
+    )
     with track_stage(
         "deep_search.extended.search",
         conversation_id=getattr(deps, "conversation_id", "") or None,
@@ -317,6 +368,10 @@ async def _run_one(
             deps.emit_sse = progress.sink(index)
             deps.attached_items = list(items)
             deps._case_doc_caps = (WHOLE_FILE_PER_DOC_CAP, WHOLE_FILE_TOTAL_CAP)
+            if file_ref_docs:
+                # The orchestrator numbers the aggregator's documents from these
+                # (``_build_case_document_lists``): the tags its labels carry.
+                deps._whole_file_refs = list(file_ref_docs)
             aliases = [f"WI-{s.wi_seq}" for s in items]
             decision = PlannerDecision(
                 mode=request.mode,
@@ -405,17 +460,22 @@ async def run_extended_searches(
     ref = next((d for d in deps_list if not isinstance(d, BaseException)), None)
 
     # The documents and the briefs, encoded once; fakes persisted before any model runs.
+    # With the file refs on, the markers and the briefs carry the file tags (F + WI no.).
+    tags = ref is not None and _file_tags_on(ref)
     items: list[WorkspaceItemSnapshot] = []
     if ref is not None:
         items = whole_file_items(
             view,
             getattr(ref, "attached_items", None) or [],
             getattr(ref, "wi_alias_map", None) or {},
+            file_tags=tags,
         )
+    file_ref_docs = whole_file_refs(view, items) if tags else []
+    file_wi = file_wi_of(view, items) if tags else None
     briefs: list[str | BaseException] = []
     for req in reqs:
         try:
-            briefs.append(_brief(req, plan, view))
+            briefs.append(_brief(req, plan, view, file_wi))
         except Exception as exc:  # noqa: BLE001 - that search fails, the others run
             logger.error("extended_search: brief for %r failed: %s", req.title, exc, exc_info=True)
             briefs.append(exc)
@@ -424,8 +484,8 @@ async def run_extended_searches(
 
     base_qid = _base_query_id()
     logger.info(
-        "extended_search: %d searches — modes=%s caps=%s documents=%d",
-        total, [r.mode for r in reqs], [r.max_sub_queries for r in reqs], len(items),
+        "extended_search: %d searches — modes=%s caps=%s documents=%d file_refs=%d",
+        total, [r.mode for r in reqs], [r.max_sub_queries for r in reqs], len(items), len(file_ref_docs),
     )
 
     async def _one(i: int, req: ExtendedRequest) -> ExtendedSearchReport:
@@ -435,10 +495,11 @@ async def run_extended_searches(
             progress.finish(i)
             return ExtendedSearchReport(
                 index=i, request=req, ok=False, error=f"{type(exc).__name__}: {exc}"[:500],
+                documents=list(items), file_ref_docs=list(file_ref_docs),
             )
         report = await _run_one(
             i, req, deps=deps, items=items, brief=brief, query=query,
-            query_id=base_qid + i, total=total, progress=progress,
+            query_id=base_qid + i, total=total, progress=progress, file_ref_docs=file_ref_docs,
         )
         if on_report is not None and report.ok:
             try:
@@ -465,6 +526,8 @@ __all__ = [
     "ERROR_NO_REFERENCES",
     "WHOLE_FILE_PER_DOC_CAP",
     "WHOLE_FILE_TOTAL_CAP",
+    "file_wi_of",
     "run_extended_searches",
     "whole_file_items",
+    "whole_file_refs",
 ]

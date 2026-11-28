@@ -105,6 +105,10 @@ class DocView:
     #: start: 〔D1·S7 · owner، قدّمه … · جوهري〕 (D17). "" when the segment map is missing —
     #: the runner then delivers ``content_md`` unmarked.
     marked_text: str = ""
+    #: ``(seq, char_start, char_end)`` of every section marked in ``marked_text``, in
+    #: ``seq`` order — positions on the stored text, as the ordinary deep search records
+    #: them for a file tag (aggregator_file_refs.md §4.1). ``()`` when nothing is marked.
+    section_spans: tuple[tuple[int, int, int], ...] = ()
 
 
 @dataclass
@@ -253,6 +257,11 @@ class ExtendedSearchReport:
     reg_rqrs: list = field(default_factory=list)
     case_rqrs: list = field(default_factory=list)
     per_executor_stats: dict = field(default_factory=dict)
+    # The documents every search of the plan read (the same list on every report) and,
+    # with the file refs on, what each may cite (``FileRefDoc``; ``[]`` = off). The
+    # merger reads the same documents under the same tags (aggregator_file_refs.md).
+    documents: list = field(default_factory=list)
+    file_ref_docs: list = field(default_factory=list)
 
 
 class Resolution(BaseModel):
